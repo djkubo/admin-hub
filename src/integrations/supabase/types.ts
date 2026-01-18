@@ -16,28 +16,40 @@ export type Database = {
     Tables: {
       clients: {
         Row: {
+          converted_at: string | null
           created_at: string | null
           email: string
           full_name: string | null
           last_sync: string | null
+          payment_status: string | null
           phone: string | null
           status: string | null
+          total_paid: number | null
+          trial_started_at: string | null
         }
         Insert: {
+          converted_at?: string | null
           created_at?: string | null
           email: string
           full_name?: string | null
           last_sync?: string | null
+          payment_status?: string | null
           phone?: string | null
           status?: string | null
+          total_paid?: number | null
+          trial_started_at?: string | null
         }
         Update: {
+          converted_at?: string | null
           created_at?: string | null
           email?: string
           full_name?: string | null
           last_sync?: string | null
+          payment_status?: string | null
           phone?: string | null
           status?: string | null
+          total_paid?: number | null
+          trial_started_at?: string | null
         }
         Relationships: []
       }
@@ -47,10 +59,12 @@ export type Database = {
           created_at: string | null
           currency: string | null
           customer_email: string | null
+          external_transaction_id: string | null
           failure_code: string | null
           failure_message: string | null
           id: string
           metadata: Json | null
+          source: string | null
           status: string
           stripe_created_at: string | null
           stripe_customer_id: string | null
@@ -61,10 +75,12 @@ export type Database = {
           created_at?: string | null
           currency?: string | null
           customer_email?: string | null
+          external_transaction_id?: string | null
           failure_code?: string | null
           failure_message?: string | null
           id?: string
           metadata?: Json | null
+          source?: string | null
           status: string
           stripe_created_at?: string | null
           stripe_customer_id?: string | null
@@ -75,10 +91,12 @@ export type Database = {
           created_at?: string | null
           currency?: string | null
           customer_email?: string | null
+          external_transaction_id?: string | null
           failure_code?: string | null
           failure_message?: string | null
           id?: string
           metadata?: Json | null
+          source?: string | null
           status?: string
           stripe_created_at?: string | null
           stripe_customer_id?: string | null

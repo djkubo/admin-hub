@@ -20,7 +20,7 @@ export function useTransactions() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: transactions = [], isLoading, error } = useQuery({
+  const { data: transactions = [], isLoading, error, refetch } = useQuery({
     queryKey: ["transactions"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -63,5 +63,6 @@ export function useTransactions() {
     isLoading,
     error,
     syncStripe,
+    refetch,
   };
 }

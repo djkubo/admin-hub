@@ -15,7 +15,7 @@ export function useClients() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data: clients = [], isLoading, error } = useQuery({
+  const { data: clients = [], isLoading, error, refetch } = useQuery({
     queryKey: ["clients"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -86,5 +86,6 @@ export function useClients() {
     error,
     addClient,
     deleteClient,
+    refetch,
   };
 }
