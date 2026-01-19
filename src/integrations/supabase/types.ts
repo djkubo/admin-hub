@@ -84,6 +84,7 @@ export type Database = {
           full_name: string | null
           id: string
           last_sync: string | null
+          lifecycle_stage: string | null
           payment_status: string | null
           phone: string | null
           status: string | null
@@ -97,6 +98,7 @@ export type Database = {
           full_name?: string | null
           id?: string
           last_sync?: string | null
+          lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
           status?: string | null
@@ -110,6 +112,7 @@ export type Database = {
           full_name?: string | null
           id?: string
           last_sync?: string | null
+          lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
           status?: string | null

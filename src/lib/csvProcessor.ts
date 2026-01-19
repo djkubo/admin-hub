@@ -19,7 +19,8 @@ export interface SubscriptionData {
   planName: string;
   status: string;
   createdAt: string;
-  expiresAt: string; // Added for churn calculation
+  expiresAt: string;
+  priceCents: number;
 }
 
 export interface RecoveryClient {
@@ -46,15 +47,26 @@ let subscriptionDataCache: SubscriptionData[] = [];
 // Use Map with transaction ID as key to prevent duplicates
 let paypalTransactionsCache: Map<string, { email: string; amount: number; status: string; date: Date }> = new Map();
 
-// ============= CRITICAL FIX #3: Robust Currency Parser =============
+// ============= ROBUST CURRENCY PARSER (Always returns CENTS) =============
 
 /**
  * Parses currency strings from PayPal/Stripe CSVs robustly.
  * Handles formats like: 1,234.56 (US), 1.234,56 (EU), $1,234.56, -1234.56
- * Returns amount in CENTS (integer) for database consistency.
+ * 
+ * @param raw - Raw currency string from CSV
+ * @param alreadyCents - If true, the value is already in cents (e.g., subscriptions.csv Price field)
+ * @returns Amount in CENTS (integer) for database consistency
  */
-function parseCurrency(raw: string): number {
-  if (!raw || typeof raw !== 'string') return 0;
+export function parseCurrency(raw: string | number, alreadyCents: boolean = false): number {
+  if (raw === null || raw === undefined) return 0;
+  
+  // Handle numbers directly
+  if (typeof raw === 'number') {
+    if (alreadyCents) return Math.round(raw);
+    return Math.round(raw * 100);
+  }
+  
+  if (typeof raw !== 'string') return 0;
   
   // Remove everything except digits, dots, commas, and minus
   let cleaned = raw.replace(/[^\d.,-]/g, '');
@@ -101,9 +113,58 @@ function parseCurrency(raw: string): number {
   
   if (isNaN(floatValue)) return 0;
   
-  // Convert to cents (integer)
-  const cents = Math.round((isNegative ? -floatValue : floatValue) * 100);
+  // Apply sign and convert to cents (integer)
+  const value = isNegative ? -floatValue : floatValue;
+  
+  // If already in cents, just round; otherwise multiply by 100
+  const cents = alreadyCents ? Math.round(value) : Math.round(value * 100);
   return cents;
+}
+
+// ============= LIFECYCLE STAGE CALCULATOR =============
+
+type LifecycleStage = 'LEAD' | 'TRIAL' | 'CUSTOMER' | 'CHURN';
+
+interface ClientHistory {
+  hasSubscription: boolean;
+  hasTrialPlan: boolean;
+  hasActivePaidPlan: boolean;
+  hasPaidTransaction: boolean;
+  hasFailedTransaction: boolean;
+  hasExpiredOrCanceledSubscription: boolean;
+  latestSubscriptionStatus: string | null;
+}
+
+/**
+ * Calculates the lifecycle stage of a client based on their history.
+ * 
+ * LEAD: Exists but no payments or subscriptions
+ * TRIAL: Has an active trial/free plan
+ * CUSTOMER: Has at least one paid transaction
+ * CHURN: Last subscription expired/canceled OR last payment failed
+ */
+export function calculateLifecycleStage(history: ClientHistory): LifecycleStage {
+  // Priority 1: If they have paid transactions, they're a CUSTOMER
+  if (history.hasPaidTransaction) {
+    // Unless their latest subscription is expired/canceled (CHURN)
+    if (history.hasExpiredOrCanceledSubscription && !history.hasActivePaidPlan) {
+      return 'CHURN';
+    }
+    return 'CUSTOMER';
+  }
+  
+  // Priority 2: Active trial = TRIAL
+  if (history.hasTrialPlan) {
+    return 'TRIAL';
+  }
+  
+  // Priority 3: Has failed transactions or expired subscription = CHURN
+  if (history.hasExpiredOrCanceledSubscription || history.hasFailedTransaction) {
+    return 'CHURN';
+  }
+  
+  // Priority 4: Just exists = LEAD
+  return 'LEAD';
 }
 
 // ============= Helper: Process in batches =============
@@ -126,7 +187,11 @@ async function processBatches<T>(
   return { totalSuccess, allErrors };
 }
 
-// ============= PayPal CSV Processing (Optimized with Batch Upsert + Deduplication) =============
+// ============= TRIAL KEYWORDS =============
+const TRIAL_KEYWORDS = ['trial', 'prueba', 'gratis', 'demo', 'free'];
+const PAID_KEYWORDS = ['active', 'activo', 'paid', 'pagado', 'premium', 'pro', 'básico', 'basico'];
+
+// ============= PayPal CSV Processing =============
 
 export async function processPayPalCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -139,12 +204,11 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   const parsed = Papa.parse(csvText, {
     header: true,
-    skipEmptyLines: 'greedy', // Skip ALL empty lines including whitespace-only
+    skipEmptyLines: 'greedy',
     transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || '' // Trim all values
+    transform: (value) => value?.trim() || ''
   });
 
-  // Step 1: Parse all rows and prepare data with deduplication by transaction ID
   interface ParsedPayPalRow {
     email: string;
     amount: number;
@@ -157,7 +221,6 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
   const parsedRowsMap = new Map<string, ParsedPayPalRow>();
 
   for (const row of parsed.data as Record<string, string>[]) {
-    // Multiple fallbacks for email (PayPal uses different column names)
     const email = row['Correo electrónico del remitente'] || 
                   row['From Email Address'] || 
                   row['Correo electrónico del receptor'] ||
@@ -165,38 +228,25 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
                   row['Email'] ||
                   row['email'] || '';
     
-    // Multiple fallbacks for amount
     const rawAmount = row['Bruto'] || row['Gross'] || row['Neto'] || row['Net'] || row['Amount'] || '0';
-    
-    // Multiple fallbacks for status
     const rawStatus = row['Estado'] || row['Status'] || '';
-    
-    // Multiple fallbacks for date
     const rawDate = row['Fecha y Hora'] || row['Date Time'] || row['Fecha'] || row['Date'] || '';
-    
-    // Multiple fallbacks for transaction ID
     const transactionId = row['Id. de transacción'] || row['Transaction ID'] || row['Id de transacción'] || '';
 
-    // Silently skip rows without email (summary lines, empty rows, totals)
     if (!email || email.trim() === '') continue;
-    
-    // Skip if no transaction ID
     if (!transactionId || transactionId.trim() === '') continue;
-    
-    // Also skip rows that look like summaries (contain only totals text)
     if (email.toLowerCase().includes('total') || email.toLowerCase().includes('subtotal')) continue;
 
     const trimmedTxId = transactionId.trim();
     const trimmedEmail = email.trim();
 
-    // Skip if already in map (deduplicate within same CSV)
     if (parsedRowsMap.has(trimmedTxId)) {
       result.transactionsSkipped++;
       continue;
     }
 
-    // CRITICAL FIX #3: Use robust currency parser (returns cents)
-    const amountCents = parseCurrency(rawAmount);
+    // Parse amount to CENTS
+    const amountCents = parseCurrency(rawAmount, false);
 
     let status = 'pending';
     const lowerStatus = rawStatus.toLowerCase();
@@ -219,22 +269,15 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    // Store amount in CENTS for consistency
     parsedRowsMap.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, transactionDate, transactionId: trimmedTxId, currency });
-    
-    // Update cache with amount in CENTS
     paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, date: transactionDate });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
-  
-  console.log(`[PayPal CSV] Parsed ${parsedRows.length} valid rows from CSV`);
+  console.log(`[PayPal CSV] Parsed ${parsedRows.length} valid rows`);
 
-  // Step 2: All rows will be processed (upsert mode - no skipping)
-  const newRows = parsedRows;
-
-  // Step 3: Get all unique emails and fetch existing clients in batch
-  const uniqueEmails = [...new Set(newRows.map(r => r.email))];
+  // Get unique emails
+  const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
   const { data: existingClients } = await supabase
     .from('clients')
     .select('*')
@@ -242,21 +285,13 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
 
-  // Step 4: Prepare clients for upsert (batch)
-  const clientsToUpsert: Array<{
-    email: string;
-    payment_status: string;
-    total_paid: number;
-    status: string;
-    last_sync: string;
-  }> = [];
-
-  // Aggregate payments per email (amounts already in cents)
-  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean }>();
-  for (const row of newRows) {
-    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false };
+  // Aggregate payments per email
+  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean; hasPaid: boolean }>();
+  for (const row of parsedRows) {
+    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false, hasPaid: false };
     if (row.status === 'paid') {
-      existing.paidAmountCents += row.amount; // Already in cents
+      existing.paidAmountCents += row.amount;
+      existing.hasPaid = true;
     }
     if (row.status === 'failed') {
       existing.hasFailed = true;
@@ -264,23 +299,46 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     emailPayments.set(row.email, existing);
   }
 
+  // Prepare clients for upsert with lifecycle_stage
+  const clientsToUpsert: Array<{
+    email: string;
+    payment_status: string;
+    total_paid: number;
+    status: string;
+    lifecycle_stage: LifecycleStage;
+    last_sync: string;
+  }> = [];
+
   for (const [email, payments] of emailPayments) {
     const existingClient = clientMap.get(email);
-    // total_paid stored in dollars for display
     const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
     
     let paymentStatus = existingClient?.payment_status || 'none';
-    if (payments.paidAmountCents > 0) {
+    if (payments.hasPaid) {
       paymentStatus = 'paid';
     } else if (payments.hasFailed && paymentStatus !== 'paid') {
       paymentStatus = 'failed';
     }
+
+    // Calculate lifecycle stage
+    const history: ClientHistory = {
+      hasSubscription: false,
+      hasTrialPlan: false,
+      hasActivePaidPlan: false,
+      hasPaidTransaction: payments.hasPaid || (existingClient?.payment_status === 'paid'),
+      hasFailedTransaction: payments.hasFailed,
+      hasExpiredOrCanceledSubscription: false,
+      latestSubscriptionStatus: null
+    };
+    
+    const lifecycle = calculateLifecycleStage(history);
 
     clientsToUpsert.push({
       email,
       payment_status: paymentStatus,
       total_paid: newTotalPaid,
       status: existingClient?.status || 'active',
+      lifecycle_stage: lifecycle,
       last_sync: new Date().toISOString()
     });
 
@@ -291,7 +349,7 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     }
   }
 
-  // Step 5: Batch upsert clients
+  // Batch upsert clients
   if (clientsToUpsert.length > 0) {
     const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
@@ -306,22 +364,21 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Step 6: Prepare transactions for batch UPSERT
-  // CRITICAL FIX #1 & #2: Amount already in cents, use clean transaction ID (no prefix)
-  const transactionsToUpsert = newRows.map(row => ({
+  // Prepare transactions for batch UPSERT
+  // Use CLEAN external_transaction_id for deduplication
+  const transactionsToUpsert = parsedRows.map(row => ({
     customer_email: row.email,
-    amount: row.amount, // Already in cents from parseCurrency
+    amount: row.amount, // Already in cents
     status: row.status,
     source: 'paypal',
-    external_transaction_id: row.transactionId, // Clean ID, no prefix
-    stripe_payment_intent_id: `paypal_${row.transactionId}`, // Keep paypal_ prefix for upsert conflict
+    external_transaction_id: row.transactionId, // CLEAN ID, no prefix
+    stripe_payment_intent_id: `paypal_${row.transactionId}`, // Keep prefix for upsert conflict
     stripe_created_at: row.transactionDate.toISOString(),
     currency: row.currency,
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
-    failure_message: row.status === 'failed' ? 'Pago rechazado/declinado por PayPal' : null
+    failure_message: row.status === 'failed' ? 'Pago rechazado por PayPal' : null
   }));
 
-  // Step 7: Batch UPSERT transactions (force update on conflict)
   if (transactionsToUpsert.length > 0) {
     const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
@@ -340,7 +397,7 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
   return result;
 }
 
-// ============= Web Users CSV Processing (Optimized with Batch Upsert) =============
+// ============= Web Users CSV Processing =============
 
 export async function processWebUsersCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -358,7 +415,6 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     transform: (value) => value?.trim() || ''
   });
 
-  // Step 1: Parse all rows with expanded column detection
   interface ParsedWebUser {
     email: string;
     phone: string | null;
@@ -366,18 +422,14 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
   }
 
   const parsedRows: ParsedWebUser[] = [];
-  const headers = Object.keys(parsed.data[0] || {});
-  console.log(`[Web Users CSV] Headers detected: ${headers.join(', ')}`);
 
   for (const row of parsed.data as Record<string, string>[]) {
-    // Expanded email detection
     const email = row['Email']?.trim() || row['email']?.trim() || 
                   row['Correo']?.trim() || row['correo']?.trim() ||
                   row['E-mail']?.trim() || row['e-mail']?.trim() ||
                   row['Correo electrónico']?.trim() || row['correo electrónico']?.trim() ||
                   row['User Email']?.trim() || row['user_email']?.trim() || '';
     
-    // Expanded phone detection
     const phone = row['Telefono']?.trim() || row['telefono']?.trim() || 
                   row['Phone']?.trim() || row['phone']?.trim() ||
                   row['Teléfono']?.trim() || row['teléfono']?.trim() ||
@@ -385,7 +437,6 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
                   row['Celular']?.trim() || row['celular']?.trim() ||
                   row['Mobile']?.trim() || row['mobile']?.trim() || null;
     
-    // Expanded name detection
     const fullName = row['Nombre']?.trim() || row['nombre']?.trim() || 
                      row['Name']?.trim() || row['name']?.trim() ||
                      row['Nombre completo']?.trim() || row['nombre completo']?.trim() ||
@@ -397,9 +448,8 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     parsedRows.push({ email, phone, fullName });
   }
 
-  console.log(`[Web Users CSV] Parsed ${parsedRows.length} valid users from CSV`);
+  console.log(`[Web Users CSV] Parsed ${parsedRows.length} valid users`);
 
-  // Step 2: Get existing clients in batch
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
   const { data: existingClients } = await supabase
     .from('clients')
@@ -408,12 +458,11 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
 
   const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
 
-  // Step 3: Prepare clients for upsert - merge data from multiple rows with same email
+  // Merge data from multiple rows with same email
   const emailDataMap = new Map<string, ParsedWebUser>();
   for (const row of parsedRows) {
     const existing = emailDataMap.get(row.email);
     if (existing) {
-      // Merge: prefer non-null values
       emailDataMap.set(row.email, {
         email: row.email,
         phone: row.phone || existing.phone,
@@ -424,22 +473,29 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     }
   }
 
+  // All users from web CSV without payments are LEADs
   const clientsToUpsert: Array<{
     email: string;
     phone: string | null;
     full_name: string | null;
     status: string;
+    lifecycle_stage: LifecycleStage;
     last_sync: string;
   }> = [];
 
   for (const [email, data] of emailDataMap) {
     const existingClient = clientMap.get(email);
     
+    // Keep existing lifecycle_stage if already set to something other than LEAD
+    const currentStage = existingClient?.lifecycle_stage as LifecycleStage | null;
+    const lifecycle: LifecycleStage = currentStage && currentStage !== 'LEAD' ? currentStage : 'LEAD';
+    
     clientsToUpsert.push({
       email,
       phone: data.phone || existingClient?.phone || null,
       full_name: data.fullName || existingClient?.full_name || null,
       status: existingClient?.status || 'active',
+      lifecycle_stage: lifecycle,
       last_sync: new Date().toISOString()
     });
 
@@ -450,7 +506,6 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     }
   }
 
-  // Step 4: Batch upsert clients
   if (clientsToUpsert.length > 0) {
     const batchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
@@ -468,7 +523,7 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
   return result;
 }
 
-// ============= Subscriptions CSV Processing (NOW SAVES TO DB!) =============
+// ============= Subscriptions CSV Processing =============
 
 export async function processSubscriptionsCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -494,6 +549,7 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
     status: string;
     createdAt: string;
     expiresAt: string;
+    priceCents: number;
   }
 
   const parsedRows: ParsedSubscription[] = [];
@@ -504,68 +560,91 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
     const createdAt = row['Created At (CDMX)']?.trim() || row['Created At']?.trim() || row['created_at']?.trim() || '';
     const expiresAt = row['Expires At (CDMX)']?.trim() || row['Expires At']?.trim() || row['expires_at']?.trim() || row['Expiration Date']?.trim() || '';
     const email = row['Email']?.trim() || row['email']?.trim() || row['Correo']?.trim() || '';
+    
+    // Price field - subscriptions.csv typically has Price in CENTS already
+    const rawPrice = row['Price']?.trim() || row['price']?.trim() || row['Amount']?.trim() || '0';
+    const priceCents = parseCurrency(rawPrice, true); // Already in cents
 
     if (email && planName) {
-      parsedRows.push({ email, planName, status, createdAt, expiresAt });
-      subscriptionDataCache.push({ email, planName, status, createdAt, expiresAt });
+      parsedRows.push({ email, planName, status, createdAt, expiresAt, priceCents });
+      subscriptionDataCache.push({ email, planName, status, createdAt, expiresAt, priceCents });
     }
   }
 
   console.log(`[Subscriptions CSV] Parsed ${parsedRows.length} valid subscriptions`);
 
-  // Get unique emails
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
   
-  // Fetch existing clients
   const { data: existingClients } = await supabase
     .from('clients')
     .select('*')
-    .in('email', uniqueEmails.slice(0, 1000)); // Supabase limit
+    .in('email', uniqueEmails.slice(0, 1000));
 
   const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
 
-  // Determine trial vs converted status per email
+  // Fetch existing transactions to check for paid status
+  const { data: existingTransactions } = await supabase
+    .from('transactions')
+    .select('customer_email, status')
+    .in('customer_email', uniqueEmails.slice(0, 1000))
+    .in('status', ['succeeded', 'paid']);
+
+  const paidEmails = new Set(existingTransactions?.map(t => t.customer_email) || []);
+
+  // Analyze subscription status per email
   const emailStatusMap = new Map<string, { 
     isTrial: boolean; 
-    isConverted: boolean; 
+    isActivePaid: boolean;
+    isExpiredOrCanceled: boolean;
     trialStarted: string | null;
     convertedAt: string | null;
     latestStatus: string;
+    hasPaid: boolean;
   }>();
-
-  const trialKeywords = ['trial', 'prueba', 'gratis', 'demo', 'free'];
-  const paidKeywords = ['active', 'activo', 'paid', 'pagado', 'premium', 'pro', 'básico', 'basico'];
 
   for (const sub of parsedRows) {
     const planLower = sub.planName.toLowerCase();
     const statusLower = sub.status.toLowerCase();
-    const isTrial = trialKeywords.some(k => planLower.includes(k));
-    const isPaid = paidKeywords.some(k => planLower.includes(k) || statusLower.includes(k));
+    
+    const isTrial = TRIAL_KEYWORDS.some(k => planLower.includes(k));
+    const isPaidPlan = !isTrial && (
+      PAID_KEYWORDS.some(k => planLower.includes(k)) || 
+      sub.priceCents > 0
+    );
+    const isActive = statusLower === 'active' || statusLower === 'activo';
+    const isExpiredOrCanceled = statusLower === 'expired' || statusLower === 'canceled' || 
+                                 statusLower === 'cancelled' || statusLower === 'pastdue';
 
     const existing = emailStatusMap.get(sub.email) || {
       isTrial: false,
-      isConverted: false,
+      isActivePaid: false,
+      isExpiredOrCanceled: false,
       trialStarted: null,
       convertedAt: null,
-      latestStatus: sub.status
+      latestStatus: sub.status,
+      hasPaid: paidEmails.has(sub.email)
     };
 
-    if (isTrial) {
+    if (isTrial && isActive) {
       existing.isTrial = true;
       existing.trialStarted = existing.trialStarted || sub.createdAt;
     }
-    if (isPaid && !isTrial) {
-      existing.isConverted = true;
+    if (isPaidPlan && isActive) {
+      existing.isActivePaid = true;
       existing.convertedAt = existing.convertedAt || sub.createdAt;
+    }
+    if (isExpiredOrCanceled) {
+      existing.isExpiredOrCanceled = true;
     }
     existing.latestStatus = sub.status;
     emailStatusMap.set(sub.email, existing);
   }
 
-  // Prepare clients for upsert
+  // Prepare clients for upsert with lifecycle_stage
   const clientsToUpsert: Array<{
     email: string;
     status: string;
+    lifecycle_stage: LifecycleStage;
     trial_started_at: string | null;
     converted_at: string | null;
     last_sync: string;
@@ -581,11 +660,25 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
       clientStatus = 'inactive';
     }
 
+    // Calculate lifecycle stage using the function
+    const history: ClientHistory = {
+      hasSubscription: true,
+      hasTrialPlan: data.isTrial,
+      hasActivePaidPlan: data.isActivePaid,
+      hasPaidTransaction: data.hasPaid,
+      hasFailedTransaction: false,
+      hasExpiredOrCanceledSubscription: data.isExpiredOrCanceled && !data.isActivePaid,
+      latestSubscriptionStatus: data.latestStatus
+    };
+    
+    const lifecycle = calculateLifecycleStage(history);
+
     clientsToUpsert.push({
       email,
       status: clientStatus,
+      lifecycle_stage: lifecycle,
       trial_started_at: data.trialStarted ? new Date(data.trialStarted).toISOString() : existingClient?.trial_started_at || null,
-      converted_at: data.isConverted && data.convertedAt ? new Date(data.convertedAt).toISOString() : existingClient?.converted_at || null,
+      converted_at: data.isActivePaid && data.convertedAt ? new Date(data.convertedAt).toISOString() : existingClient?.converted_at || null,
       last_sync: new Date().toISOString()
     });
 
@@ -596,7 +689,6 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
     }
   }
 
-  // Batch upsert clients
   if (clientsToUpsert.length > 0) {
     const batchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
@@ -615,35 +707,215 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
   return result;
 }
 
+// ============= Stripe CSV Processing =============
+
+export async function processPaymentCSV(
+  csvText: string, 
+  source: 'stripe' | 'paypal'
+): Promise<ProcessingResult> {
+  if (source === 'paypal') {
+    return processPayPalCSV(csvText);
+  }
+  
+  const result: ProcessingResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    transactionsCreated: 0,
+    transactionsSkipped: 0,
+    errors: []
+  };
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
+  });
+
+  interface ParsedStripeRow {
+    email: string;
+    transactionId: string;
+    amount: number;
+    status: string;
+    date: string;
+  }
+
+  const parsedRowsMap = new Map<string, ParsedStripeRow>();
+
+  for (const row of parsed.data as Record<string, string>[]) {
+    const email = row['email']?.trim() || row['Email']?.trim() || row['customer_email']?.trim();
+    const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim() || 
+                          row['payment_intent']?.trim() || row['PaymentIntent ID']?.trim();
+    const rawAmount = row['amount']?.trim() || row['Amount']?.trim() || '0';
+    const status = row['status']?.trim() || row['Status']?.trim() || 'pending';
+    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || 
+                 row['Created date (UTC)']?.trim() || new Date().toISOString();
+
+    if (!email || !transactionId) continue;
+
+    if (parsedRowsMap.has(transactionId)) {
+      result.transactionsSkipped++;
+      continue;
+    }
+
+    // Stripe unified_payments.csv: amount is in dollars (19.50), multiply by 100
+    const amountCents = parseCurrency(rawAmount, false);
+    parsedRowsMap.set(transactionId, { email, transactionId, amount: amountCents, status, date });
+  }
+
+  const parsedRows = Array.from(parsedRowsMap.values());
+  console.log(`[Stripe CSV] Parsed ${parsedRows.length} valid rows`);
+
+  const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails);
+
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Aggregate payments per email
+  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean; hasPaid: boolean }>();
+  for (const row of parsedRows) {
+    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false, hasPaid: false };
+    const isPaid = row.status === 'succeeded' || row.status === 'paid';
+    if (isPaid) {
+      existing.paidAmountCents += row.amount;
+      existing.hasPaid = true;
+    }
+    if (row.status === 'failed') {
+      existing.hasFailed = true;
+    }
+    emailPayments.set(row.email, existing);
+  }
+
+  const clientsToUpsert: Array<{
+    email: string;
+    payment_status: string;
+    total_paid: number;
+    status: string;
+    lifecycle_stage: LifecycleStage;
+    last_sync: string;
+  }> = [];
+
+  for (const [email, payments] of emailPayments) {
+    const existingClient = clientMap.get(email);
+    const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
+    
+    let paymentStatus = existingClient?.payment_status || 'none';
+    if (payments.hasPaid) {
+      paymentStatus = 'paid';
+    } else if (payments.hasFailed && paymentStatus !== 'paid') {
+      paymentStatus = 'failed';
+    }
+
+    const history: ClientHistory = {
+      hasSubscription: false,
+      hasTrialPlan: false,
+      hasActivePaidPlan: false,
+      hasPaidTransaction: payments.hasPaid || (existingClient?.payment_status === 'paid'),
+      hasFailedTransaction: payments.hasFailed,
+      hasExpiredOrCanceledSubscription: false,
+      latestSubscriptionStatus: null
+    };
+    
+    const lifecycle = calculateLifecycleStage(history);
+
+    clientsToUpsert.push({
+      email,
+      payment_status: paymentStatus,
+      total_paid: newTotalPaid,
+      status: existingClient?.status || 'active',
+      lifecycle_stage: lifecycle,
+      last_sync: new Date().toISOString()
+    });
+
+    if (existingClient) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  if (clientsToUpsert.length > 0) {
+    const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert clients: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...clientBatchResult.allErrors);
+  }
+
+  // Prepare transactions - use CLEAN transaction ID
+  const transactionsToUpsert = parsedRows.map(row => ({
+    customer_email: row.email,
+    amount: row.amount, // Already in cents
+    status: row.status,
+    source: 'stripe',
+    external_transaction_id: row.transactionId, // CLEAN ID
+    stripe_payment_intent_id: row.transactionId, // CLEAN ID for Stripe
+    stripe_created_at: new Date(row.date).toISOString(),
+    currency: 'usd',
+    failure_code: row.status === 'failed' ? 'payment_failed' : null,
+    failure_message: row.status === 'failed' ? 'Pago fallido' : null
+  }));
+
+  if (transactionsToUpsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('transactions')
+        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.transactionsCreated = txBatchResult.totalSuccess;
+    result.errors.push(...txBatchResult.allErrors);
+  }
+
+  return result;
+}
+
+// ============= Legacy function =============
+
+export async function processWebCSV(csvText: string): Promise<ProcessingResult> {
+  return processWebUsersCSV(csvText);
+}
+
 // ============= Metrics Calculation =============
 
 export async function getMetrics(): Promise<DashboardMetrics> {
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  today.setHours(23, 59, 59, 999);
   
-  // Calculate first day of current month
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const firstDayOfMonthISO = firstDayOfMonth.toISOString();
   
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  // ============= KPI 1: Ventas del MES (with deduplication) =============
+  // ============= KPI 1: Monthly Sales (ONLY paid status, amounts in cents) =============
   
-  // Fetch from DB - already deduplicated by stripe_payment_intent_id
   const { data: monthTransactions } = await supabase
     .from('transactions')
     .select('id, amount, status, currency, stripe_created_at, source, stripe_payment_intent_id')
     .gte('stripe_created_at', firstDayOfMonthISO)
-    .in('status', ['succeeded', 'paid']);
+    .in('status', ['succeeded', 'paid']); // ONLY count paid transactions
 
-  // Create a Set of transaction IDs from DB to avoid double counting
   const dbTransactionIds = new Set(monthTransactions?.map(t => t.stripe_payment_intent_id) || []);
 
   let salesMonthUSD = 0;
   let salesMonthMXN = 0;
 
   for (const tx of monthTransactions || []) {
+    // All amounts stored in CENTS, divide by 100 for display
     const amountInCurrency = tx.amount / 100;
     if (tx.currency?.toLowerCase() === 'mxn') {
       salesMonthMXN += amountInCurrency;
@@ -652,18 +924,15 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     }
   }
 
-  // Add PayPal from cache only if NOT already in DB (deduplicated by transaction ID)
-  // Note: Cache amounts are now in CENTS
+  // Add PayPal from cache only if NOT already in DB
   for (const [txId, tx] of paypalTransactionsCache) {
     const txDate = new Date(tx.date);
     
-    // Only count if: this month, paid, and not already in DB
     if (txDate >= firstDayOfMonth && txDate <= today && tx.status === 'paid') {
       const paypalPaymentIntentId = `paypal_${txId}`;
       if (!dbTransactionIds.has(paypalPaymentIntentId)) {
-        // tx.amount is already in cents, convert to currency for display
-        const amountInCurrency = tx.amount / 100;
-        if (tx.amount > 50000) { // 500 USD = 50000 cents threshold for MXN
+        const amountInCurrency = tx.amount / 100; // Cache is also in cents
+        if (tx.amount > 50000) { // 500 USD threshold for MXN
           salesMonthMXN += amountInCurrency;
         } else {
           salesMonthUSD += amountInCurrency;
@@ -675,9 +944,8 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   const MXN_TO_USD = 0.05;
   const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
 
-  // ============= KPI 2: Tasa de Conversión (Fixed: track by email) =============
+  // ============= KPI 2: Conversion Rate (UNIQUE emails) =============
   
-  // Group subscriptions by email
   const emailSubscriptions = new Map<string, SubscriptionData[]>();
   for (const sub of subscriptionDataCache) {
     if (!sub.email) continue;
@@ -686,60 +954,51 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     emailSubscriptions.set(sub.email, existing);
   }
 
-  // CRITICAL FIX #4: Count UNIQUE emails for trials, not rows
   const trialEmails = new Set<string>();
   const convertedEmails = new Set<string>();
-
-  // Trial keywords: Trial, Prueba, Gratis, Demo, Free
-  const trialKeywords = ['trial', 'prueba', 'gratis', 'demo', 'free'];
 
   // First pass: identify UNIQUE trial emails
   for (const sub of subscriptionDataCache) {
     if (!sub.email) continue;
     const planLower = sub.planName.toLowerCase();
-    const isTrial = trialKeywords.some(keyword => planLower.includes(keyword));
+    const isTrial = TRIAL_KEYWORDS.some(keyword => planLower.includes(keyword));
     if (isTrial) {
       trialEmails.add(sub.email);
     }
   }
 
-  // Second pass: count conversions (same email with active paid plan)
+  // Second pass: count conversions
   for (const email of trialEmails) {
     const subs = emailSubscriptions.get(email) || [];
     const hasActivePaidPlan = subs.some(sub => {
       const statusLower = sub.status.toLowerCase();
       const planLower = sub.planName.toLowerCase();
-      const isTrialPlan = trialKeywords.some(keyword => planLower.includes(keyword));
-      return statusLower === 'active' && !isTrialPlan;
+      const isTrialPlan = TRIAL_KEYWORDS.some(keyword => planLower.includes(keyword));
+      return (statusLower === 'active' || statusLower === 'activo') && !isTrialPlan;
     });
     if (hasActivePaidPlan) {
       convertedEmails.add(email);
     }
   }
 
-  // Use SET SIZE for unique counts
   const trialCount = trialEmails.size;
   const convertedCount = convertedEmails.size;
-
   const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
-  // ============= KPI 3: Churn / Bajas (Fixed: use Expires At column) =============
+  // ============= KPI 3: Churn =============
   
   let churnCount = 0;
 
   for (const sub of subscriptionDataCache) {
     const statusLower = sub.status.toLowerCase();
     
-    // Only count expired or canceled subscriptions
     if (statusLower === 'expired' || statusLower === 'canceled' || statusLower === 'pastdue') {
-      // Use expiresAt instead of createdAt for churn calculation
       if (sub.expiresAt) {
         const expiresDate = new Date(sub.expiresAt);
         if (!isNaN(expiresDate.getTime()) && expiresDate >= thirtyDaysAgo && expiresDate <= today) {
           churnCount++;
         }
       } else if (sub.createdAt) {
-        // Fallback to createdAt if expiresAt not available
         const createdDate = new Date(sub.createdAt);
         if (!isNaN(createdDate.getTime()) && createdDate >= thirtyDaysAgo) {
           churnCount++;
@@ -748,27 +1007,23 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     }
   }
 
-  // ============= Recovery List (Fixed: include requires_payment_method and requires_action) =============
+  // ============= Recovery List =============
   
-  // Query for ALL failed statuses including Stripe technical statuses
   const { data: failedTransactions } = await supabase
     .from('transactions')
     .select('customer_email, amount, source, status, failure_code')
     .in('status', ['failed', 'canceled']);
 
-  // Also get transactions where failure_code indicates requires_payment_method or requires_action
   const { data: pendingPaymentTransactions } = await supabase
     .from('transactions')
     .select('customer_email, amount, source, status, failure_code')
     .in('failure_code', ['requires_payment_method', 'requires_action', 'requires_confirmation']);
 
-  // Combine both queries
   const allFailedTransactions = [
     ...(failedTransactions || []),
     ...(pendingPaymentTransactions || [])
   ];
 
-  // Deduplicate by customer_email + amount to avoid counting same transaction twice
   const seenFailedTx = new Set<string>();
   const uniqueFailedTransactions = allFailedTransactions.filter(tx => {
     const key = `${tx.customer_email}_${tx.amount}_${tx.failure_code}`;
@@ -788,7 +1043,7 @@ export async function getMetrics(): Promise<DashboardMetrics> {
       if (!failedAmounts[tx.customer_email]) {
         failedAmounts[tx.customer_email] = { amount: 0, source: tx.source || 'stripe' };
       }
-      failedAmounts[tx.customer_email].amount += tx.amount / 100;
+      failedAmounts[tx.customer_email].amount += tx.amount / 100; // Convert cents to dollars
     }
   }
 
@@ -799,7 +1054,7 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     } else {
       failedAmounts[tx.email].source = 'stripe/paypal';
     }
-    failedAmounts[tx.email].amount += tx.amount;
+    failedAmounts[tx.email].amount += tx.amount / 100; // Convert cents to dollars
   }
 
   const recoveryList: RecoveryClient[] = [];
@@ -849,176 +1104,4 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     churnCount,
     recoveryList
   };
-}
-
-// ============= Legacy function for backward compatibility =============
-
-export async function processWebCSV(csvText: string): Promise<ProcessingResult> {
-  return processWebUsersCSV(csvText);
-}
-
-export async function processPaymentCSV(
-  csvText: string, 
-  source: 'stripe' | 'paypal'
-): Promise<ProcessingResult> {
-  if (source === 'paypal') {
-    return processPayPalCSV(csvText);
-  }
-  
-  // For Stripe CSV, use optimized batch processing with deduplication
-  const result: ProcessingResult = {
-    clientsCreated: 0,
-    clientsUpdated: 0,
-    transactionsCreated: 0,
-    transactionsSkipped: 0,
-    errors: []
-  };
-
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
-
-  // Step 1: Parse all rows with deduplication
-  interface ParsedStripeRow {
-    email: string;
-    transactionId: string;
-    amount: number;
-    status: string;
-    date: string;
-  }
-
-  const parsedRowsMap = new Map<string, ParsedStripeRow>();
-
-  for (const row of parsed.data as Record<string, string>[]) {
-    const email = row['email']?.trim() || row['Email']?.trim() || row['customer_email']?.trim();
-    const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim() || row['payment_intent']?.trim();
-    const rawAmount = row['amount']?.trim() || row['Amount']?.trim() || '0';
-    const status = row['status']?.trim() || row['Status']?.trim() || 'pending';
-    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || row['Created date (UTC)']?.trim() || new Date().toISOString();
-
-    if (!email || !transactionId) continue;
-
-    // Skip duplicates within same CSV
-    if (parsedRowsMap.has(transactionId)) {
-      result.transactionsSkipped++;
-      continue;
-    }
-
-    // CRITICAL FIX #1 & #3: Use robust currency parser (returns cents)
-    const amountCents = parseCurrency(rawAmount);
-    parsedRowsMap.set(transactionId, { email, transactionId, amount: amountCents, status, date });
-  }
-
-  const parsedRows = Array.from(parsedRowsMap.values());
-
-  // Step 2: All rows will be processed (upsert mode - no skipping)
-  const newRows = parsedRows;
-
-  // Step 3: Get existing clients in batch
-  const uniqueEmails = [...new Set(newRows.map(r => r.email))];
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails);
-
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
-
-  // Step 4: Aggregate payments per email (amounts already in cents)
-  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean }>();
-  for (const row of newRows) {
-    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false };
-    const isPaid = row.status === 'succeeded' || row.status === 'paid';
-    if (isPaid) {
-      existing.paidAmountCents += row.amount; // Already in cents
-    }
-    if (row.status === 'failed') {
-      existing.hasFailed = true;
-    }
-    emailPayments.set(row.email, existing);
-  }
-
-  const clientsToUpsert: Array<{
-    email: string;
-    payment_status: string;
-    total_paid: number;
-    status: string;
-    last_sync: string;
-  }> = [];
-
-  for (const [email, payments] of emailPayments) {
-    const existingClient = clientMap.get(email);
-    // total_paid stored in dollars for display
-    const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
-    
-    let paymentStatus = existingClient?.payment_status || 'none';
-    if (payments.paidAmountCents > 0) {
-      paymentStatus = 'paid';
-    } else if (payments.hasFailed && paymentStatus !== 'paid') {
-      paymentStatus = 'failed';
-    }
-
-    clientsToUpsert.push({
-      email,
-      payment_status: paymentStatus,
-      total_paid: newTotalPaid,
-      status: existingClient?.status || 'active',
-      last_sync: new Date().toISOString()
-    });
-
-    if (existingClient) {
-      result.clientsUpdated++;
-    } else {
-      result.clientsCreated++;
-    }
-  }
-
-  // Step 5: Batch upsert clients
-  if (clientsToUpsert.length > 0) {
-    const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
-      const { error } = await supabase
-        .from('clients')
-        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
-      
-      if (error) {
-        return { success: 0, errors: [`Error batch upsert clients: ${error.message}`] };
-      }
-      return { success: batch.length, errors: [] };
-    });
-    result.errors.push(...clientBatchResult.allErrors);
-  }
-
-  // Step 6: Prepare transactions for batch UPSERT
-  // CRITICAL FIX #1 & #2: Amount already in cents, use clean transaction ID
-  const transactionsToUpsert = newRows.map(row => ({
-    customer_email: row.email,
-    amount: row.amount, // Already in cents from parseCurrency
-    status: row.status,
-    source: 'stripe',
-    external_transaction_id: row.transactionId, // Clean ID, no prefix
-    stripe_payment_intent_id: row.transactionId, // Use clean ID for Stripe
-    stripe_created_at: new Date(row.date).toISOString(),
-    failure_code: row.status === 'failed' ? 'payment_failed' : null,
-    failure_message: row.status === 'failed' ? 'Payment failed' : null
-  }));
-
-  // Step 7: Batch UPSERT transactions (force update on conflict)
-  if (transactionsToUpsert.length > 0) {
-    const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
-      const { error } = await supabase
-        .from('transactions')
-        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
-      
-      if (error) {
-        return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
-      }
-      return { success: batch.length, errors: [] };
-    });
-    result.transactionsCreated = txBatchResult.totalSuccess;
-    result.errors.push(...txBatchResult.allErrors);
-  }
-
-  return result;
 }

@@ -16,6 +16,9 @@ export interface DashboardMetrics {
     amount: number;
     source: string;
   }>;
+  // New lifecycle counts
+  leadCount: number;
+  customerCount: number;
 }
 
 const defaultMetrics: DashboardMetrics = {
@@ -26,7 +29,9 @@ const defaultMetrics: DashboardMetrics = {
   trialCount: 0,
   convertedCount: 0,
   churnCount: 0,
-  recoveryList: []
+  recoveryList: [],
+  leadCount: 0,
+  customerCount: 0
 };
 
 export function useMetrics() {
@@ -39,17 +44,17 @@ export function useMetrics() {
       const now = new Date();
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       
-      // Fetch monthly sales from transactions table
+      // Fetch monthly sales - ONLY count 'succeeded' and 'paid' status
       const { data: monthlyTransactions } = await supabase
         .from('transactions')
         .select('amount, currency, status')
         .gte('stripe_created_at', firstDayOfMonth.toISOString())
-        .in('status', ['succeeded', 'paid']);
+        .in('status', ['succeeded', 'paid']); // ONLY paid transactions
 
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
 
-      // CRITICAL FIX #1: All amounts are stored in CENTS, divide by 100 for display
+      // All amounts stored in CENTS, divide by 100 for display
       for (const tx of monthlyTransactions || []) {
         const amountInCurrency = tx.amount / 100;
         if (tx.currency?.toLowerCase() === 'mxn') {
@@ -62,7 +67,7 @@ export function useMetrics() {
       const MXN_TO_USD = 0.05;
       const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
 
-      // Fetch failed transactions for recovery list
+      // Fetch failed transactions for recovery list (EXCLUDE paid/succeeded)
       const { data: failedTransactions } = await supabase
         .from('transactions')
         .select('customer_email, amount, source, failure_code')
@@ -73,7 +78,7 @@ export function useMetrics() {
       for (const tx of failedTransactions || []) {
         if (!tx.customer_email) continue;
         const existing = failedByEmail.get(tx.customer_email) || { amount: 0, source: tx.source || 'unknown' };
-        // CRITICAL FIX #1: Amount is in cents, convert to dollars for display
+        // Amount is in cents, convert to dollars for display
         existing.amount += tx.amount / 100;
         if (tx.source && existing.source !== tx.source) {
           existing.source = 'stripe/paypal';
@@ -123,20 +128,46 @@ export function useMetrics() {
       // Sort by amount descending
       recoveryList.sort((a, b) => b.amount - a.amount);
 
-      // CRITICAL FIX #4: Fetch unique trial/converted counts from clients table
+      // Fetch lifecycle stage counts from clients table
       const { data: clientsData } = await supabase
         .from('clients')
-        .select('email, status, trial_started_at, converted_at');
+        .select('email, status, trial_started_at, converted_at, lifecycle_stage');
       
-      // Count unique emails with trial
+      // Count unique emails by lifecycle stage
       const trialEmails = new Set<string>();
       const convertedEmails = new Set<string>();
+      let leadCount = 0;
+      let customerCount = 0;
+      let churnCount = 0;
       
       for (const client of clientsData || []) {
-        if (client.trial_started_at && client.email) {
+        if (!client.email) continue;
+        
+        const stage = client.lifecycle_stage as string;
+        
+        switch (stage) {
+          case 'LEAD':
+            leadCount++;
+            break;
+          case 'TRIAL':
+            trialEmails.add(client.email);
+            break;
+          case 'CUSTOMER':
+            customerCount++;
+            if (client.converted_at) {
+              convertedEmails.add(client.email);
+            }
+            break;
+          case 'CHURN':
+            churnCount++;
+            break;
+        }
+        
+        // Also track trial_started_at for conversion rate
+        if (client.trial_started_at) {
           trialEmails.add(client.email);
         }
-        if (client.converted_at && client.email) {
+        if (client.converted_at) {
           convertedEmails.add(client.email);
         }
       }
@@ -145,15 +176,6 @@ export function useMetrics() {
       const convertedCount = convertedEmails.size;
       const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
-      // Churn count from clients
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      
-      const { count: churnCount } = await supabase
-        .from('clients')
-        .select('*', { count: 'exact', head: true })
-        .in('status', ['inactive', 'Canceled', 'Expired', 'Churned']);
-
       setMetrics({
         salesMonthUSD,
         salesMonthMXN,
@@ -161,8 +183,10 @@ export function useMetrics() {
         conversionRate,
         trialCount,
         convertedCount,
-        churnCount: churnCount || 0,
-        recoveryList
+        churnCount,
+        recoveryList,
+        leadCount,
+        customerCount
       });
     } catch (error) {
       console.error('Error fetching metrics:', error);
