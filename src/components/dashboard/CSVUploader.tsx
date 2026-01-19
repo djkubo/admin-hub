@@ -38,11 +38,16 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       const lines = text.split('\n');
       const firstLine = lines[0]?.toLowerCase() || '';
       
+      console.log(`[CSV Detection] File: ${file.name}`);
+      console.log(`[CSV Detection] Headers: ${firstLine.substring(0, 200)}...`);
+      
       // PayPal detection: unique Spanish column names or "Bruto" column
       if (firstLine.includes('correo electrónico del remitente') || 
           firstLine.includes('from email address') ||
           firstLine.includes('bruto') ||
-          firstLine.includes('id. de transacción')) {
+          firstLine.includes('id. de transacción') ||
+          firstLine.includes('transaction id')) {
+        console.log(`[CSV Detection] Detected as: PayPal`);
         return 'paypal';
       }
       
@@ -50,35 +55,55 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       if (firstLine.includes('payment_intent') ||
           firstLine.includes('created (utc)') ||
           firstLine.includes('created date (utc)') ||
-          (firstLine.includes('amount') && firstLine.includes('status') && firstLine.includes('id'))) {
+          (firstLine.includes('amount') && firstLine.includes('status') && firstLine.includes('id') && !firstLine.includes('plan'))) {
+        console.log(`[CSV Detection] Detected as: Stripe`);
         return 'stripe';
       }
       
-      // Subscriptions detection: has Plan Name column
+      // Subscriptions detection: has Plan Name or Expires At columns
       if (firstLine.includes('plan name') || 
           firstLine.includes('plan_name') ||
-          (firstLine.includes('expires at') && firstLine.includes('status'))) {
+          firstLine.includes('plan ') ||
+          firstLine.includes('expires at') ||
+          firstLine.includes('expiration') ||
+          firstLine.includes('subscription')) {
+        console.log(`[CSV Detection] Detected as: Subscriptions`);
         return 'subscriptions';
       }
       
-      // Web users detection: has typical user columns
-      if (firstLine.includes('role') || 
-          firstLine.includes('subscription plan') ||
-          (firstLine.includes('email') && (firstLine.includes('nombre') || firstLine.includes('telefono') || firstLine.includes('phone')))) {
+      // Web users detection: has typical user columns (email + name/phone but no payment columns)
+      if ((firstLine.includes('email') || firstLine.includes('correo')) && 
+          (firstLine.includes('nombre') || firstLine.includes('name') || 
+           firstLine.includes('telefono') || firstLine.includes('phone') ||
+           firstLine.includes('role') || firstLine.includes('usuario'))) {
+        console.log(`[CSV Detection] Detected as: Web Users`);
         return 'web';
       }
       
       // Fallback to filename patterns
-      if (lowerName.includes('download') || lowerName.includes('paypal')) return 'paypal';
-      if (lowerName.includes('subscription') || lowerName.includes('suscripcion')) return 'subscriptions';
-      if (lowerName.includes('stripe') || lowerName.includes('payment') || lowerName.includes('unified')) return 'stripe';
-      if (lowerName.includes('user') || lowerName.includes('usuario')) return 'web';
+      if (lowerName.includes('download') || lowerName.includes('paypal')) {
+        console.log(`[CSV Detection] Filename fallback: PayPal`);
+        return 'paypal';
+      }
+      if (lowerName.includes('subscription') || lowerName.includes('suscripcion') || lowerName.includes('plan')) {
+        console.log(`[CSV Detection] Filename fallback: Subscriptions`);
+        return 'subscriptions';
+      }
+      if (lowerName.includes('stripe') || lowerName.includes('payment') || lowerName.includes('unified')) {
+        console.log(`[CSV Detection] Filename fallback: Stripe`);
+        return 'stripe';
+      }
+      if (lowerName.includes('user') || lowerName.includes('usuario')) {
+        console.log(`[CSV Detection] Filename fallback: Web Users`);
+        return 'web';
+      }
       
     } catch (e) {
       console.error('Error reading file for detection:', e);
     }
     
     // Default to web users (safest fallback)
+    console.log(`[CSV Detection] Default fallback: Web Users`);
     return 'web';
   };
 
@@ -132,15 +157,20 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         const text = await file.file.text();
 
         if (file.type === 'subscriptions') {
-          const subs = processSubscriptionsCSV(text);
+          const subsResult = await processSubscriptionsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
               ...f, 
               status: 'done', 
-              subscriptionCount: subs.length 
+              result: subsResult,
+              subscriptionCount: subsResult.clientsCreated + subsResult.clientsUpdated
             } : f
           ));
-          toast.success(`${file.name}: ${subs.length} suscripciones procesadas`);
+          toast.success(`${file.name}: ${subsResult.clientsCreated + subsResult.clientsUpdated} suscripciones procesadas`);
+          
+          if (subsResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${subsResult.errors.length} errores`);
+          }
         } else {
           let result: ProcessingResult;
 

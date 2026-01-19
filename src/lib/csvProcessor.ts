@@ -299,7 +299,7 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     transform: (value) => value?.trim() || ''
   });
 
-  // Step 1: Parse all rows
+  // Step 1: Parse all rows with expanded column detection
   interface ParsedWebUser {
     email: string;
     phone: string | null;
@@ -307,15 +307,38 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
   }
 
   const parsedRows: ParsedWebUser[] = [];
+  const headers = Object.keys(parsed.data[0] || {});
+  console.log(`[Web Users CSV] Headers detected: ${headers.join(', ')}`);
 
   for (const row of parsed.data as Record<string, string>[]) {
-    const email = row['Email']?.trim() || row['email']?.trim() || row['Correo']?.trim();
-    const phone = row['Telefono']?.trim() || row['telefono']?.trim() || row['Phone']?.trim() || row['Teléfono']?.trim() || null;
-    const fullName = row['Nombre']?.trim() || row['nombre']?.trim() || row['Name']?.trim() || row['Nombre completo']?.trim() || null;
+    // Expanded email detection
+    const email = row['Email']?.trim() || row['email']?.trim() || 
+                  row['Correo']?.trim() || row['correo']?.trim() ||
+                  row['E-mail']?.trim() || row['e-mail']?.trim() ||
+                  row['Correo electrónico']?.trim() || row['correo electrónico']?.trim() ||
+                  row['User Email']?.trim() || row['user_email']?.trim() || '';
+    
+    // Expanded phone detection
+    const phone = row['Telefono']?.trim() || row['telefono']?.trim() || 
+                  row['Phone']?.trim() || row['phone']?.trim() ||
+                  row['Teléfono']?.trim() || row['teléfono']?.trim() ||
+                  row['Tel']?.trim() || row['tel']?.trim() ||
+                  row['Celular']?.trim() || row['celular']?.trim() ||
+                  row['Mobile']?.trim() || row['mobile']?.trim() || null;
+    
+    // Expanded name detection
+    const fullName = row['Nombre']?.trim() || row['nombre']?.trim() || 
+                     row['Name']?.trim() || row['name']?.trim() ||
+                     row['Nombre completo']?.trim() || row['nombre completo']?.trim() ||
+                     row['Full Name']?.trim() || row['full_name']?.trim() ||
+                     row['FullName']?.trim() || row['fullname']?.trim() ||
+                     row['Usuario']?.trim() || row['usuario']?.trim() || null;
 
     if (!email) continue;
     parsedRows.push({ email, phone, fullName });
   }
+
+  console.log(`[Web Users CSV] Parsed ${parsedRows.length} valid users from CSV`);
 
   // Step 2: Get existing clients in batch
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
@@ -386,9 +409,17 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
   return result;
 }
 
-// ============= Subscriptions CSV Processing =============
+// ============= Subscriptions CSV Processing (NOW SAVES TO DB!) =============
 
-export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
+export async function processSubscriptionsCSV(csvText: string): Promise<ProcessingResult> {
+  const result: ProcessingResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    transactionsCreated: 0,
+    transactionsSkipped: 0,
+    errors: []
+  };
+
   const parsed = Papa.parse(csvText, {
     header: true,
     skipEmptyLines: 'greedy',
@@ -398,26 +429,131 @@ export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
 
   subscriptionDataCache = [];
 
+  interface ParsedSubscription {
+    email: string;
+    planName: string;
+    status: string;
+    createdAt: string;
+    expiresAt: string;
+  }
+
+  const parsedRows: ParsedSubscription[] = [];
+
   for (const row of parsed.data as Record<string, string>[]) {
-    const planName = row['Plan Name']?.trim() || row['plan_name']?.trim() || '';
+    const planName = row['Plan Name']?.trim() || row['plan_name']?.trim() || row['Plan']?.trim() || '';
     const status = row['Status']?.trim() || row['status']?.trim() || '';
     const createdAt = row['Created At (CDMX)']?.trim() || row['Created At']?.trim() || row['created_at']?.trim() || '';
-    // NEW: Parse Expires At for churn calculation
     const expiresAt = row['Expires At (CDMX)']?.trim() || row['Expires At']?.trim() || row['expires_at']?.trim() || row['Expiration Date']?.trim() || '';
-    const email = row['Email']?.trim() || row['email']?.trim() || '';
+    const email = row['Email']?.trim() || row['email']?.trim() || row['Correo']?.trim() || '';
 
-    if (planName && status) {
-      subscriptionDataCache.push({
-        email,
-        planName,
-        status,
-        createdAt,
-        expiresAt
-      });
+    if (email && planName) {
+      parsedRows.push({ email, planName, status, createdAt, expiresAt });
+      subscriptionDataCache.push({ email, planName, status, createdAt, expiresAt });
     }
   }
 
-  return subscriptionDataCache;
+  console.log(`[Subscriptions CSV] Parsed ${parsedRows.length} valid subscriptions`);
+
+  // Get unique emails
+  const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
+  
+  // Fetch existing clients
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails.slice(0, 1000)); // Supabase limit
+
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Determine trial vs converted status per email
+  const emailStatusMap = new Map<string, { 
+    isTrial: boolean; 
+    isConverted: boolean; 
+    trialStarted: string | null;
+    convertedAt: string | null;
+    latestStatus: string;
+  }>();
+
+  const trialKeywords = ['trial', 'prueba', 'gratis', 'demo', 'free'];
+  const paidKeywords = ['active', 'activo', 'paid', 'pagado', 'premium', 'pro', 'básico', 'basico'];
+
+  for (const sub of parsedRows) {
+    const planLower = sub.planName.toLowerCase();
+    const statusLower = sub.status.toLowerCase();
+    const isTrial = trialKeywords.some(k => planLower.includes(k));
+    const isPaid = paidKeywords.some(k => planLower.includes(k) || statusLower.includes(k));
+
+    const existing = emailStatusMap.get(sub.email) || {
+      isTrial: false,
+      isConverted: false,
+      trialStarted: null,
+      convertedAt: null,
+      latestStatus: sub.status
+    };
+
+    if (isTrial) {
+      existing.isTrial = true;
+      existing.trialStarted = existing.trialStarted || sub.createdAt;
+    }
+    if (isPaid && !isTrial) {
+      existing.isConverted = true;
+      existing.convertedAt = existing.convertedAt || sub.createdAt;
+    }
+    existing.latestStatus = sub.status;
+    emailStatusMap.set(sub.email, existing);
+  }
+
+  // Prepare clients for upsert
+  const clientsToUpsert: Array<{
+    email: string;
+    status: string;
+    trial_started_at: string | null;
+    converted_at: string | null;
+    last_sync: string;
+  }> = [];
+
+  for (const [email, data] of emailStatusMap) {
+    const existingClient = clientMap.get(email);
+    
+    let clientStatus = existingClient?.status || 'active';
+    if (data.latestStatus.toLowerCase().includes('expired') || 
+        data.latestStatus.toLowerCase().includes('canceled') ||
+        data.latestStatus.toLowerCase().includes('cancelled')) {
+      clientStatus = 'inactive';
+    }
+
+    clientsToUpsert.push({
+      email,
+      status: clientStatus,
+      trial_started_at: data.trialStarted ? new Date(data.trialStarted).toISOString() : existingClient?.trial_started_at || null,
+      converted_at: data.isConverted && data.convertedAt ? new Date(data.convertedAt).toISOString() : existingClient?.converted_at || null,
+      last_sync: new Date().toISOString()
+    });
+
+    if (existingClient) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  // Batch upsert clients
+  if (clientsToUpsert.length > 0) {
+    const batchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        console.error('[Subscriptions CSV] Upsert error:', error);
+        return { success: 0, errors: [`Error batch upsert subscriptions: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...batchResult.allErrors);
+  }
+
+  return result;
 }
 
 // ============= Metrics Calculation =============
