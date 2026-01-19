@@ -1,5 +1,5 @@
-import { DollarSign, TrendingUp, TrendingDown, Users, UserMinus } from 'lucide-react';
-import { DashboardMetrics } from '@/lib/csvProcessor';
+import { DollarSign, TrendingUp, TrendingDown, Users, UserMinus, Calendar } from 'lucide-react';
+import { DashboardMetrics } from '@/hooks/useMetrics';
 import { IncomingRevenueCard } from './IncomingRevenueCard';
 
 interface MetricsCardsProps {
@@ -13,6 +13,9 @@ interface MetricsCardsProps {
 }
 
 const defaultMetrics: DashboardMetrics = {
+  salesTodayUSD: 0,
+  salesTodayMXN: 0,
+  salesTodayTotal: 0,
   salesMonthUSD: 0,
   salesMonthMXN: 0,
   salesMonthTotal: 0,
@@ -20,13 +23,23 @@ const defaultMetrics: DashboardMetrics = {
   trialCount: 0,
   convertedCount: 0,
   churnCount: 0,
-  recoveryList: []
+  recoveryList: [],
+  leadCount: 0,
+  customerCount: 0
 };
 
 export function MetricsCards({ metrics: propMetrics, invoiceData }: MetricsCardsProps) {
   // Ensure metrics is always defined with fallback values
   const metrics = propMetrics || defaultMetrics;
   const cards = [
+    {
+      title: 'Ventas Hoy',
+      value: `$${metrics.salesTodayTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: `$${metrics.salesTodayUSD.toFixed(2)} USD + $${metrics.salesTodayMXN.toFixed(2)} MXN`,
+      icon: Calendar,
+      trend: metrics.salesTodayTotal > 0 ? 'up' : 'neutral',
+      color: 'cyan'
+    },
     {
       title: 'Ventas del Mes',
       value: `$${metrics.salesMonthTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
@@ -44,17 +57,9 @@ export function MetricsCards({ metrics: propMetrics, invoiceData }: MetricsCards
       color: 'blue'
     },
     {
-      title: 'Total Trials',
-      value: metrics.trialCount.toString(),
-      subtitle: 'Usuarios en periodo de prueba',
-      icon: Users,
-      trend: 'neutral',
-      color: 'purple'
-    },
-    {
-      title: 'Churn (30 días)',
+      title: 'Churn',
       value: metrics.churnCount.toString(),
-      subtitle: 'Expired + Canceled',
+      subtitle: 'Suscripciones perdidas',
       icon: UserMinus,
       trend: metrics.churnCount > 5 ? 'down' : 'neutral',
       color: 'red'
@@ -63,6 +68,12 @@ export function MetricsCards({ metrics: propMetrics, invoiceData }: MetricsCards
 
   const getColorClasses = (color: string) => {
     const colors: Record<string, { bg: string; text: string; icon: string; glow: string }> = {
+      cyan: {
+        bg: 'bg-cyan-500/10',
+        text: 'text-cyan-400',
+        icon: 'text-cyan-500',
+        glow: 'shadow-cyan-500/20'
+      },
       emerald: {
         bg: 'bg-emerald-500/10',
         text: 'text-emerald-400',
