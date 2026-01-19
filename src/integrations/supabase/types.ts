@@ -14,6 +14,68 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_insights: {
+        Row: {
+          created_at: string
+          date: string
+          id: string
+          metrics: Json | null
+          opportunities: Json | null
+          risks: Json | null
+          summary: string
+        }
+        Insert: {
+          created_at?: string
+          date: string
+          id?: string
+          metrics?: Json | null
+          opportunities?: Json | null
+          risks?: Json | null
+          summary: string
+        }
+        Update: {
+          created_at?: string
+          date?: string
+          id?: string
+          metrics?: Json | null
+          opportunities?: Json | null
+          risks?: Json | null
+          summary?: string
+        }
+        Relationships: []
+      }
+      client_events: {
+        Row: {
+          client_id: string
+          created_at: string
+          event_type: Database["public"]["Enums"]["client_event_type"]
+          id: string
+          metadata: Json | null
+        }
+        Insert: {
+          client_id: string
+          created_at?: string
+          event_type: Database["public"]["Enums"]["client_event_type"]
+          id?: string
+          metadata?: Json | null
+        }
+        Update: {
+          client_id?: string
+          created_at?: string
+          event_type?: Database["public"]["Enums"]["client_event_type"]
+          id?: string
+          metadata?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_events_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       clients: {
         Row: {
           converted_at: string | null
@@ -115,7 +177,20 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      client_event_type:
+        | "email_open"
+        | "email_click"
+        | "email_bounce"
+        | "email_sent"
+        | "payment_failed"
+        | "payment_success"
+        | "high_usage"
+        | "trial_started"
+        | "trial_converted"
+        | "churn_risk"
+        | "support_ticket"
+        | "login"
+        | "custom"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -242,6 +317,22 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      client_event_type: [
+        "email_open",
+        "email_click",
+        "email_bounce",
+        "email_sent",
+        "payment_failed",
+        "payment_success",
+        "high_usage",
+        "trial_started",
+        "trial_converted",
+        "churn_risk",
+        "support_ticket",
+        "login",
+        "custom",
+      ],
+    },
   },
 } as const
