@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
 export interface DashboardMetrics {
@@ -30,9 +30,12 @@ const defaultMetrics: DashboardMetrics = {
 };
 
 export function useMetrics() {
-  const { data: metrics = defaultMetrics, isLoading, refetch } = useQuery({
-    queryKey: ['metrics'],
-    queryFn: async (): Promise<DashboardMetrics> => {
+  const [metrics, setMetrics] = useState<DashboardMetrics>(defaultMetrics);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const fetchMetrics = useCallback(async () => {
+    setIsLoading(true);
+    try {
       const now = new Date();
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       
@@ -84,7 +87,7 @@ export function useMetrics() {
         const { data: clients } = await supabase
           .from('clients')
           .select('email, full_name, phone')
-          .in('email', failedEmails.slice(0, 100)); // Limit to 100
+          .in('email', failedEmails.slice(0, 100));
 
         for (const client of clients || []) {
           if (client.email) {
@@ -118,9 +121,7 @@ export function useMetrics() {
       // Sort by amount descending
       recoveryList.sort((a, b) => b.amount - a.amount);
 
-      // For now, trial/conversion/churn come from CSV cache (if available)
-      // These would need subscription data which we don't have in transactions
-      return {
+      setMetrics({
         salesMonthUSD,
         salesMonthMXN,
         salesMonthTotal,
@@ -129,11 +130,17 @@ export function useMetrics() {
         convertedCount: 0,
         churnCount: 0,
         recoveryList
-      };
-    },
-    staleTime: 30000, // 30 seconds
-    refetchOnWindowFocus: true,
-  });
+      });
+    } catch (error) {
+      console.error('Error fetching metrics:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
-  return { metrics, isLoading, refetch };
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
+
+  return { metrics, isLoading, refetch: fetchMetrics };
 }
