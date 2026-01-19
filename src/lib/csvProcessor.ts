@@ -19,6 +19,7 @@ export interface SubscriptionData {
   planName: string;
   status: string;
   createdAt: string;
+  expiresAt: string; // Added for churn calculation
 }
 
 export interface RecoveryClient {
@@ -42,7 +43,8 @@ export interface DashboardMetrics {
 
 // Store subscription data in memory for metrics calculation
 let subscriptionDataCache: SubscriptionData[] = [];
-let paypalTransactionsCache: { email: string; amount: number; status: string; date: Date }[] = [];
+// Use Map with transaction ID as key to prevent duplicates
+let paypalTransactionsCache: Map<string, { email: string; amount: number; status: string; date: Date }> = new Map();
 
 // ============= Helper: Process in batches =============
 
@@ -64,7 +66,7 @@ async function processBatches<T>(
   return { totalSuccess, allErrors };
 }
 
-// ============= PayPal CSV Processing (Optimized with Batch Upsert) =============
+// ============= PayPal CSV Processing (Optimized with Batch Upsert + Deduplication) =============
 
 export async function processPayPalCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -75,16 +77,13 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     errors: []
   };
 
-  // Reset cache
-  paypalTransactionsCache = [];
-
   const parsed = Papa.parse(csvText, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (header) => header.trim()
   });
 
-  // Step 1: Parse all rows and prepare data
+  // Step 1: Parse all rows and prepare data with deduplication by transaction ID
   interface ParsedPayPalRow {
     email: string;
     amount: number;
@@ -94,16 +93,23 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     currency: string;
   }
 
-  const parsedRows: ParsedPayPalRow[] = [];
+  const parsedRowsMap = new Map<string, ParsedPayPalRow>();
 
   for (const row of parsed.data as Record<string, string>[]) {
     const email = row['Correo electrónico del remitente']?.trim() || row['From Email Address']?.trim();
     const rawAmount = row['Bruto']?.trim() || row['Gross']?.trim() || '0';
     const rawStatus = row['Estado']?.trim() || row['Status']?.trim() || '';
     const rawDate = row['Fecha y Hora']?.trim() || row['Date Time']?.trim() || row['Fecha']?.trim();
-    const transactionId = row['Id. de transacción']?.trim() || row['Transaction ID']?.trim() || `paypal_${Date.now()}_${Math.random()}`;
+    const transactionId = row['Id. de transacción']?.trim() || row['Transaction ID']?.trim();
 
-    if (!email) continue;
+    // Skip if no email or no transaction ID
+    if (!email || !transactionId) continue;
+
+    // Skip if already in map (deduplicate within same CSV)
+    if (parsedRowsMap.has(transactionId)) {
+      result.transactionsSkipped++;
+      continue;
+    }
 
     const cleanedAmount = rawAmount.replace(/[^\d.-]/g, '').replace(',', '.');
     const amount = parseFloat(cleanedAmount) || 0;
@@ -128,11 +134,15 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    parsedRows.push({ email, amount, status, transactionDate, transactionId, currency });
-    paypalTransactionsCache.push({ email, amount, status, date: transactionDate });
+    parsedRowsMap.set(transactionId, { email, amount, status, transactionDate, transactionId, currency });
+    
+    // Update cache with deduplication by transaction ID
+    paypalTransactionsCache.set(transactionId, { email, amount, status, date: transactionDate });
   }
 
-  // Step 2: Get existing transaction IDs in batch to check duplicates
+  const parsedRows = Array.from(parsedRowsMap.values());
+
+  // Step 2: Get existing transaction IDs in batch to check duplicates in DB
   const transactionIds = parsedRows.map(r => r.transactionId);
   const { data: existingTransactions } = await supabase
     .from('transactions')
@@ -142,9 +152,9 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
 
-  // Filter out duplicates
+  // Filter out duplicates that already exist in DB
   const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
-  result.transactionsSkipped = parsedRows.length - newRows.length;
+  result.transactionsSkipped += parsedRows.length - newRows.length;
 
   // Step 3: Get all unique emails and fetch existing clients in batch
   const uniqueEmails = [...new Set(newRows.map(r => r.email))];
@@ -370,6 +380,8 @@ export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
     const planName = row['Plan Name']?.trim() || row['plan_name']?.trim() || '';
     const status = row['Status']?.trim() || row['status']?.trim() || '';
     const createdAt = row['Created At (CDMX)']?.trim() || row['Created At']?.trim() || row['created_at']?.trim() || '';
+    // NEW: Parse Expires At for churn calculation
+    const expiresAt = row['Expires At (CDMX)']?.trim() || row['Expires At']?.trim() || row['expires_at']?.trim() || row['Expiration Date']?.trim() || '';
     const email = row['Email']?.trim() || row['email']?.trim() || '';
 
     if (planName && status) {
@@ -377,7 +389,8 @@ export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
         email,
         planName,
         status,
-        createdAt
+        createdAt,
+        expiresAt
       });
     }
   }
@@ -395,13 +408,17 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  // ============= KPI 1: Ventas Netas HOY =============
+  // ============= KPI 1: Ventas Netas HOY (with deduplication) =============
   
+  // Fetch from DB - already deduplicated by stripe_payment_intent_id
   const { data: todayTransactions } = await supabase
     .from('transactions')
-    .select('amount, status, currency, stripe_created_at, source')
+    .select('id, amount, status, currency, stripe_created_at, source, stripe_payment_intent_id')
     .gte('stripe_created_at', todayISO)
     .in('status', ['succeeded', 'paid']);
+
+  // Create a Set of transaction IDs from DB to avoid double counting
+  const dbTransactionIds = new Set(todayTransactions?.map(t => t.stripe_payment_intent_id) || []);
 
   let salesTodayUSD = 0;
   let salesTodayMXN = 0;
@@ -415,22 +432,20 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     }
   }
 
-  // Also add any PayPal from memory cache (for freshly uploaded CSVs not yet persisted)
-  const todayPayPalCache = paypalTransactionsCache.filter(tx => {
+  // Add PayPal from cache only if NOT already in DB (deduplicated by transaction ID)
+  for (const [txId, tx] of paypalTransactionsCache) {
     const txDate = new Date(tx.date);
     txDate.setHours(0, 0, 0, 0);
-    return txDate.getTime() === today.getTime() && tx.status === 'paid';
-  });
-
-  for (const tx of todayPayPalCache) {
-    const alreadyInDB = todayTransactions?.some(dbTx => 
-      dbTx.source === 'paypal' && Math.abs(dbTx.amount / 100 - tx.amount) < 0.01
-    );
-    if (!alreadyInDB) {
-      if (tx.amount > 500) {
-        salesTodayMXN += tx.amount;
-      } else {
-        salesTodayUSD += tx.amount;
+    
+    // Only count if: today, paid, and not already in DB
+    if (txDate.getTime() === today.getTime() && tx.status === 'paid') {
+      const paypalPaymentIntentId = `paypal_${txId}`;
+      if (!dbTransactionIds.has(paypalPaymentIntentId)) {
+        if (tx.amount > 500) {
+          salesTodayMXN += tx.amount;
+        } else {
+          salesTodayUSD += tx.amount;
+        }
       }
     }
   }
@@ -438,58 +453,109 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   const MXN_TO_USD = 0.05;
   const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
 
-  // ============= KPI 2: Tasa de Conversión =============
+  // ============= KPI 2: Tasa de Conversión (Fixed: track by email) =============
   
+  // Group subscriptions by email
+  const emailSubscriptions = new Map<string, SubscriptionData[]>();
+  for (const sub of subscriptionDataCache) {
+    if (!sub.email) continue;
+    const existing = emailSubscriptions.get(sub.email) || [];
+    existing.push(sub);
+    emailSubscriptions.set(sub.email, existing);
+  }
+
   let trialCount = 0;
   let convertedCount = 0;
+  const trialEmails = new Set<string>();
 
+  // First pass: identify trial users
   for (const sub of subscriptionDataCache) {
     const planLower = sub.planName.toLowerCase();
-    const statusLower = sub.status.toLowerCase();
-    
     if (planLower.includes('trial') || planLower.includes('prueba')) {
       trialCount++;
+      if (sub.email) {
+        trialEmails.add(sub.email);
+      }
     }
-    
-    if (statusLower === 'active' && !planLower.includes('trial') && !planLower.includes('prueba')) {
+  }
+
+  // Second pass: count conversions (same email with active paid plan)
+  for (const email of trialEmails) {
+    const subs = emailSubscriptions.get(email) || [];
+    const hasActivePaidPlan = subs.some(sub => {
+      const statusLower = sub.status.toLowerCase();
+      const planLower = sub.planName.toLowerCase();
+      return statusLower === 'active' && 
+             !planLower.includes('trial') && 
+             !planLower.includes('prueba');
+    });
+    if (hasActivePaidPlan) {
       convertedCount++;
     }
   }
 
   const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
-  // ============= KPI 3: Churn / Bajas =============
+  // ============= KPI 3: Churn / Bajas (Fixed: use Expires At column) =============
   
   let churnCount = 0;
 
   for (const sub of subscriptionDataCache) {
     const statusLower = sub.status.toLowerCase();
     
+    // Only count expired or canceled subscriptions
     if (statusLower === 'expired' || statusLower === 'canceled' || statusLower === 'pastdue') {
-      if (sub.createdAt) {
-        const createdDate = new Date(sub.createdAt);
-        if (createdDate >= thirtyDaysAgo) {
+      // Use expiresAt instead of createdAt for churn calculation
+      if (sub.expiresAt) {
+        const expiresDate = new Date(sub.expiresAt);
+        if (!isNaN(expiresDate.getTime()) && expiresDate >= thirtyDaysAgo && expiresDate <= today) {
           churnCount++;
         }
-      } else {
-        churnCount++;
+      } else if (sub.createdAt) {
+        // Fallback to createdAt if expiresAt not available
+        const createdDate = new Date(sub.createdAt);
+        if (!isNaN(createdDate.getTime()) && createdDate >= thirtyDaysAgo) {
+          churnCount++;
+        }
       }
     }
   }
 
-  // ============= Recovery List =============
+  // ============= Recovery List (Fixed: include requires_payment_method and requires_action) =============
   
+  // Query for ALL failed statuses including Stripe technical statuses
   const { data: failedTransactions } = await supabase
     .from('transactions')
-    .select('customer_email, amount, source')
+    .select('customer_email, amount, source, status, failure_code')
     .in('status', ['failed', 'canceled']);
 
-  const failedPayPal = paypalTransactionsCache.filter(tx => tx.status === 'failed');
+  // Also get transactions where failure_code indicates requires_payment_method or requires_action
+  const { data: pendingPaymentTransactions } = await supabase
+    .from('transactions')
+    .select('customer_email, amount, source, status, failure_code')
+    .in('failure_code', ['requires_payment_method', 'requires_action', 'requires_confirmation']);
+
+  // Combine both queries
+  const allFailedTransactions = [
+    ...(failedTransactions || []),
+    ...(pendingPaymentTransactions || [])
+  ];
+
+  // Deduplicate by customer_email + amount to avoid counting same transaction twice
+  const seenFailedTx = new Set<string>();
+  const uniqueFailedTransactions = allFailedTransactions.filter(tx => {
+    const key = `${tx.customer_email}_${tx.amount}_${tx.failure_code}`;
+    if (seenFailedTx.has(key)) return false;
+    seenFailedTx.add(key);
+    return true;
+  });
+
+  const failedPayPal = Array.from(paypalTransactionsCache.values()).filter(tx => tx.status === 'failed');
 
   const allFailedEmails = new Set<string>();
   const failedAmounts: Record<string, { amount: number; source: string }> = {};
 
-  for (const tx of failedTransactions || []) {
+  for (const tx of uniqueFailedTransactions) {
     if (tx.customer_email) {
       allFailedEmails.add(tx.customer_email);
       if (!failedAmounts[tx.customer_email]) {
@@ -572,7 +638,7 @@ export async function processPaymentCSV(
     return processPayPalCSV(csvText);
   }
   
-  // For Stripe CSV, use optimized batch processing
+  // For Stripe CSV, use optimized batch processing with deduplication
   const result: ProcessingResult = {
     clientsCreated: 0,
     clientsUpdated: 0,
@@ -587,7 +653,7 @@ export async function processPaymentCSV(
     transformHeader: (header) => header.trim()
   });
 
-  // Step 1: Parse all rows
+  // Step 1: Parse all rows with deduplication
   interface ParsedStripeRow {
     email: string;
     transactionId: string;
@@ -596,22 +662,30 @@ export async function processPaymentCSV(
     date: string;
   }
 
-  const parsedRows: ParsedStripeRow[] = [];
+  const parsedRowsMap = new Map<string, ParsedStripeRow>();
 
   for (const row of parsed.data as Record<string, string>[]) {
     const email = row['email']?.trim() || row['Email']?.trim() || row['customer_email']?.trim();
-    const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim();
+    const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim() || row['payment_intent']?.trim();
     const rawAmount = row['amount']?.trim() || row['Amount']?.trim() || '0';
     const status = row['status']?.trim() || row['Status']?.trim() || 'pending';
-    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || new Date().toISOString();
+    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || row['Created date (UTC)']?.trim() || new Date().toISOString();
 
     if (!email || !transactionId) continue;
 
+    // Skip duplicates within same CSV
+    if (parsedRowsMap.has(transactionId)) {
+      result.transactionsSkipped++;
+      continue;
+    }
+
     const amount = parseFloat(rawAmount.replace(/[^\d.-]/g, '')) || 0;
-    parsedRows.push({ email, transactionId, amount, status, date });
+    parsedRowsMap.set(transactionId, { email, transactionId, amount, status, date });
   }
 
-  // Step 2: Check for existing transactions in batch
+  const parsedRows = Array.from(parsedRowsMap.values());
+
+  // Step 2: Check for existing transactions in DB
   const transactionIds = parsedRows.map(r => r.transactionId);
   const { data: existingTransactions } = await supabase
     .from('transactions')
@@ -621,7 +695,7 @@ export async function processPaymentCSV(
 
   const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
   const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
-  result.transactionsSkipped = parsedRows.length - newRows.length;
+  result.transactionsSkipped += parsedRows.length - newRows.length;
 
   // Step 3: Get existing clients in batch
   const uniqueEmails = [...new Set(newRows.map(r => r.email))];
