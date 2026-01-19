@@ -189,12 +189,14 @@ Deno.serve(async (req) => {
 
     console.log(`✅ Fetched ${allTransactions.length} total transactions from PayPal`);
 
-    // Process transactions
+    // Process transactions with DEDUPLICATION
     let paidCount = 0;
     let failedCount = 0;
     let skippedNoEmail = 0;
+    let skippedDuplicate = 0;
 
-    const transactions: Array<{
+    // Use Map to deduplicate by transaction ID
+    const transactionsMap = new Map<string, {
       stripe_payment_intent_id: string;
       customer_email: string;
       amount: number;
@@ -205,7 +207,7 @@ Deno.serve(async (req) => {
       stripe_created_at: string;
       source: string;
       metadata: Record<string, unknown>;
-    }> = [];
+    }>();
 
     const clientsMap = new Map<string, {
       email: string;
@@ -224,6 +226,15 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      const transactionId = info.transaction_id;
+      const paymentIntentId = `paypal_${transactionId}`;
+
+      // Skip if we already have this transaction (CRITICAL: prevents duplicate constraint error)
+      if (transactionsMap.has(paymentIntentId)) {
+        skippedDuplicate++;
+        continue;
+      }
+
       const amount = parseFloat(info.transaction_amount?.value || '0');
       const currency = info.transaction_amount?.currency_code || 'USD';
       const status = mapPayPalStatus(info.transaction_status, info.transaction_event_code);
@@ -238,8 +249,8 @@ Deno.serve(async (req) => {
         failedCount++;
       }
 
-      transactions.push({
-        stripe_payment_intent_id: `paypal_${info.transaction_id}`,
+      transactionsMap.set(paymentIntentId, {
+        stripe_payment_intent_id: paymentIntentId,
         customer_email: email,
         amount: Math.round(Math.abs(amount) * 100), // Convert to cents, use absolute value
         currency: currency.toLowerCase(),
@@ -276,7 +287,10 @@ Deno.serve(async (req) => {
       clientsMap.set(email, existing);
     }
 
-    console.log(`📊 Stats: ${paidCount} paid, ${failedCount} failed, ${skippedNoEmail} skipped (no email)`);
+    // Convert Map to Array (already deduplicated)
+    const transactions = Array.from(transactionsMap.values());
+
+    console.log(`📊 Stats: ${paidCount} paid, ${failedCount} failed, ${skippedNoEmail} skipped (no email), ${skippedDuplicate} duplicates removed`);
 
     // Batch upsert transactions
     let syncedCount = 0;

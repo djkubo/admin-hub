@@ -56,13 +56,32 @@ export function APISyncPanel() {
     }
   };
 
-  const syncPayPal = async (fetchAll = false) => {
+  const syncPayPal = async (mode: 'last24h' | 'last31d' | 'all6months') => {
     setPaypalSyncing(true);
     setPaypalResult(null);
     
     try {
-      // For fetchAll, we need to fetch in date chunks (PayPal limits to 31 days per request)
-      if (fetchAll) {
+      if (mode === 'last24h') {
+        // Sync last 24 hours only
+        const now = new Date();
+        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        
+        const { data, error } = await supabase.functions.invoke('fetch-paypal', {
+          body: { 
+            fetchAll: true, // Fetch all pages within the date range
+            startDate: yesterday.toISOString(),
+            endDate: now.toISOString()
+          }
+        });
+
+        if (error) throw error;
+        
+        setPaypalResult(data);
+        
+        if (data.success) {
+          toast.success(`PayPal (24h): ${data.synced_transactions} transacciones sincronizadas`);
+        }
+      } else if (mode === 'all6months') {
         // Fetch last 6 months in 31-day chunks
         const now = new Date();
         let allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
@@ -96,8 +115,9 @@ export function APISyncPanel() {
         });
         toast.success(`PayPal: ${allResults.synced_transactions} transacciones sincronizadas (6 meses)`);
       } else {
+        // Default: last 31 days
         const { data, error } = await supabase.functions.invoke('fetch-paypal', {
-          body: { fetchAll: false }
+          body: { fetchAll: true }
         });
 
         if (error) throw error;
@@ -126,7 +146,7 @@ export function APISyncPanel() {
   const syncAll = async () => {
     await Promise.all([
       syncStripe(true),
-      syncPayPal(true)
+      syncPayPal('all6months')
     ]);
   };
 
@@ -195,22 +215,22 @@ export function APISyncPanel() {
         </div>
 
         {/* PayPal Sync */}
-        <div className="flex items-center justify-between p-4 bg-[#0f1225] rounded-lg border border-gray-700/50">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
-              <span className="text-yellow-400 font-bold text-sm">P</span>
+        <div className="p-4 bg-[#0f1225] rounded-lg border border-gray-700/50 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
+                <span className="text-yellow-400 font-bold text-sm">P</span>
+              </div>
+              <div>
+                <h4 className="font-medium text-white">PayPal</h4>
+                <p className="text-xs text-gray-400">
+                  {paypalResult?.success 
+                    ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
+                    : 'Sincroniza desde PayPal API'
+                  }
+                </p>
+              </div>
             </div>
-            <div>
-              <h4 className="font-medium text-white">PayPal</h4>
-              <p className="text-xs text-gray-400">
-                {paypalResult?.success 
-                  ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
-                  : 'Sincroniza últimos 31 días o 6 meses completos'
-                }
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
             {paypalResult && (
               <Badge variant={paypalResult.success ? 'default' : 'destructive'} className="gap-1">
                 {paypalResult.success ? (
@@ -220,21 +240,34 @@ export function APISyncPanel() {
                 )}
               </Badge>
             )}
+          </div>
+          
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => syncPayPal(false)}
+              onClick={() => syncPayPal('last24h')}
               disabled={paypalSyncing}
-              className="gap-2"
+              className="gap-2 flex-1 min-w-[120px] border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
+            >
+              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Últimas 24h
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => syncPayPal('last31d')}
+              disabled={paypalSyncing}
+              className="gap-2 flex-1 min-w-[120px]"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Últimos 31 días
             </Button>
             <Button
               size="sm"
-              onClick={() => syncPayPal(true)}
+              onClick={() => syncPayPal('all6months')}
               disabled={paypalSyncing}
-              className="gap-2 bg-yellow-600 hover:bg-yellow-700"
+              className="gap-2 flex-1 min-w-[120px] bg-yellow-600 hover:bg-yellow-700"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               6 Meses
