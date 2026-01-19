@@ -45,9 +45,12 @@ export function useInvoices() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      const excludedMsg = data.excludedCount > 0 
+        ? ` (${data.excludedCount} excluidas por suscripción cancelada)`
+        : "";
       toast({
         title: "Facturas sincronizadas",
-        description: `${data.draftCount} borradores, ${data.openCount} abiertas. Total: $${(data.totalPending / 100).toFixed(2)}`,
+        description: `${data.draftCount} borradores, ${data.openCount} abiertas.${excludedMsg} Total: $${(data.totalPending / 100).toFixed(2)}`,
       });
     },
     onError: (error) => {
