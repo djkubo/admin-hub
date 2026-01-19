@@ -129,13 +129,19 @@ serve(async (req) => {
     };
     
     // Check for card/payment errors (Stripe SDK throws these for declined cards)
+    const errorMsg = stripeError.message?.toLowerCase() || "";
     const isPaymentError = 
       stripeError.type === "StripeCardError" ||
+      stripeError.type === "StripeInvalidRequestError" ||
       stripeError.code === "card_declined" ||
       stripeError.code === "insufficient_funds" ||
-      stripeError.message?.includes("insufficient funds") ||
-      stripeError.message?.includes("card") ||
-      stripeError.message?.includes("declined");
+      stripeError.code === "payment_intent_authentication_failure" ||
+      errorMsg.includes("insufficient funds") ||
+      errorMsg.includes("sufficient funds") ||
+      errorMsg.includes("card") ||
+      errorMsg.includes("declined") ||
+      errorMsg.includes("payment") ||
+      errorMsg.includes("charge");
     
     if (isPaymentError) {
       return new Response(
