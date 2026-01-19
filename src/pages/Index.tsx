@@ -13,6 +13,7 @@ import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel";
 import { AIInsightsWidget } from "@/components/dashboard/AIInsightsWidget";
 import { PendingInvoicesTable } from "@/components/dashboard/PendingInvoicesTable";
+import { SmartRecoveryCard } from "@/components/dashboard/SmartRecoveryCard";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
@@ -191,6 +192,9 @@ const Index = () => {
         onSync={() => syncInvoices.mutate()}
         isSyncing={syncInvoices.isPending}
       />
+
+      {/* Smart Recovery - Herramienta ofensiva de recuperación */}
+      <SmartRecoveryCard />
 
       {/* AI Insights Widget - El Oráculo */}
       <AIInsightsWidget />
