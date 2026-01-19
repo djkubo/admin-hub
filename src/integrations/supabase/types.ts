@@ -80,43 +80,55 @@ export type Database = {
         Row: {
           converted_at: string | null
           created_at: string | null
+          customer_metadata: Json | null
           email: string | null
           full_name: string | null
           id: string
+          is_delinquent: boolean | null
           last_sync: string | null
           lifecycle_stage: string | null
           payment_status: string | null
           phone: string | null
           status: string | null
+          stripe_customer_id: string | null
           total_paid: number | null
+          total_spend: number | null
           trial_started_at: string | null
         }
         Insert: {
           converted_at?: string | null
           created_at?: string | null
+          customer_metadata?: Json | null
           email?: string | null
           full_name?: string | null
           id?: string
+          is_delinquent?: boolean | null
           last_sync?: string | null
           lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
           status?: string | null
+          stripe_customer_id?: string | null
           total_paid?: number | null
+          total_spend?: number | null
           trial_started_at?: string | null
         }
         Update: {
           converted_at?: string | null
           created_at?: string | null
+          customer_metadata?: Json | null
           email?: string | null
           full_name?: string | null
           id?: string
+          is_delinquent?: boolean | null
           last_sync?: string | null
           lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
           status?: string | null
+          stripe_customer_id?: string | null
           total_paid?: number | null
+          total_spend?: number | null
           trial_started_at?: string | null
         }
         Relationships: []

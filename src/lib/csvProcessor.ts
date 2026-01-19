@@ -922,6 +922,247 @@ export async function processWebCSV(csvText: string): Promise<ProcessingResult> 
   return processWebUsersCSV(csvText);
 }
 
+// ============= Stripe Unified Customers CSV Processing (LTV Master Data) =============
+
+export interface StripeCustomerResult extends ProcessingResult {
+  duplicatesResolved: number;
+  totalLTV: number;
+  delinquentCount: number;
+}
+
+/**
+ * Processes unified_customers.csv from Stripe.
+ * This file contains customer data with Total Spend (LTV) and Delinquent status.
+ * 
+ * DEDUPLICATION LOGIC:
+ * - Multiple rows can exist for the same email
+ * - We group by normalized email (lowercase, trimmed)
+ * - Select the "canonical" customer: the one with the highest Total Spend
+ * - Use that customer's stripe_customer_id and total_spend as the source of truth
+ */
+export async function processStripeCustomersCSV(csvText: string): Promise<StripeCustomerResult> {
+  const result: StripeCustomerResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    transactionsCreated: 0,
+    transactionsSkipped: 0,
+    errors: [],
+    duplicatesResolved: 0,
+    totalLTV: 0,
+    delinquentCount: 0
+  };
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
+  });
+
+  interface StripeCustomerRow {
+    email: string;
+    stripeCustomerId: string;
+    name: string | null;
+    totalSpend: number; // in cents
+    isDelinquent: boolean;
+    metadata: Record<string, string>;
+    created: string | null;
+  }
+
+  // Parse all rows
+  const allRows: StripeCustomerRow[] = [];
+
+  for (const row of parsed.data as Record<string, string>[]) {
+    // Flexible column mapping for Stripe exports
+    const email = (
+      row['Email'] || row['email'] || 
+      row['Customer Email'] || row['customer_email'] ||
+      ''
+    ).toLowerCase().trim();
+
+    const stripeCustomerId = 
+      row['Customer ID'] || row['customer_id'] || 
+      row['ID'] || row['id'] ||
+      row['Stripe Customer ID'] || '';
+
+    const name = 
+      row['Name'] || row['name'] || 
+      row['Customer Name'] || row['customer_name'] || null;
+
+    // Total Spend - check if it's in cents or dollars
+    const rawTotalSpend = row['Total Spend'] || row['total_spend'] || 
+                          row['Total Amount'] || row['Lifetime Value'] || 
+                          row['LTV'] || '0';
+    
+    // Stripe exports Total Spend in dollars, convert to cents
+    const totalSpendCents = parseCurrency(rawTotalSpend, false);
+
+    // Delinquent status
+    const rawDelinquent = row['Delinquent'] || row['delinquent'] || 
+                          row['Is Delinquent'] || row['is_delinquent'] || 'false';
+    const isDelinquent = rawDelinquent.toLowerCase() === 'true' || rawDelinquent === '1';
+
+    // Created date
+    const created = row['Created'] || row['created'] || 
+                    row['Created (UTC)'] || row['Created Date'] || null;
+
+    // Extract metadata columns (funnel data, etc.)
+    const metadata: Record<string, string> = {};
+    const metadataKeys = ['Funnel', 'Source', 'Campaign', 'UTM Source', 'UTM Medium', 'UTM Campaign'];
+    for (const key of metadataKeys) {
+      if (row[key] && row[key].trim()) {
+        metadata[key.toLowerCase().replace(/\s+/g, '_')] = row[key].trim();
+      }
+    }
+
+    if (!email || !stripeCustomerId) continue;
+
+    allRows.push({
+      email,
+      stripeCustomerId: stripeCustomerId.trim(),
+      name: name?.trim() || null,
+      totalSpend: totalSpendCents,
+      isDelinquent,
+      metadata,
+      created
+    });
+  }
+
+  console.log(`[Stripe Customers CSV] Parsed ${allRows.length} customer rows`);
+
+  // GROUP BY EMAIL and select canonical customer (highest Total Spend)
+  const emailGroups = new Map<string, StripeCustomerRow[]>();
+  
+  for (const row of allRows) {
+    const existing = emailGroups.get(row.email) || [];
+    existing.push(row);
+    emailGroups.set(row.email, existing);
+  }
+
+  // Track duplicates
+  let duplicateEmailsFound = 0;
+  for (const [_email, rows] of emailGroups) {
+    if (rows.length > 1) {
+      duplicateEmailsFound++;
+      result.duplicatesResolved += rows.length - 1; // We keep 1, discard the rest
+    }
+  }
+  
+  console.log(`[Stripe Customers CSV] Found ${duplicateEmailsFound} emails with duplicates, resolving ${result.duplicatesResolved} duplicate entries`);
+
+  // Select canonical customer per email
+  const canonicalCustomers: StripeCustomerRow[] = [];
+  
+  for (const [_email, rows] of emailGroups) {
+    // Sort by totalSpend descending, take the highest
+    rows.sort((a, b) => b.totalSpend - a.totalSpend);
+    const canonical = rows[0];
+    
+    // Merge metadata from all rows (in case different rows have different metadata)
+    const mergedMetadata = { ...canonical.metadata };
+    for (const row of rows.slice(1)) {
+      for (const [key, value] of Object.entries(row.metadata)) {
+        if (!mergedMetadata[key] && value) {
+          mergedMetadata[key] = value;
+        }
+      }
+    }
+    
+    canonicalCustomers.push({
+      ...canonical,
+      metadata: mergedMetadata
+    });
+  }
+
+  console.log(`[Stripe Customers CSV] ${canonicalCustomers.length} canonical customers after deduplication`);
+
+  // Get existing clients from DB
+  const uniqueEmails = canonicalCustomers.map(c => c.email);
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails.slice(0, 1000));
+
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Prepare upsert batch
+  const clientsToUpsert: Array<{
+    email: string;
+    full_name: string | null;
+    stripe_customer_id: string;
+    total_spend: number;
+    is_delinquent: boolean;
+    customer_metadata: Record<string, string>;
+    lifecycle_stage: LifecycleStage;
+    last_sync: string;
+  }> = [];
+
+  for (const customer of canonicalCustomers) {
+    const existingClient = clientMap.get(customer.email);
+    
+    // Determine lifecycle stage based on spend and delinquent status
+    let lifecycle: LifecycleStage = 'LEAD';
+    
+    if (customer.totalSpend > 0) {
+      lifecycle = 'CUSTOMER';
+    }
+    
+    // Keep existing lifecycle if it's already CUSTOMER or TRIAL (don't demote)
+    const currentStage = existingClient?.lifecycle_stage as LifecycleStage | null;
+    if (currentStage === 'CUSTOMER' || (currentStage === 'TRIAL' && lifecycle !== 'CUSTOMER')) {
+      lifecycle = currentStage;
+    }
+
+    // If delinquent and was customer, mark as CHURN
+    if (customer.isDelinquent && lifecycle === 'CUSTOMER') {
+      lifecycle = 'CHURN';
+    }
+
+    result.totalLTV += customer.totalSpend;
+    if (customer.isDelinquent) {
+      result.delinquentCount++;
+    }
+
+    clientsToUpsert.push({
+      email: customer.email,
+      full_name: customer.name || existingClient?.full_name || null,
+      stripe_customer_id: customer.stripeCustomerId,
+      total_spend: customer.totalSpend, // Already in cents
+      is_delinquent: customer.isDelinquent,
+      customer_metadata: customer.metadata,
+      lifecycle_stage: lifecycle,
+      last_sync: new Date().toISOString()
+    });
+
+    if (existingClient) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  // Batch upsert
+  if (clientsToUpsert.length > 0) {
+    const batchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        console.error('[Stripe Customers CSV] Upsert error:', error);
+        return { success: 0, errors: [`Error batch upsert customers: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...batchResult.allErrors);
+  }
+
+  console.log(`[Stripe Customers CSV] Complete: ${result.clientsCreated} created, ${result.clientsUpdated} updated, ${result.duplicatesResolved} duplicates resolved`);
+  console.log(`[Stripe Customers CSV] Total LTV: $${(result.totalLTV / 100).toFixed(2)}, Delinquent: ${result.delinquentCount}`);
+
+  return result;
+}
+
 // ============= Metrics Calculation =============
 
 export async function getMetrics(): Promise<DashboardMetrics> {
