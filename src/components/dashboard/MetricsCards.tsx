@@ -5,7 +5,20 @@ interface MetricsCardsProps {
   metrics: DashboardMetrics;
 }
 
-export function MetricsCards({ metrics }: MetricsCardsProps) {
+const defaultMetrics: DashboardMetrics = {
+  salesTodayUSD: 0,
+  salesTodayMXN: 0,
+  salesTodayTotal: 0,
+  conversionRate: 0,
+  trialCount: 0,
+  convertedCount: 0,
+  churnCount: 0,
+  recoveryList: []
+};
+
+export function MetricsCards({ metrics: propMetrics }: MetricsCardsProps) {
+  // Ensure metrics is always defined with fallback values
+  const metrics = propMetrics || defaultMetrics;
   const cards = [
     {
       title: 'Ventas Netas Hoy',
