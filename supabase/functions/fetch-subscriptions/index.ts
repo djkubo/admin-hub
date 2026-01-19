@@ -61,7 +61,7 @@ serve(async (req) => {
     while (hasMore) {
       const params: any = {
         limit,
-        expand: ["data.items.data.price.product", "data.customer"],
+        expand: ["data.customer", "data.plan.product"],
       };
       if (startingAfter) params.starting_after = startingAfter;
 
@@ -86,20 +86,29 @@ serve(async (req) => {
 
     // Transform and upsert
     const records = subscriptions.map((sub) => {
-      const item = sub.items?.data?.[0];
-      const price = item?.price;
-      const product = price?.product;
       const customer = sub.customer;
+      const plan = sub.plan;
+      const product = plan?.product;
+
+      // Get plan name from product or plan nickname
+      let planName = "Unknown Plan";
+      if (typeof product === "object" && product?.name) {
+        planName = product.name;
+      } else if (plan?.nickname) {
+        planName = plan.nickname;
+      } else if (typeof product === "string") {
+        planName = product; // product ID as fallback
+      }
 
       return {
         stripe_subscription_id: sub.id,
         stripe_customer_id: typeof customer === "string" ? customer : customer?.id,
         customer_email: typeof customer === "object" ? customer?.email : null,
-        plan_name: typeof product === "object" ? product?.name : price?.nickname || "Unknown Plan",
-        plan_id: price?.id || null,
-        amount: price?.unit_amount || 0,
-        currency: price?.currency || "usd",
-        interval: price?.recurring?.interval || "month",
+        plan_name: planName,
+        plan_id: plan?.id || null,
+        amount: plan?.amount || 0,
+        currency: plan?.currency || "usd",
+        interval: plan?.interval || "month",
         status: sub.status,
         current_period_start: sub.current_period_start 
           ? new Date(sub.current_period_start * 1000).toISOString() 
