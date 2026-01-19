@@ -6,9 +6,9 @@ interface MetricsCardsProps {
 }
 
 const defaultMetrics: DashboardMetrics = {
-  salesTodayUSD: 0,
-  salesTodayMXN: 0,
-  salesTodayTotal: 0,
+  salesMonthUSD: 0,
+  salesMonthMXN: 0,
+  salesMonthTotal: 0,
   conversionRate: 0,
   trialCount: 0,
   convertedCount: 0,
@@ -21,9 +21,9 @@ export function MetricsCards({ metrics: propMetrics }: MetricsCardsProps) {
   const metrics = propMetrics || defaultMetrics;
   const cards = [
     {
-      title: 'Ventas Netas Hoy',
-      value: `$${metrics.salesTodayTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      subtitle: `$${metrics.salesTodayUSD.toFixed(2)} USD + $${metrics.salesTodayMXN.toFixed(2)} MXN`,
+      title: 'Ventas del Mes',
+      value: `$${metrics.salesMonthTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: `$${metrics.salesMonthUSD.toFixed(2)} USD + $${metrics.salesMonthMXN.toFixed(2)} MXN`,
       icon: DollarSign,
       trend: 'up',
       color: 'emerald'
