@@ -151,24 +151,27 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
       result.clientsCreated++;
     }
 
-    // Create transaction
+    // Determine currency from raw amount string
+    const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
+
+    // Create transaction - persist PayPal data to Supabase
     const { error: txError } = await supabase
       .from('transactions')
       .insert({
         customer_email: email,
-        amount: Math.round(amount * 100),
-        status: status === 'paid' ? 'succeeded' : status,
+        amount: Math.round(amount * 100), // Store in cents like Stripe
+        status: status, // Use mapped status directly: 'paid' or 'failed'
         source: 'paypal',
         external_transaction_id: transactionId,
         stripe_payment_intent_id: `paypal_${transactionId}`,
         stripe_created_at: transactionDate.toISOString(),
-        currency: rawAmount.includes('MXN') || rawAmount.includes('$') ? 'mxn' : 'usd',
+        currency: currency,
         failure_code: status === 'failed' ? 'payment_failed' : null,
-        failure_message: status === 'failed' ? 'Pago rechazado/declinado' : null
+        failure_message: status === 'failed' ? 'Pago rechazado/declinado por PayPal' : null
       });
 
     if (txError) {
-      result.errors.push(`Error transaction ${transactionId}: ${txError.message}`);
+      result.errors.push(`Error guardando transacción PayPal ${transactionId}: ${txError.message}`);
     } else {
       result.transactionsCreated++;
     }
@@ -286,18 +289,17 @@ export async function getMetrics(): Promise<DashboardMetrics> {
 
   // ============= KPI 1: Ventas Netas HOY =============
   
-  // Stripe transactions from today (from DB)
-  const { data: stripeTransactions } = await supabase
+  // ALL successful transactions from today (from DB - includes both Stripe and PayPal)
+  const { data: todayTransactions } = await supabase
     .from('transactions')
-    .select('amount, status, currency, stripe_created_at')
-    .eq('source', 'stripe')
+    .select('amount, status, currency, stripe_created_at, source')
     .gte('stripe_created_at', todayISO)
     .in('status', ['succeeded', 'paid']);
 
   let salesTodayUSD = 0;
   let salesTodayMXN = 0;
 
-  for (const tx of stripeTransactions || []) {
+  for (const tx of todayTransactions || []) {
     const amountInCurrency = tx.amount / 100;
     if (tx.currency?.toLowerCase() === 'mxn') {
       salesTodayMXN += amountInCurrency;
@@ -306,19 +308,24 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     }
   }
 
-  // PayPal transactions from today (from cache)
-  const todayPayPal = paypalTransactionsCache.filter(tx => {
+  // Also add any PayPal from memory cache (for freshly uploaded CSVs not yet persisted)
+  const todayPayPalCache = paypalTransactionsCache.filter(tx => {
     const txDate = new Date(tx.date);
     txDate.setHours(0, 0, 0, 0);
     return txDate.getTime() === today.getTime() && tx.status === 'paid';
   });
 
-  // Assume PayPal is MXN unless amount suggests otherwise
-  for (const tx of todayPayPal) {
-    if (tx.amount > 500) {
-      salesTodayMXN += tx.amount;
-    } else {
-      salesTodayUSD += tx.amount;
+  for (const tx of todayPayPalCache) {
+    // Check if already in DB results to avoid double-counting
+    const alreadyInDB = todayTransactions?.some(dbTx => 
+      dbTx.source === 'paypal' && Math.abs(dbTx.amount / 100 - tx.amount) < 0.01
+    );
+    if (!alreadyInDB) {
+      if (tx.amount > 500) {
+        salesTodayMXN += tx.amount;
+      } else {
+        salesTodayUSD += tx.amount;
+      }
     }
   }
 

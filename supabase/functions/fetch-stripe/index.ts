@@ -45,12 +45,11 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log("Fetching failed payment intents from Stripe...");
+    console.log("Fetching last 100 payment intents from Stripe (all statuses)...");
 
-    // Fetch payment intents with requires_payment_method status (failed payments)
-    // Also fetch canceled ones as they often indicate payment failures
-    const failedPaymentsResponse = await fetch(
-      "https://api.stripe.com/v1/payment_intents?limit=50",
+    // Fetch the last 100 PaymentIntents regardless of status
+    const paymentsResponse = await fetch(
+      "https://api.stripe.com/v1/payment_intents?limit=100",
       {
         headers: {
           Authorization: `Bearer ${stripeSecretKey}`,
@@ -59,40 +58,50 @@ Deno.serve(async (req) => {
       }
     );
 
-    if (!failedPaymentsResponse.ok) {
-      const errorText = await failedPaymentsResponse.text();
+    if (!paymentsResponse.ok) {
+      const errorText = await paymentsResponse.text();
       console.error("Stripe API error:", errorText);
       return new Response(
         JSON.stringify({ error: "Failed to fetch from Stripe", details: errorText }),
-        { status: failedPaymentsResponse.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: paymentsResponse.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const stripeData: StripeListResponse = await failedPaymentsResponse.json();
+    const stripeData: StripeListResponse = await paymentsResponse.json();
     console.log(`Fetched ${stripeData.data.length} payment intents from Stripe`);
 
-    // Filter only failed payment intents
-    const failedPayments = stripeData.data.filter(
-      (pi) => pi.status === "requires_payment_method" || 
-              pi.status === "canceled" ||
-              pi.last_payment_error !== null
-    );
+    // Counters for summary
+    let paidCount = 0;
+    let failedCount = 0;
 
-    console.log(`Found ${failedPayments.length} failed/problematic payments`);
+    // Prepare transactions for upsert - map ALL payment intents
+    const transactions = stripeData.data.map((pi) => {
+      // Map status: succeeded → paid, everything else → failed
+      let mappedStatus: string;
+      if (pi.status === "succeeded") {
+        mappedStatus = "paid";
+        paidCount++;
+      } else {
+        mappedStatus = "failed";
+        failedCount++;
+      }
 
-    // Prepare transactions for upsert
-    const transactions = failedPayments.map((pi) => ({
-      stripe_payment_intent_id: pi.id,
-      stripe_customer_id: pi.customer,
-      customer_email: pi.receipt_email || null,
-      amount: pi.amount,
-      currency: pi.currency,
-      status: pi.status,
-      failure_code: pi.last_payment_error?.code || null,
-      failure_message: pi.last_payment_error?.message || null,
-      stripe_created_at: new Date(pi.created * 1000).toISOString(),
-      metadata: pi.metadata || {},
-    }));
+      return {
+        stripe_payment_intent_id: pi.id,
+        stripe_customer_id: pi.customer,
+        customer_email: pi.receipt_email || null,
+        amount: pi.amount,
+        currency: pi.currency,
+        status: mappedStatus,
+        failure_code: pi.last_payment_error?.code || (mappedStatus === "failed" ? pi.status : null),
+        failure_message: pi.last_payment_error?.message || (mappedStatus === "failed" ? `Status: ${pi.status}` : null),
+        stripe_created_at: new Date(pi.created * 1000).toISOString(),
+        metadata: pi.metadata || {},
+        source: "stripe",
+      };
+    });
+
+    console.log(`Processing ${paidCount} paid and ${failedCount} failed transactions`);
 
     if (transactions.length > 0) {
       // Upsert transactions (update if exists, insert if new)
@@ -118,9 +127,10 @@ Deno.serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        message: `Processed ${failedPayments.length} failed payments`,
+        message: `Processed ${transactions.length} payment intents`,
         synced_count: transactions.length,
-        total_fetched: stripeData.data.length,
+        paid_count: paidCount,
+        failed_count: failedCount,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
