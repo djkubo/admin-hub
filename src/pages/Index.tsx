@@ -29,7 +29,7 @@ const Index = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   
-  const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages } = useClients();
+  const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages, vipOnly, setVipOnly, isVip } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
   const { metrics, isLoading: _isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
   const { 
@@ -264,6 +264,9 @@ const Index = () => {
               onPageChange={setPage}
               recoveryEmails={recoveryEmails}
               recoveryAmounts={recoveryAmounts}
+              vipOnly={vipOnly}
+              onVipOnlyChange={setVipOnly}
+              isVip={isVip}
             />
           </div>
         </TabsContent>
@@ -328,6 +331,9 @@ const Index = () => {
           onPageChange={setPage}
           recoveryEmails={recoveryEmails}
           recoveryAmounts={recoveryAmounts}
+          vipOnly={vipOnly}
+          onVipOnlyChange={setVipOnly}
+          isVip={isVip}
         />
       </div>
     </div>

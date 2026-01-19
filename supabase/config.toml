@@ -23,3 +23,9 @@ verify_jwt = false
 
 [functions.sync-clients]
 verify_jwt = false
+
+[functions.create-portal-session]
+verify_jwt = false
+
+[functions.force-charge-invoice]
+verify_jwt = false

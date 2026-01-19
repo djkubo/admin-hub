@@ -11,6 +11,10 @@ export interface Client {
   status: string | null;
   payment_status: string | null;
   total_paid: number | null;
+  total_spend: number | null;
+  is_delinquent: boolean | null;
+  stripe_customer_id: string | null;
+  lifecycle_stage: string | null;
   trial_started_at: string | null;
   converted_at: string | null;
   last_sync: string | null;
@@ -18,19 +22,27 @@ export interface Client {
 }
 
 const PAGE_SIZE = 50;
+const VIP_THRESHOLD = 100000; // $1,000 USD in cents
 
 export function useClients() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [page, setPage] = useState(0);
+  const [vipOnly, setVipOnly] = useState(false);
 
   // Query for total count (exact count without downloading data)
   const { data: totalCount = 0, refetch: refetchCount } = useQuery({
-    queryKey: ["clients-count"],
+    queryKey: ["clients-count", vipOnly],
     queryFn: async () => {
-      const { count, error } = await supabase
+      let query = supabase
         .from("clients")
         .select("*", { count: "exact", head: true });
+
+      if (vipOnly) {
+        query = query.gte("total_spend", VIP_THRESHOLD);
+      }
+
+      const { count, error } = await query;
 
       if (error) throw error;
       return count || 0;
@@ -39,16 +51,23 @@ export function useClients() {
 
   // Query for paginated clients
   const { data: clients = [], isLoading, error, refetch: refetchClients } = useQuery({
-    queryKey: ["clients", page],
+    queryKey: ["clients", page, vipOnly],
     queryFn: async () => {
       const from = page * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
       
-      const { data, error } = await supabase
+      let query = supabase
         .from("clients")
         .select("*")
+        .order("total_spend", { ascending: false, nullsFirst: false })
         .order("created_at", { ascending: false })
         .range(from, to);
+
+      if (vipOnly) {
+        query = query.gte("total_spend", VIP_THRESHOLD);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       return data as Client[];
@@ -125,6 +144,9 @@ export function useClients() {
     },
   });
 
+  // Check if client is VIP (>$1000 USD lifetime spend)
+  const isVip = (client: Client) => (client.total_spend || 0) >= VIP_THRESHOLD;
+
   return {
     clients,
     isLoading,
@@ -137,5 +159,9 @@ export function useClients() {
     setPage,
     totalPages,
     pageSize: PAGE_SIZE,
+    vipOnly,
+    setVipOnly,
+    isVip,
+    VIP_THRESHOLD,
   };
 }
