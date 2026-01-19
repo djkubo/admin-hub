@@ -1,6 +1,9 @@
 import Papa from 'papaparse';
 import { supabase } from "@/integrations/supabase/client";
 
+// ============= Constants =============
+const BATCH_SIZE = 500;
+
 // ============= Interfaces =============
 
 export interface ProcessingResult {
@@ -41,7 +44,27 @@ export interface DashboardMetrics {
 let subscriptionDataCache: SubscriptionData[] = [];
 let paypalTransactionsCache: { email: string; amount: number; status: string; date: Date }[] = [];
 
-// ============= PayPal CSV Processing =============
+// ============= Helper: Process in batches =============
+
+async function processBatches<T>(
+  items: T[],
+  batchSize: number,
+  processor: (batch: T[]) => Promise<{ success: number; errors: string[] }>
+): Promise<{ totalSuccess: number; allErrors: string[] }> {
+  let totalSuccess = 0;
+  const allErrors: string[] = [];
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const result = await processor(batch);
+    totalSuccess += result.success;
+    allErrors.push(...result.errors);
+  }
+
+  return { totalSuccess, allErrors };
+}
+
+// ============= PayPal CSV Processing (Optimized with Batch Upsert) =============
 
 export async function processPayPalCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -61,8 +84,19 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     transformHeader: (header) => header.trim()
   });
 
+  // Step 1: Parse all rows and prepare data
+  interface ParsedPayPalRow {
+    email: string;
+    amount: number;
+    status: string;
+    transactionDate: Date;
+    transactionId: string;
+    currency: string;
+  }
+
+  const parsedRows: ParsedPayPalRow[] = [];
+
   for (const row of parsed.data as Record<string, string>[]) {
-    // Map PayPal columns - "Correo electrónico del remitente", "Bruto", "Estado", "Fecha y Hora"
     const email = row['Correo electrónico del remitente']?.trim() || row['From Email Address']?.trim();
     const rawAmount = row['Bruto']?.trim() || row['Gross']?.trim() || '0';
     const rawStatus = row['Estado']?.trim() || row['Status']?.trim() || '';
@@ -71,11 +105,9 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     if (!email) continue;
 
-    // Clean amount - remove currency symbols, commas, spaces
     const cleanedAmount = rawAmount.replace(/[^\d.-]/g, '').replace(',', '.');
     const amount = parseFloat(cleanedAmount) || 0;
 
-    // Map status
     let status = 'pending';
     const lowerStatus = rawStatus.toLowerCase();
     if (lowerStatus.includes('completado') || lowerStatus.includes('completed')) {
@@ -86,101 +118,140 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
       status = 'failed';
     }
 
-    // Parse date
     let transactionDate = new Date();
     if (rawDate) {
-      // Try multiple date formats
       const parsedDate = new Date(rawDate);
       if (!isNaN(parsedDate.getTime())) {
         transactionDate = parsedDate;
       }
     }
 
-    // Cache for metrics
+    const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
+
+    parsedRows.push({ email, amount, status, transactionDate, transactionId, currency });
     paypalTransactionsCache.push({ email, amount, status, date: transactionDate });
+  }
 
-    // Check for duplicate transaction
-    const { data: existingTx } = await supabase
-      .from('transactions')
-      .select('id')
-      .eq('external_transaction_id', transactionId)
-      .eq('source', 'paypal')
-      .maybeSingle();
+  // Step 2: Get existing transaction IDs in batch to check duplicates
+  const transactionIds = parsedRows.map(r => r.transactionId);
+  const { data: existingTransactions } = await supabase
+    .from('transactions')
+    .select('external_transaction_id')
+    .eq('source', 'paypal')
+    .in('external_transaction_id', transactionIds);
 
-    if (existingTx) {
-      result.transactionsSkipped++;
-      continue;
+  const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
+
+  // Filter out duplicates
+  const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
+  result.transactionsSkipped = parsedRows.length - newRows.length;
+
+  // Step 3: Get all unique emails and fetch existing clients in batch
+  const uniqueEmails = [...new Set(newRows.map(r => r.email))];
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails);
+
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Step 4: Prepare clients for upsert (batch)
+  const clientsToUpsert: Array<{
+    email: string;
+    payment_status: string;
+    total_paid: number;
+    status: string;
+    last_sync: string;
+  }> = [];
+
+  // Aggregate payments per email
+  const emailPayments = new Map<string, { paidAmount: number; hasFailed: boolean }>();
+  for (const row of newRows) {
+    const existing = emailPayments.get(row.email) || { paidAmount: 0, hasFailed: false };
+    if (row.status === 'paid') {
+      existing.paidAmount += row.amount;
     }
+    if (row.status === 'failed') {
+      existing.hasFailed = true;
+    }
+    emailPayments.set(row.email, existing);
+  }
 
-    // Upsert client
-    const { data: existingClient } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('email', email)
-      .maybeSingle();
-
-    const newTotalPaid = (existingClient?.total_paid || 0) + (status === 'paid' ? amount : 0);
-    let paymentStatus = existingClient?.payment_status || 'none';
+  for (const [email, payments] of emailPayments) {
+    const existingClient = clientMap.get(email);
+    const newTotalPaid = (existingClient?.total_paid || 0) + payments.paidAmount;
     
-    if (status === 'paid') {
+    let paymentStatus = existingClient?.payment_status || 'none';
+    if (payments.paidAmount > 0) {
       paymentStatus = 'paid';
-    } else if (status === 'failed' && paymentStatus !== 'paid') {
+    } else if (payments.hasFailed && paymentStatus !== 'paid') {
       paymentStatus = 'failed';
     }
 
+    clientsToUpsert.push({
+      email,
+      payment_status: paymentStatus,
+      total_paid: newTotalPaid,
+      status: existingClient?.status || 'active',
+      last_sync: new Date().toISOString()
+    });
+
     if (existingClient) {
-      await supabase
-        .from('clients')
-        .update({
-          payment_status: paymentStatus,
-          total_paid: newTotalPaid,
-          last_sync: new Date().toISOString()
-        })
-        .eq('email', email);
       result.clientsUpdated++;
     } else {
-      await supabase
-        .from('clients')
-        .insert({
-          email,
-          payment_status: paymentStatus,
-          total_paid: status === 'paid' ? amount : 0,
-          status: 'active',
-          last_sync: new Date().toISOString()
-        });
       result.clientsCreated++;
     }
+  }
 
-    // Determine currency from raw amount string
-    const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
+  // Step 5: Batch upsert clients
+  if (clientsToUpsert.length > 0) {
+    const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert clients: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...clientBatchResult.allErrors);
+  }
 
-    // Create transaction - persist PayPal data to Supabase
-    const { error: txError } = await supabase
-      .from('transactions')
-      .insert({
-        customer_email: email,
-        amount: Math.round(amount * 100), // Store in cents like Stripe
-        status: status, // Use mapped status directly: 'paid' or 'failed'
-        source: 'paypal',
-        external_transaction_id: transactionId,
-        stripe_payment_intent_id: `paypal_${transactionId}`,
-        stripe_created_at: transactionDate.toISOString(),
-        currency: currency,
-        failure_code: status === 'failed' ? 'payment_failed' : null,
-        failure_message: status === 'failed' ? 'Pago rechazado/declinado por PayPal' : null
-      });
+  // Step 6: Prepare transactions for batch insert
+  const transactionsToInsert = newRows.map(row => ({
+    customer_email: row.email,
+    amount: Math.round(row.amount * 100),
+    status: row.status,
+    source: 'paypal',
+    external_transaction_id: row.transactionId,
+    stripe_payment_intent_id: `paypal_${row.transactionId}`,
+    stripe_created_at: row.transactionDate.toISOString(),
+    currency: row.currency,
+    failure_code: row.status === 'failed' ? 'payment_failed' : null,
+    failure_message: row.status === 'failed' ? 'Pago rechazado/declinado por PayPal' : null
+  }));
 
-    if (txError) {
-      result.errors.push(`Error guardando transacción PayPal ${transactionId}: ${txError.message}`);
-    } else {
-      result.transactionsCreated++;
-    }
+  // Step 7: Batch insert transactions
+  if (transactionsToInsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToInsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('transactions')
+        .insert(batch);
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch insert transactions: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.transactionsCreated = txBatchResult.totalSuccess;
+    result.errors.push(...txBatchResult.allErrors);
   }
 
   return result;
 }
 
-// ============= Web Users CSV Processing =============
+// ============= Web Users CSV Processing (Optimized with Batch Upsert) =============
 
 export async function processWebUsersCSV(csvText: string): Promise<ProcessingResult> {
   const result: ProcessingResult = {
@@ -197,50 +268,88 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     transformHeader: (header) => header.trim()
   });
 
+  // Step 1: Parse all rows
+  interface ParsedWebUser {
+    email: string;
+    phone: string | null;
+    fullName: string | null;
+  }
+
+  const parsedRows: ParsedWebUser[] = [];
+
   for (const row of parsed.data as Record<string, string>[]) {
-    // Map Web columns - "Email", "Telefono", "Nombre"
     const email = row['Email']?.trim() || row['email']?.trim() || row['Correo']?.trim();
-    const phone = row['Telefono']?.trim() || row['telefono']?.trim() || row['Phone']?.trim() || row['Teléfono']?.trim();
-    const fullName = row['Nombre']?.trim() || row['nombre']?.trim() || row['Name']?.trim() || row['Nombre completo']?.trim();
+    const phone = row['Telefono']?.trim() || row['telefono']?.trim() || row['Phone']?.trim() || row['Teléfono']?.trim() || null;
+    const fullName = row['Nombre']?.trim() || row['nombre']?.trim() || row['Name']?.trim() || row['Nombre completo']?.trim() || null;
 
     if (!email) continue;
+    parsedRows.push({ email, phone, fullName });
+  }
 
-    const { data: existing } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('email', email)
-      .maybeSingle();
+  // Step 2: Get existing clients in batch
+  const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails);
 
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Step 3: Prepare clients for upsert - merge data from multiple rows with same email
+  const emailDataMap = new Map<string, ParsedWebUser>();
+  for (const row of parsedRows) {
+    const existing = emailDataMap.get(row.email);
     if (existing) {
-      const updates: Record<string, string | null> = {};
-      
-      // Always update phone if provided (critical for WhatsApp)
-      if (phone) updates.phone = phone;
-      if (fullName && !existing.full_name) updates.full_name = fullName;
-
-      if (Object.keys(updates).length > 0) {
-        const { error } = await supabase
-          .from('clients')
-          .update({ ...updates, last_sync: new Date().toISOString() })
-          .eq('email', email);
-        
-        if (error) result.errors.push(`Error updating ${email}: ${error.message}`);
-        else result.clientsUpdated++;
-      }
+      // Merge: prefer non-null values
+      emailDataMap.set(row.email, {
+        email: row.email,
+        phone: row.phone || existing.phone,
+        fullName: row.fullName || existing.fullName
+      });
     } else {
+      emailDataMap.set(row.email, row);
+    }
+  }
+
+  const clientsToUpsert: Array<{
+    email: string;
+    phone: string | null;
+    full_name: string | null;
+    status: string;
+    last_sync: string;
+  }> = [];
+
+  for (const [email, data] of emailDataMap) {
+    const existingClient = clientMap.get(email);
+    
+    clientsToUpsert.push({
+      email,
+      phone: data.phone || existingClient?.phone || null,
+      full_name: data.fullName || existingClient?.full_name || null,
+      status: existingClient?.status || 'active',
+      last_sync: new Date().toISOString()
+    });
+
+    if (existingClient) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  // Step 4: Batch upsert clients
+  if (clientsToUpsert.length > 0) {
+    const batchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
         .from('clients')
-        .insert({
-          email,
-          full_name: fullName || null,
-          phone: phone || null,
-          status: 'active',
-          last_sync: new Date().toISOString()
-        });
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
       
-      if (error) result.errors.push(`Error creating ${email}: ${error.message}`);
-      else result.clientsCreated++;
-    }
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...batchResult.allErrors);
   }
 
   return result;
@@ -258,7 +367,6 @@ export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
   subscriptionDataCache = [];
 
   for (const row of parsed.data as Record<string, string>[]) {
-    // Map Subscriptions columns - "Plan Name", "Status", "Created At (CDMX)"
     const planName = row['Plan Name']?.trim() || row['plan_name']?.trim() || '';
     const status = row['Status']?.trim() || row['status']?.trim() || '';
     const createdAt = row['Created At (CDMX)']?.trim() || row['Created At']?.trim() || row['created_at']?.trim() || '';
@@ -289,7 +397,6 @@ export async function getMetrics(): Promise<DashboardMetrics> {
 
   // ============= KPI 1: Ventas Netas HOY =============
   
-  // ALL successful transactions from today (from DB - includes both Stripe and PayPal)
   const { data: todayTransactions } = await supabase
     .from('transactions')
     .select('amount, status, currency, stripe_created_at, source')
@@ -316,7 +423,6 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   });
 
   for (const tx of todayPayPalCache) {
-    // Check if already in DB results to avoid double-counting
     const alreadyInDB = todayTransactions?.some(dbTx => 
       dbTx.source === 'paypal' && Math.abs(dbTx.amount / 100 - tx.amount) < 0.01
     );
@@ -329,8 +435,7 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     }
   }
 
-  // Convert MXN to USD (approximate rate)
-  const MXN_TO_USD = 0.05; // 1 MXN = 0.05 USD (approx 20 MXN = 1 USD)
+  const MXN_TO_USD = 0.05;
   const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
 
   // ============= KPI 2: Tasa de Conversión =============
@@ -346,7 +451,6 @@ export async function getMetrics(): Promise<DashboardMetrics> {
       trialCount++;
     }
     
-    // Count as converted if was on trial and now Active with paid plan
     if (statusLower === 'active' && !planLower.includes('trial') && !planLower.includes('prueba')) {
       convertedCount++;
     }
@@ -362,38 +466,34 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     const statusLower = sub.status.toLowerCase();
     
     if (statusLower === 'expired' || statusLower === 'canceled' || statusLower === 'pastdue') {
-      // Check if expired in last 30 days
       if (sub.createdAt) {
         const createdDate = new Date(sub.createdAt);
         if (createdDate >= thirtyDaysAgo) {
           churnCount++;
         }
       } else {
-        churnCount++; // Count it if no date available
+        churnCount++;
       }
     }
   }
 
   // ============= Recovery List =============
   
-  // Get failed transactions from DB (Stripe)
-  const { data: failedStripeTransactions } = await supabase
+  const { data: failedTransactions } = await supabase
     .from('transactions')
     .select('customer_email, amount, source')
     .in('status', ['failed', 'canceled']);
 
-  // Get failed PayPal from cache
   const failedPayPal = paypalTransactionsCache.filter(tx => tx.status === 'failed');
 
-  // Combine all failed transactions
   const allFailedEmails = new Set<string>();
   const failedAmounts: Record<string, { amount: number; source: string }> = {};
 
-  for (const tx of failedStripeTransactions || []) {
+  for (const tx of failedTransactions || []) {
     if (tx.customer_email) {
       allFailedEmails.add(tx.customer_email);
       if (!failedAmounts[tx.customer_email]) {
-        failedAmounts[tx.customer_email] = { amount: 0, source: 'stripe' };
+        failedAmounts[tx.customer_email] = { amount: 0, source: tx.source || 'stripe' };
       }
       failedAmounts[tx.customer_email].amount += tx.amount / 100;
     }
@@ -409,7 +509,6 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     failedAmounts[tx.email].amount += tx.amount;
   }
 
-  // Fetch client info for recovery list
   const recoveryList: RecoveryClient[] = [];
 
   if (allFailedEmails.size > 0) {
@@ -419,19 +518,20 @@ export async function getMetrics(): Promise<DashboardMetrics> {
       .in('email', Array.from(allFailedEmails));
 
     for (const client of clients || []) {
-      const failedInfo = failedAmounts[client.email];
-      if (failedInfo) {
-        recoveryList.push({
-          email: client.email,
-          full_name: client.full_name,
-          phone: client.phone,
-          amount: failedInfo.amount,
-          source: failedInfo.source
-        });
+      if (client.email) {
+        const failedInfo = failedAmounts[client.email];
+        if (failedInfo) {
+          recoveryList.push({
+            email: client.email,
+            full_name: client.full_name,
+            phone: client.phone,
+            amount: failedInfo.amount,
+            source: failedInfo.source
+          });
+        }
       }
     }
 
-    // Also add failed emails without client records
     for (const email of allFailedEmails) {
       if (!recoveryList.find(r => r.email === email)) {
         const failedInfo = failedAmounts[email];
@@ -472,7 +572,7 @@ export async function processPaymentCSV(
     return processPayPalCSV(csvText);
   }
   
-  // For Stripe, use the original logic with updated parsing
+  // For Stripe CSV, use optimized batch processing
   const result: ProcessingResult = {
     clientsCreated: 0,
     clientsUpdated: 0,
@@ -487,85 +587,141 @@ export async function processPaymentCSV(
     transformHeader: (header) => header.trim()
   });
 
+  // Step 1: Parse all rows
+  interface ParsedStripeRow {
+    email: string;
+    transactionId: string;
+    amount: number;
+    status: string;
+    date: string;
+  }
+
+  const parsedRows: ParsedStripeRow[] = [];
+
   for (const row of parsed.data as Record<string, string>[]) {
     const email = row['email']?.trim() || row['Email']?.trim() || row['customer_email']?.trim();
     const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim();
     const rawAmount = row['amount']?.trim() || row['Amount']?.trim() || '0';
     const status = row['status']?.trim() || row['Status']?.trim() || 'pending';
-    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim();
+    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || new Date().toISOString();
 
     if (!email || !transactionId) continue;
 
     const amount = parseFloat(rawAmount.replace(/[^\d.-]/g, '')) || 0;
+    parsedRows.push({ email, transactionId, amount, status, date });
+  }
 
-    // Check deduplication
-    const { data: existingTx } = await supabase
-      .from('transactions')
-      .select('id')
-      .eq('external_transaction_id', transactionId)
-      .eq('source', 'stripe')
-      .maybeSingle();
+  // Step 2: Check for existing transactions in batch
+  const transactionIds = parsedRows.map(r => r.transactionId);
+  const { data: existingTransactions } = await supabase
+    .from('transactions')
+    .select('external_transaction_id')
+    .eq('source', 'stripe')
+    .in('external_transaction_id', transactionIds);
 
-    if (existingTx) {
-      result.transactionsSkipped++;
-      continue;
+  const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
+  const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
+  result.transactionsSkipped = parsedRows.length - newRows.length;
+
+  // Step 3: Get existing clients in batch
+  const uniqueEmails = [...new Set(newRows.map(r => r.email))];
+  const { data: existingClients } = await supabase
+    .from('clients')
+    .select('*')
+    .in('email', uniqueEmails);
+
+  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+
+  // Step 4: Aggregate payments per email and prepare client upserts
+  const emailPayments = new Map<string, { paidAmount: number; hasFailed: boolean }>();
+  for (const row of newRows) {
+    const existing = emailPayments.get(row.email) || { paidAmount: 0, hasFailed: false };
+    const isPaid = row.status === 'succeeded' || row.status === 'paid';
+    if (isPaid) {
+      existing.paidAmount += row.amount;
+    }
+    if (row.status === 'failed') {
+      existing.hasFailed = true;
+    }
+    emailPayments.set(row.email, existing);
+  }
+
+  const clientsToUpsert: Array<{
+    email: string;
+    payment_status: string;
+    total_paid: number;
+    status: string;
+    last_sync: string;
+  }> = [];
+
+  for (const [email, payments] of emailPayments) {
+    const existingClient = clientMap.get(email);
+    const newTotalPaid = (existingClient?.total_paid || 0) + payments.paidAmount;
+    
+    let paymentStatus = existingClient?.payment_status || 'none';
+    if (payments.paidAmount > 0) {
+      paymentStatus = 'paid';
+    } else if (payments.hasFailed && paymentStatus !== 'paid') {
+      paymentStatus = 'failed';
     }
 
-    // Upsert client
-    const { data: existingClient } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('email', email)
-      .maybeSingle();
-
-    const isPaid = status === 'succeeded' || status === 'paid';
-    const newTotalPaid = (existingClient?.total_paid || 0) + (isPaid ? amount : 0);
-    let paymentStatus = existingClient?.payment_status || 'none';
-    
-    if (isPaid) paymentStatus = 'paid';
-    else if (status === 'failed' && paymentStatus !== 'paid') paymentStatus = 'failed';
+    clientsToUpsert.push({
+      email,
+      payment_status: paymentStatus,
+      total_paid: newTotalPaid,
+      status: existingClient?.status || 'active',
+      last_sync: new Date().toISOString()
+    });
 
     if (existingClient) {
-      await supabase
-        .from('clients')
-        .update({
-          payment_status: paymentStatus,
-          total_paid: newTotalPaid,
-          last_sync: new Date().toISOString()
-        })
-        .eq('email', email);
       result.clientsUpdated++;
     } else {
-      await supabase
-        .from('clients')
-        .insert({
-          email,
-          payment_status: paymentStatus,
-          total_paid: isPaid ? amount : 0,
-          status: 'active',
-          last_sync: new Date().toISOString()
-        });
       result.clientsCreated++;
     }
+  }
 
-    const transactionDate = date ? new Date(date).toISOString() : new Date().toISOString();
-    
-    const { error: txError } = await supabase
-      .from('transactions')
-      .insert({
-        customer_email: email,
-        amount: Math.round(amount * 100),
-        status,
-        source: 'stripe',
-        external_transaction_id: transactionId,
-        stripe_payment_intent_id: `stripe_${transactionId}`,
-        stripe_created_at: transactionDate,
-        failure_code: status === 'failed' ? 'payment_failed' : null,
-        failure_message: status === 'failed' ? 'Payment failed' : null
-      });
+  // Step 5: Batch upsert clients
+  if (clientsToUpsert.length > 0) {
+    const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert clients: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...clientBatchResult.allErrors);
+  }
 
-    if (txError) result.errors.push(`Error transaction ${transactionId}: ${txError.message}`);
-    else result.transactionsCreated++;
+  // Step 6: Prepare transactions for batch insert
+  const transactionsToInsert = newRows.map(row => ({
+    customer_email: row.email,
+    amount: Math.round(row.amount * 100),
+    status: row.status,
+    source: 'stripe',
+    external_transaction_id: row.transactionId,
+    stripe_payment_intent_id: `stripe_${row.transactionId}`,
+    stripe_created_at: new Date(row.date).toISOString(),
+    failure_code: row.status === 'failed' ? 'payment_failed' : null,
+    failure_message: row.status === 'failed' ? 'Payment failed' : null
+  }));
+
+  // Step 7: Batch insert transactions
+  if (transactionsToInsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToInsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('transactions')
+        .insert(batch);
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch insert transactions: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.transactionsCreated = txBatchResult.totalSuccess;
+    result.errors.push(...txBatchResult.allErrors);
   }
 
   return result;
