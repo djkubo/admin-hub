@@ -33,26 +33,26 @@ function mapPayPalStatus(eventType: string): string {
 }
 
 function extractAmount(resource: Record<string, unknown>): number {
-  // Try different amount locations
+  // Try different amount locations - PayPal sends DOLLARS, multiply by 100 for CENTS
   const amount = resource.amount as Record<string, unknown> | undefined;
-  if (amount?.total) return parseFloat(amount.total as string);
-  if (amount?.value) return parseFloat(amount.value as string);
+  if (amount?.total) return Math.round(parseFloat(amount.total as string) * 100);
+  if (amount?.value) return Math.round(parseFloat(amount.value as string) * 100);
   
   const purchaseUnits = resource.purchase_units as Array<Record<string, unknown>> | undefined;
   if (purchaseUnits?.[0]?.amount) {
     const puAmount = purchaseUnits[0].amount as Record<string, unknown>;
-    if (puAmount.value) return parseFloat(puAmount.value as string);
+    if (puAmount.value) return Math.round(parseFloat(puAmount.value as string) * 100);
   }
 
   const grossAmount = resource.gross_amount as Record<string, unknown> | undefined;
-  if (grossAmount?.value) return parseFloat(grossAmount.value as string);
+  if (grossAmount?.value) return Math.round(parseFloat(grossAmount.value as string) * 100);
 
   // For subscriptions
   const billingInfo = resource.billing_info as Record<string, unknown> | undefined;
   if (billingInfo?.last_payment) {
     const lastPayment = billingInfo.last_payment as Record<string, unknown>;
     const lpAmount = lastPayment.amount as Record<string, unknown>;
-    if (lpAmount?.value) return parseFloat(lpAmount.value as string);
+    if (lpAmount?.value) return Math.round(parseFloat(lpAmount.value as string) * 100);
   }
 
   return 0;
@@ -223,7 +223,7 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
-      // Update client
+      // Update client - amount is already in cents, convert to dollars for total_paid display field
       if (status === 'paid' && amount > 0) {
         const { data: existingClient } = await supabase
           .from('clients')
@@ -237,7 +237,7 @@ Deno.serve(async (req) => {
             email,
             full_name: fullName,
             payment_status: 'paid',
-            total_paid: (existingClient?.total_paid || 0) + amount,
+            total_paid: (existingClient?.total_paid || 0) + (amount / 100), // Convert cents to dollars for display
             last_sync: new Date().toISOString(),
           }, { onConflict: 'email' });
 

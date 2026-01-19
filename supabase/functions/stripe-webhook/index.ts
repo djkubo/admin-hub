@@ -84,7 +84,8 @@ Deno.serve(async (req) => {
     // PAYMENT INTENT EVENTS
     if (event.type.startsWith('payment_intent.')) {
       paymentIntentId = obj.id as string;
-      amount = (obj.amount as number) / 100;
+      // CRITICAL FIX: Stripe sends amount in CENTS - store directly WITHOUT dividing
+      amount = obj.amount as number;
       status = mapStripeStatus(obj.status as string);
       email = obj.receipt_email as string | null;
       customerId = obj.customer as string | null;
@@ -101,7 +102,8 @@ Deno.serve(async (req) => {
     // CHARGE EVENTS
     else if (event.type.startsWith('charge.')) {
       paymentIntentId = (obj.payment_intent as string) || `charge_${obj.id}`;
-      amount = (obj.amount as number) / 100;
+      // CRITICAL FIX: Stripe sends amount in CENTS - store directly
+      amount = obj.amount as number;
       status = mapStripeStatus(obj.status as string);
       email = obj.receipt_email as string | null;
       customerId = obj.customer as string | null;
@@ -117,7 +119,8 @@ Deno.serve(async (req) => {
     // INVOICE EVENTS
     else if (event.type.startsWith('invoice.')) {
       paymentIntentId = (obj.payment_intent as string) || `invoice_${obj.id}`;
-      amount = (obj.amount_paid as number || obj.total as number) / 100;
+      // CRITICAL FIX: Stripe sends amount in CENTS - store directly
+      amount = (obj.amount_paid as number || obj.total as number);
       status = mapStripeStatus(obj.status as string);
       email = obj.customer_email as string | null;
       customerId = obj.customer as string | null;
@@ -129,7 +132,8 @@ Deno.serve(async (req) => {
     else if (event.type.startsWith('customer.subscription.')) {
       paymentIntentId = `subscription_${obj.id}`;
       const items = obj.items as { data?: Array<{ price?: { unit_amount?: number } }> };
-      amount = ((items?.data?.[0]?.price?.unit_amount || 0) / 100);
+      // CRITICAL FIX: Stripe sends unit_amount in CENTS - store directly
+      amount = (items?.data?.[0]?.price?.unit_amount || 0);
       status = mapStripeStatus(obj.status as string);
       customerId = obj.customer as string | null;
       createdAt = obj.created ? new Date((obj.created as number) * 1000).toISOString() : new Date().toISOString();
@@ -177,7 +181,8 @@ Deno.serve(async (req) => {
     // CHECKOUT SESSION EVENTS
     else if (event.type.startsWith('checkout.session.')) {
       paymentIntentId = (obj.payment_intent as string) || `checkout_${obj.id}`;
-      amount = (obj.amount_total as number || 0) / 100;
+      // CRITICAL FIX: Stripe sends amount_total in CENTS - store directly
+      amount = (obj.amount_total as number || 0);
       status = mapStripeStatus(obj.payment_status as string || obj.status as string);
       email = obj.customer_email as string | null;
       customerId = obj.customer as string | null;
@@ -245,7 +250,7 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
-      // Update client
+      // Update client - amount is already in cents, convert to dollars for total_paid display field
       if (status === 'paid' && amount > 0) {
         const { data: existingClient } = await supabase
           .from('clients')
@@ -258,7 +263,7 @@ Deno.serve(async (req) => {
           .upsert({
             email,
             payment_status: 'paid',
-            total_paid: (existingClient?.total_paid || 0) + amount,
+            total_paid: (existingClient?.total_paid || 0) + (amount / 100), // Convert cents to dollars for display
             last_sync: new Date().toISOString(),
           }, { onConflict: 'email' });
 

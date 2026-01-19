@@ -734,7 +734,8 @@ export async function processPaymentCSV(
 
   interface ParsedStripeRow {
     email: string;
-    transactionId: string;
+    chargeId: string;
+    paymentIntentId: string;
     amount: number;
     status: string;
     date: string;
@@ -743,24 +744,54 @@ export async function processPaymentCSV(
   const parsedRowsMap = new Map<string, ParsedStripeRow>();
 
   for (const row of parsed.data as Record<string, string>[]) {
-    const email = row['email']?.trim() || row['Email']?.trim() || row['customer_email']?.trim();
-    const transactionId = row['transaction_id']?.trim() || row['id']?.trim() || row['ID']?.trim() || 
-                          row['payment_intent']?.trim() || row['PaymentIntent ID']?.trim();
-    const rawAmount = row['amount']?.trim() || row['Amount']?.trim() || '0';
-    const status = row['status']?.trim() || row['Status']?.trim() || 'pending';
-    const date = row['date']?.trim() || row['Date']?.trim() || row['created']?.trim() || 
-                 row['Created date (UTC)']?.trim() || new Date().toISOString();
+    // CRITICAL FIX #1: Map "Customer Email" column explicitly
+    const email = row['Customer Email']?.trim() || 
+                  row['Customer email']?.trim() || 
+                  row['customer_email']?.trim() ||
+                  row['Email']?.trim() || 
+                  row['email']?.trim() || '';
+    
+    // CRITICAL FIX #3: Handle IDs - Charge ID (ch_) and PaymentIntent ID (pi_)
+    const chargeId = row['id']?.trim() || row['ID']?.trim() || row['Charge ID']?.trim() || '';
+    const paymentIntentId = row['PaymentIntent ID']?.trim() || 
+                            row['payment_intent']?.trim() || 
+                            row['Payment Intent']?.trim() || '';
+    
+    // Rule: If PaymentIntent ID exists, use it as primary key; else use Charge ID
+    const finalStripeId = paymentIntentId || chargeId;
+    
+    if (!email || !finalStripeId) continue;
 
-    if (!email || !transactionId) continue;
+    const rawAmount = row['Amount']?.trim() || row['amount']?.trim() || '0';
+    
+    // CRITICAL FIX #2: Normalize status to lowercase
+    const rawStatus = (row['Status'] || row['status'] || '').toString().toLowerCase();
+    let status = 'pending';
+    if (rawStatus === 'paid' || rawStatus === 'succeeded') {
+      status = 'paid';
+    } else if (rawStatus === 'failed' || rawStatus === 'requires_payment_method') {
+      status = 'failed';
+    }
+    
+    const date = row['Created date (UTC)']?.trim() || row['created']?.trim() || 
+                 row['Date']?.trim() || row['date']?.trim() || new Date().toISOString();
 
-    if (parsedRowsMap.has(transactionId)) {
+    if (parsedRowsMap.has(finalStripeId)) {
       result.transactionsSkipped++;
       continue;
     }
 
-    // Stripe unified_payments.csv: amount is in dollars (19.50), multiply by 100
+    // CRITICAL FIX: Stripe CSV amounts are in DOLLARS (19.50) -> multiply by 100
     const amountCents = parseCurrency(rawAmount, false);
-    parsedRowsMap.set(transactionId, { email, transactionId, amount: amountCents, status, date });
+    
+    parsedRowsMap.set(finalStripeId, { 
+      email, 
+      chargeId,
+      paymentIntentId: finalStripeId, 
+      amount: amountCents, 
+      status, 
+      date 
+    });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
@@ -778,7 +809,7 @@ export async function processPaymentCSV(
   const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean; hasPaid: boolean }>();
   for (const row of parsedRows) {
     const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false, hasPaid: false };
-    const isPaid = row.status === 'succeeded' || row.status === 'paid';
+    const isPaid = row.status === 'paid';
     if (isPaid) {
       existing.paidAmountCents += row.amount;
       existing.hasPaid = true;
@@ -851,14 +882,16 @@ export async function processPaymentCSV(
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Prepare transactions - use CLEAN transaction ID
+  // CRITICAL FIX #3: Prepare transactions with proper ID handling
+  // - stripe_payment_intent_id = PaymentIntent ID (or Charge ID if no PI)
+  // - external_transaction_id = ALWAYS the original Charge ID
   const transactionsToUpsert = parsedRows.map(row => ({
     customer_email: row.email,
     amount: row.amount, // Already in cents
-    status: row.status,
+    status: row.status, // Already normalized to lowercase
     source: 'stripe',
-    external_transaction_id: row.transactionId, // CLEAN ID
-    stripe_payment_intent_id: row.transactionId, // CLEAN ID for Stripe
+    external_transaction_id: row.chargeId || row.paymentIntentId, // Original Charge ID
+    stripe_payment_intent_id: row.paymentIntentId, // Primary dedup key
     stripe_created_at: new Date(row.date).toISOString(),
     currency: 'usd',
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
@@ -985,27 +1018,44 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   const convertedCount = convertedEmails.size;
   const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
-  // ============= KPI 3: Churn =============
+  // ============= KPI 3: Churn (UNIQUE EMAILS) =============
+  // CRITICAL FIX #3: Count unique emails, not rows
+  // A user is churned if their LAST subscription is expired/canceled AND no subsequent paid transactions
   
-  let churnCount = 0;
-
+  const churnedEmails = new Set<string>();
+  
+  // Group subscriptions by email and find latest status
+  const emailLatestSub = new Map<string, { status: string; expiresAt: string }>();
+  
   for (const sub of subscriptionDataCache) {
-    const statusLower = sub.status.toLowerCase();
+    if (!sub.email) continue;
+    const existing = emailLatestSub.get(sub.email);
+    
+    // Keep the latest subscription by expires date
+    if (!existing || (sub.expiresAt && new Date(sub.expiresAt) > new Date(existing.expiresAt))) {
+      emailLatestSub.set(sub.email, { status: sub.status, expiresAt: sub.expiresAt });
+    }
+  }
+  
+  // Check which emails have churned (last sub expired/canceled, no recent paid)
+  for (const [email, latestSub] of emailLatestSub) {
+    const statusLower = latestSub.status.toLowerCase();
     
     if (statusLower === 'expired' || statusLower === 'canceled' || statusLower === 'pastdue') {
-      if (sub.expiresAt) {
-        const expiresDate = new Date(sub.expiresAt);
+      if (latestSub.expiresAt) {
+        const expiresDate = new Date(latestSub.expiresAt);
         if (!isNaN(expiresDate.getTime()) && expiresDate >= thirtyDaysAgo && expiresDate <= today) {
-          churnCount++;
-        }
-      } else if (sub.createdAt) {
-        const createdDate = new Date(sub.createdAt);
-        if (!isNaN(createdDate.getTime()) && createdDate >= thirtyDaysAgo) {
-          churnCount++;
+          // Check if they have any paid transactions after expiry
+          const hasPaidAfterExpiry = convertedEmails.has(email);
+          if (!hasPaidAfterExpiry) {
+            churnedEmails.add(email);
+          }
         }
       }
     }
   }
+  
+  const churnCount = churnedEmails.size;
 
   // ============= Recovery List =============
   
