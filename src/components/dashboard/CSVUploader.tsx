@@ -32,35 +32,53 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions'> => {
     const lowerName = file.name.toLowerCase();
     
-    // First check file name patterns
-    if (lowerName.includes('download') || lowerName.includes('paypal')) return 'paypal';
-    if (lowerName.includes('subscription') || lowerName.includes('suscripcion')) return 'subscriptions';
-    
-    // Read first line to detect by columns
+    // Read content for column-based detection (more reliable)
     try {
       const text = await file.text();
-      const firstLine = text.split('\n')[0].toLowerCase();
+      const lines = text.split('\n');
+      const firstLine = lines[0]?.toLowerCase() || '';
       
-      // Stripe detection: has Amount, Created date columns
-      if (firstLine.includes('amount') && firstLine.includes('created date')) return 'stripe';
-      if (firstLine.includes('created (utc)') || firstLine.includes('payment_intent')) return 'stripe';
+      // PayPal detection: unique Spanish column names or "Bruto" column
+      if (firstLine.includes('correo electrónico del remitente') || 
+          firstLine.includes('from email address') ||
+          firstLine.includes('bruto') ||
+          firstLine.includes('id. de transacción')) {
+        return 'paypal';
+      }
       
-      // PayPal detection: has "correo electrónico del remitente" column
-      if (firstLine.includes('correo electrónico del remitente') || firstLine.includes('bruto')) return 'paypal';
+      // Stripe detection: has specific Stripe column patterns
+      if (firstLine.includes('payment_intent') ||
+          firstLine.includes('created (utc)') ||
+          firstLine.includes('created date (utc)') ||
+          (firstLine.includes('amount') && firstLine.includes('status') && firstLine.includes('id'))) {
+        return 'stripe';
+      }
       
-      // Web users detection: has Role, Subscription Plan columns
-      if (firstLine.includes('role') || firstLine.includes('subscription plan')) return 'web';
+      // Subscriptions detection: has Plan Name column
+      if (firstLine.includes('plan name') || 
+          firstLine.includes('plan_name') ||
+          (firstLine.includes('expires at') && firstLine.includes('status'))) {
+        return 'subscriptions';
+      }
       
-      // Subscriptions detection
-      if (firstLine.includes('plan name') || firstLine.includes('status')) return 'subscriptions';
+      // Web users detection: has typical user columns
+      if (firstLine.includes('role') || 
+          firstLine.includes('subscription plan') ||
+          (firstLine.includes('email') && (firstLine.includes('nombre') || firstLine.includes('telefono') || firstLine.includes('phone')))) {
+        return 'web';
+      }
       
-      // Default fallback based on filename
+      // Fallback to filename patterns
+      if (lowerName.includes('download') || lowerName.includes('paypal')) return 'paypal';
+      if (lowerName.includes('subscription') || lowerName.includes('suscripcion')) return 'subscriptions';
       if (lowerName.includes('stripe') || lowerName.includes('payment') || lowerName.includes('unified')) return 'stripe';
       if (lowerName.includes('user') || lowerName.includes('usuario')) return 'web';
+      
     } catch (e) {
       console.error('Error reading file for detection:', e);
     }
     
+    // Default to web users (safest fallback)
     return 'web';
   };
 

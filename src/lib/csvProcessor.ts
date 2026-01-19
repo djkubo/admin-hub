@@ -79,8 +79,9 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   const parsed = Papa.parse(csvText, {
     header: true,
-    skipEmptyLines: true,
-    transformHeader: (header) => header.trim()
+    skipEmptyLines: 'greedy', // Skip ALL empty lines including whitespace-only
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || '' // Trim all values
   });
 
   // Step 1: Parse all rows and prepare data with deduplication by transaction ID
@@ -96,19 +97,40 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
   const parsedRowsMap = new Map<string, ParsedPayPalRow>();
 
   for (const row of parsed.data as Record<string, string>[]) {
-    const email = row['Correo electrónico del remitente']?.trim() || row['From Email Address']?.trim();
-    const rawAmount = row['Bruto']?.trim() || row['Gross']?.trim() || '0';
-    const rawStatus = row['Estado']?.trim() || row['Status']?.trim() || '';
-    const rawDate = row['Fecha y Hora']?.trim() || row['Date Time']?.trim() || row['Fecha']?.trim();
-    const transactionId = row['Id. de transacción']?.trim() || row['Transaction ID']?.trim();
+    // Multiple fallbacks for email (PayPal uses different column names)
+    const email = row['Correo electrónico del remitente'] || 
+                  row['From Email Address'] || 
+                  row['Correo electrónico del receptor'] ||
+                  row['To Email Address'] ||
+                  row['Email'] ||
+                  row['email'] || '';
+    
+    // Multiple fallbacks for amount
+    const rawAmount = row['Bruto'] || row['Gross'] || row['Neto'] || row['Net'] || row['Amount'] || '0';
+    
+    // Multiple fallbacks for status
+    const rawStatus = row['Estado'] || row['Status'] || '';
+    
+    // Multiple fallbacks for date
+    const rawDate = row['Fecha y Hora'] || row['Date Time'] || row['Fecha'] || row['Date'] || '';
+    
+    // Multiple fallbacks for transaction ID
+    const transactionId = row['Id. de transacción'] || row['Transaction ID'] || row['Id de transacción'] || '';
 
-    // Silently skip rows without email (summary lines, empty rows)
-    if (!email) continue;
+    // Silently skip rows without email (summary lines, empty rows, totals)
+    if (!email || email.trim() === '') continue;
+    
     // Skip if no transaction ID
-    if (!transactionId) continue;
+    if (!transactionId || transactionId.trim() === '') continue;
+    
+    // Also skip rows that look like summaries (contain only totals text)
+    if (email.toLowerCase().includes('total') || email.toLowerCase().includes('subtotal')) continue;
+
+    const trimmedTxId = transactionId.trim();
+    const trimmedEmail = email.trim();
 
     // Skip if already in map (deduplicate within same CSV)
-    if (parsedRowsMap.has(transactionId)) {
+    if (parsedRowsMap.has(trimmedTxId)) {
       result.transactionsSkipped++;
       continue;
     }
@@ -122,11 +144,12 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     let status = 'pending';
     const lowerStatus = rawStatus.toLowerCase();
-    if (lowerStatus.includes('completado') || lowerStatus.includes('completed')) {
+    if (lowerStatus.includes('completado') || lowerStatus.includes('completed') || lowerStatus.includes('pagado')) {
       status = 'paid';
     } else if (lowerStatus.includes('declinado') || lowerStatus.includes('rechazado') || 
                lowerStatus.includes('cancelado') || lowerStatus.includes('declined') ||
-               lowerStatus.includes('rejected') || lowerStatus.includes('canceled')) {
+               lowerStatus.includes('rejected') || lowerStatus.includes('canceled') ||
+               lowerStatus.includes('fallido') || lowerStatus.includes('failed')) {
       status = 'failed';
     }
 
@@ -140,13 +163,15 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    parsedRowsMap.set(transactionId, { email, amount, status, transactionDate, transactionId, currency });
+    parsedRowsMap.set(trimmedTxId, { email: trimmedEmail, amount, status, transactionDate, transactionId: trimmedTxId, currency });
     
     // Update cache with deduplication by transaction ID
-    paypalTransactionsCache.set(transactionId, { email, amount, status, date: transactionDate });
+    paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount, status, date: transactionDate });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
+  
+  console.log(`[PayPal CSV] Parsed ${parsedRows.length} valid rows from CSV`);
 
   // Step 2: All rows will be processed (upsert mode - no skipping)
   const newRows = parsedRows;
@@ -269,8 +294,9 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
 
   const parsed = Papa.parse(csvText, {
     header: true,
-    skipEmptyLines: true,
-    transformHeader: (header) => header.trim()
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
   });
 
   // Step 1: Parse all rows
@@ -365,8 +391,9 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
 export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
   const parsed = Papa.parse(csvText, {
     header: true,
-    skipEmptyLines: true,
-    transformHeader: (header) => header.trim()
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
   });
 
   subscriptionDataCache = [];
@@ -649,8 +676,9 @@ export async function processPaymentCSV(
 
   const parsed = Papa.parse(csvText, {
     header: true,
-    skipEmptyLines: true,
-    transformHeader: (header) => header.trim()
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
   });
 
   // Step 1: Parse all rows with deduplication
