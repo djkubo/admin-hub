@@ -31,9 +31,9 @@ export interface RecoveryClient {
 }
 
 export interface DashboardMetrics {
-  salesTodayUSD: number;
-  salesTodayMXN: number;
-  salesTodayTotal: number;
+  salesMonthUSD: number;
+  salesMonthMXN: number;
+  salesMonthTotal: number;
   conversionRate: number;
   trialCount: number;
   convertedCount: number;
@@ -102,8 +102,10 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     const rawDate = row['Fecha y Hora']?.trim() || row['Date Time']?.trim() || row['Fecha']?.trim();
     const transactionId = row['Id. de transacción']?.trim() || row['Transaction ID']?.trim();
 
-    // Skip if no email or no transaction ID
-    if (!email || !transactionId) continue;
+    // Silently skip rows without email (summary lines, empty rows)
+    if (!email) continue;
+    // Skip if no transaction ID
+    if (!transactionId) continue;
 
     // Skip if already in map (deduplicate within same CSV)
     if (parsedRowsMap.has(transactionId)) {
@@ -111,7 +113,11 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
       continue;
     }
 
-    const cleanedAmount = rawAmount.replace(/[^\d.-]/g, '').replace(',', '.');
+    // Clean PayPal amount: remove currency symbols, spaces, and handle comma as decimal/thousands
+    const cleanedAmount = rawAmount
+      .replace(/[^\d.,-]/g, '')  // Keep only digits, dots, commas, minus
+      .replace(/,(\d{2})$/, '.$1')  // Convert trailing comma decimal (European format)
+      .replace(/,/g, '');  // Remove thousands separator commas
     const amount = parseFloat(cleanedAmount) || 0;
 
     let status = 'pending';
@@ -392,55 +398,57 @@ export function processSubscriptionsCSV(csvText: string): SubscriptionData[] {
 export async function getMetrics(): Promise<DashboardMetrics> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayISO = today.toISOString();
+  
+  // Calculate first day of current month
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const firstDayOfMonthISO = firstDayOfMonth.toISOString();
   
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  // ============= KPI 1: Ventas Netas HOY (with deduplication) =============
+  // ============= KPI 1: Ventas del MES (with deduplication) =============
   
   // Fetch from DB - already deduplicated by stripe_payment_intent_id
-  const { data: todayTransactions } = await supabase
+  const { data: monthTransactions } = await supabase
     .from('transactions')
     .select('id, amount, status, currency, stripe_created_at, source, stripe_payment_intent_id')
-    .gte('stripe_created_at', todayISO)
+    .gte('stripe_created_at', firstDayOfMonthISO)
     .in('status', ['succeeded', 'paid']);
 
   // Create a Set of transaction IDs from DB to avoid double counting
-  const dbTransactionIds = new Set(todayTransactions?.map(t => t.stripe_payment_intent_id) || []);
+  const dbTransactionIds = new Set(monthTransactions?.map(t => t.stripe_payment_intent_id) || []);
 
-  let salesTodayUSD = 0;
-  let salesTodayMXN = 0;
+  let salesMonthUSD = 0;
+  let salesMonthMXN = 0;
 
-  for (const tx of todayTransactions || []) {
+  for (const tx of monthTransactions || []) {
     const amountInCurrency = tx.amount / 100;
     if (tx.currency?.toLowerCase() === 'mxn') {
-      salesTodayMXN += amountInCurrency;
+      salesMonthMXN += amountInCurrency;
     } else {
-      salesTodayUSD += amountInCurrency;
+      salesMonthUSD += amountInCurrency;
     }
   }
 
   // Add PayPal from cache only if NOT already in DB (deduplicated by transaction ID)
   for (const [txId, tx] of paypalTransactionsCache) {
     const txDate = new Date(tx.date);
-    txDate.setHours(0, 0, 0, 0);
     
-    // Only count if: today, paid, and not already in DB
-    if (txDate.getTime() === today.getTime() && tx.status === 'paid') {
+    // Only count if: this month, paid, and not already in DB
+    if (txDate >= firstDayOfMonth && txDate <= today && tx.status === 'paid') {
       const paypalPaymentIntentId = `paypal_${txId}`;
       if (!dbTransactionIds.has(paypalPaymentIntentId)) {
         if (tx.amount > 500) {
-          salesTodayMXN += tx.amount;
+          salesMonthMXN += tx.amount;
         } else {
-          salesTodayUSD += tx.amount;
+          salesMonthUSD += tx.amount;
         }
       }
     }
   }
 
   const MXN_TO_USD = 0.05;
-  const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
+  const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
 
   // ============= KPI 2: Tasa de Conversión (Fixed: track by email) =============
   
@@ -457,10 +465,14 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   let convertedCount = 0;
   const trialEmails = new Set<string>();
 
+  // Trial keywords: Trial, Prueba, Gratis, Demo, Free
+  const trialKeywords = ['trial', 'prueba', 'gratis', 'demo', 'free'];
+
   // First pass: identify trial users
   for (const sub of subscriptionDataCache) {
     const planLower = sub.planName.toLowerCase();
-    if (planLower.includes('trial') || planLower.includes('prueba')) {
+    const isTrial = trialKeywords.some(keyword => planLower.includes(keyword));
+    if (isTrial) {
       trialCount++;
       if (sub.email) {
         trialEmails.add(sub.email);
@@ -474,9 +486,8 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     const hasActivePaidPlan = subs.some(sub => {
       const statusLower = sub.status.toLowerCase();
       const planLower = sub.planName.toLowerCase();
-      return statusLower === 'active' && 
-             !planLower.includes('trial') && 
-             !planLower.includes('prueba');
+      const isTrialPlan = trialKeywords.some(keyword => planLower.includes(keyword));
+      return statusLower === 'active' && !isTrialPlan;
     });
     if (hasActivePaidPlan) {
       convertedCount++;
@@ -602,9 +613,9 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   }
 
   return {
-    salesTodayUSD,
-    salesTodayMXN,
-    salesTodayTotal,
+    salesMonthUSD,
+    salesMonthMXN,
+    salesMonthTotal,
     conversionRate,
     trialCount,
     convertedCount,

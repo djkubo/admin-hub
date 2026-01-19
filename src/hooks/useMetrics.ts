@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { getMetrics, DashboardMetrics } from '@/lib/csvProcessor';
 
 const defaultMetrics: DashboardMetrics = {
-  salesTodayUSD: 0,
-  salesTodayMXN: 0,
-  salesTodayTotal: 0,
+  salesMonthUSD: 0,
+  salesMonthMXN: 0,
+  salesMonthTotal: 0,
   conversionRate: 0,
   trialCount: 0,
   convertedCount: 0,

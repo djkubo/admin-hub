@@ -191,12 +191,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       acc.clientsUpdated += f.result.clientsUpdated;
       acc.transactionsCreated += f.result.transactionsCreated;
       acc.transactionsSkipped += f.result.transactionsSkipped;
+      // Total unique clients = new + updated
+      acc.uniqueClients += f.result.clientsCreated + f.result.clientsUpdated;
     }
     if (f.subscriptionCount) {
       acc.subscriptions += f.subscriptionCount;
     }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0 });
 
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
@@ -271,18 +273,21 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       {files.some(f => f.status === 'done') && (
         <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
           <h4 className="font-medium text-emerald-400 mb-2">Resumen</h4>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-sm">
             <div className="text-gray-400">
-              Clientes nuevos: <span className="text-white font-medium ml-1">{totalResults.clientsCreated}</span>
+              Clientes únicos: <span className="text-white font-medium ml-1">{totalResults.uniqueClients}</span>
             </div>
             <div className="text-gray-400">
-              Actualizados: <span className="text-white font-medium ml-1">{totalResults.clientsUpdated}</span>
+              Nuevos: <span className="text-emerald-400 font-medium ml-1">{totalResults.clientsCreated}</span>
+            </div>
+            <div className="text-gray-400">
+              Actualizados: <span className="text-blue-400 font-medium ml-1">{totalResults.clientsUpdated}</span>
             </div>
             <div className="text-gray-400">
               Transacciones: <span className="text-white font-medium ml-1">{totalResults.transactionsCreated}</span>
             </div>
             <div className="text-gray-400">
-              Duplicados: <span className="text-white font-medium ml-1">{totalResults.transactionsSkipped}</span>
+              Duplicados: <span className="text-yellow-400 font-medium ml-1">{totalResults.transactionsSkipped}</span>
             </div>
             <div className="text-gray-400">
               Suscripciones: <span className="text-white font-medium ml-1">{totalResults.subscriptions}</span>
