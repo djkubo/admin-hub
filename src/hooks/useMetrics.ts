@@ -2,6 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
 export interface DashboardMetrics {
+  // Today's sales
+  salesTodayUSD: number;
+  salesTodayMXN: number;
+  salesTodayTotal: number;
+  // Month's sales
   salesMonthUSD: number;
   salesMonthMXN: number;
   salesMonthTotal: number;
@@ -22,6 +27,9 @@ export interface DashboardMetrics {
 }
 
 const defaultMetrics: DashboardMetrics = {
+  salesTodayUSD: 0,
+  salesTodayMXN: 0,
+  salesTodayTotal: 0,
   salesMonthUSD: 0,
   salesMonthMXN: 0,
   salesMonthTotal: 0,
@@ -43,29 +51,39 @@ export function useMetrics() {
     try {
       const now = new Date();
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      // FIX Bug C & D: Use start of TODAY (not midnight) to include all of today's transactions
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       
       // Fetch monthly sales - ONLY count 'succeeded' and 'paid' status
       const { data: monthlyTransactions } = await supabase
         .from('transactions')
-        .select('amount, currency, status')
+        .select('amount, currency, status, stripe_created_at')
         .gte('stripe_created_at', firstDayOfMonth.toISOString())
         .in('status', ['succeeded', 'paid']); // ONLY paid transactions
 
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
+      let salesTodayUSD = 0;
+      let salesTodayMXN = 0;
 
       // All amounts stored in CENTS, divide by 100 for display
       for (const tx of monthlyTransactions || []) {
         const amountInCurrency = tx.amount / 100;
+        const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
+        const isToday = txDate && txDate >= startOfToday;
+        
         if (tx.currency?.toLowerCase() === 'mxn') {
           salesMonthMXN += amountInCurrency;
+          if (isToday) salesTodayMXN += amountInCurrency;
         } else {
           salesMonthUSD += amountInCurrency;
+          if (isToday) salesTodayUSD += amountInCurrency;
         }
       }
 
       const MXN_TO_USD = 0.05;
       const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
+      const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
 
       // Fetch failed transactions for recovery list (EXCLUDE paid/succeeded)
       const { data: failedTransactions } = await supabase
@@ -177,6 +195,9 @@ export function useMetrics() {
       const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
       setMetrics({
+        salesTodayUSD,
+        salesTodayMXN,
+        salesTodayTotal,
         salesMonthUSD,
         salesMonthMXN,
         salesMonthTotal,
