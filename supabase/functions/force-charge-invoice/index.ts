@@ -119,17 +119,34 @@ serve(async (req) => {
   } catch (error: unknown) {
     console.error("❌ Error charging invoice:", error);
     
-    // Handle Stripe-specific errors
-    const stripeError = error as { type?: string; message?: string; code?: string; decline_code?: string };
-    if (stripeError.type === "StripeCardError") {
+    // Handle Stripe-specific errors - they have a 'type' or 'code' property
+    const stripeError = error as { 
+      type?: string; 
+      message?: string; 
+      code?: string; 
+      decline_code?: string;
+      raw?: { message?: string; code?: string; decline_code?: string };
+    };
+    
+    // Check for card/payment errors (Stripe SDK throws these for declined cards)
+    const isPaymentError = 
+      stripeError.type === "StripeCardError" ||
+      stripeError.code === "card_declined" ||
+      stripeError.code === "insufficient_funds" ||
+      stripeError.message?.includes("insufficient funds") ||
+      stripeError.message?.includes("card") ||
+      stripeError.message?.includes("declined");
+    
+    if (isPaymentError) {
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: stripeError.message || "Card error",
-          code: stripeError.code,
-          decline_code: stripeError.decline_code
+          error: stripeError.message || "Payment failed",
+          code: stripeError.code || stripeError.raw?.code,
+          decline_code: stripeError.decline_code || stripeError.raw?.decline_code,
+          message: `Pago rechazado: ${stripeError.message || "Error de tarjeta"}`
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
