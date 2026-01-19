@@ -80,14 +80,25 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     let fetchAll = false;
+    let startDate: number | null = null;
+    let endDate: number | null = null;
+    
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
+      
+      // Parse date filters (convert ISO strings to Unix timestamps)
+      if (body.startDate) {
+        startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
+      }
+      if (body.endDate) {
+        endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
+      }
     } catch {
       // No body
     }
 
-    console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}`);
+    console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, startDate: ${startDate}, endDate: ${endDate}`);
 
     let totalSynced = 0;
     let totalClients = 0;
@@ -98,13 +109,21 @@ Deno.serve(async (req) => {
     let cursor: string | null = null;
     let pageCount = 0;
     const maxPages = fetchAll ? 50 : 1; // Reduced to 50 pages (5000 tx) to avoid timeout
-    const BATCH_SIZE = 100;
 
     // Process page by page and save immediately to avoid timeout
     while (hasMore && pageCount < maxPages) {
       const url = new URL("https://api.stripe.com/v1/payment_intents");
       url.searchParams.set("limit", "100");
       url.searchParams.append("expand[]", "data.customer");
+      
+      // Add date range filters
+      if (startDate) {
+        url.searchParams.set("created[gte]", startDate.toString());
+      }
+      if (endDate) {
+        url.searchParams.set("created[lte]", endDate.toString());
+      }
+      
       if (cursor) {
         url.searchParams.set("starting_after", cursor);
       }
