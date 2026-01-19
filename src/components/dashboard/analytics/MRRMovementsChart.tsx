@@ -164,7 +164,9 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
     return months;
   }, [transactions, clients]);
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  // Custom tooltip content renderer (not a component, just a render function)
+  const renderTooltipContent = (props: { active?: boolean; payload?: any[]; label?: string }) => {
+    const { active, payload, label } = props;
     if (active && payload && payload.length) {
       return (
         <div className="bg-[#1a1f36] border border-gray-700/50 rounded-lg p-3 shadow-xl">
@@ -209,7 +211,7 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
               tick={{ fill: "#9CA3AF", fontSize: 12 }}
               tickFormatter={(value) => `$${Math.abs(value)}`}
             />
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={renderTooltipContent} />
             <Legend
               wrapperStyle={{ paddingTop: "20px" }}
               formatter={(value) => (
