@@ -9,6 +9,9 @@ verify_jwt = false
 [functions.fetch-invoices]
 verify_jwt = false
 
+[functions.fetch-subscriptions]
+verify_jwt = false
+
 [functions.stripe-webhook]
 verify_jwt = false
 

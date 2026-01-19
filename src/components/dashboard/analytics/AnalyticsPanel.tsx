@@ -1,6 +1,7 @@
 import { MRRMovementsChart } from "./MRRMovementsChart";
 import { CohortRetentionTable } from "./CohortRetentionTable";
 import { LTVMetrics } from "./LTVMetrics";
+import { RevenueByPlanChart } from "./RevenueByPlanChart";
 import { AnalyzeButton } from "./AnalyzeButton";
 import { Transaction } from "@/hooks/useTransactions";
 import { Client } from "@/hooks/useClients";
@@ -32,6 +33,9 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
 
       {/* LTV Metrics Row */}
       <LTVMetrics transactions={transactions} />
+
+      {/* Revenue by Plan Chart - Pareto Analysis */}
+      <RevenueByPlanChart />
 
       {/* MRR Movements Chart */}
       <MRRMovementsChart transactions={transactions} clients={clients} />
