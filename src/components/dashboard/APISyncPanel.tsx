@@ -198,8 +198,8 @@ export function APISyncPanel() {
         const results = await syncInChunks('paypal', 0.5, setPaypalResult);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
       } else if (mode === 'allHistory') {
-        // PayPal API only allows 3 years max
-        const results = await syncInChunks('paypal', 3, setPaypalResult);
+        // PayPal API only allows 3 years max - use 2.5 to be safe
+        const results = await syncInChunks('paypal', 2.5, setPaypalResult);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
       }
       
