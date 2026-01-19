@@ -49,6 +49,7 @@ export function useMetrics() {
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
 
+      // CRITICAL FIX #1: All amounts are stored in CENTS, divide by 100 for display
       for (const tx of monthlyTransactions || []) {
         const amountInCurrency = tx.amount / 100;
         if (tx.currency?.toLowerCase() === 'mxn') {
@@ -72,6 +73,7 @@ export function useMetrics() {
       for (const tx of failedTransactions || []) {
         if (!tx.customer_email) continue;
         const existing = failedByEmail.get(tx.customer_email) || { amount: 0, source: tx.source || 'unknown' };
+        // CRITICAL FIX #1: Amount is in cents, convert to dollars for display
         existing.amount += tx.amount / 100;
         if (tx.source && existing.source !== tx.source) {
           existing.source = 'stripe/paypal';
@@ -121,14 +123,45 @@ export function useMetrics() {
       // Sort by amount descending
       recoveryList.sort((a, b) => b.amount - a.amount);
 
+      // CRITICAL FIX #4: Fetch unique trial/converted counts from clients table
+      const { data: clientsData } = await supabase
+        .from('clients')
+        .select('email, status, trial_started_at, converted_at');
+      
+      // Count unique emails with trial
+      const trialEmails = new Set<string>();
+      const convertedEmails = new Set<string>();
+      
+      for (const client of clientsData || []) {
+        if (client.trial_started_at && client.email) {
+          trialEmails.add(client.email);
+        }
+        if (client.converted_at && client.email) {
+          convertedEmails.add(client.email);
+        }
+      }
+      
+      const trialCount = trialEmails.size;
+      const convertedCount = convertedEmails.size;
+      const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
+
+      // Churn count from clients
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const { count: churnCount } = await supabase
+        .from('clients')
+        .select('*', { count: 'exact', head: true })
+        .in('status', ['inactive', 'Canceled', 'Expired', 'Churned']);
+
       setMetrics({
         salesMonthUSD,
         salesMonthMXN,
         salesMonthTotal,
-        conversionRate: 0,
-        trialCount: 0,
-        convertedCount: 0,
-        churnCount: 0,
+        conversionRate,
+        trialCount,
+        convertedCount,
+        churnCount: churnCount || 0,
         recoveryList
       });
     } catch (error) {

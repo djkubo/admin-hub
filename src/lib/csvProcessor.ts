@@ -46,6 +46,66 @@ let subscriptionDataCache: SubscriptionData[] = [];
 // Use Map with transaction ID as key to prevent duplicates
 let paypalTransactionsCache: Map<string, { email: string; amount: number; status: string; date: Date }> = new Map();
 
+// ============= CRITICAL FIX #3: Robust Currency Parser =============
+
+/**
+ * Parses currency strings from PayPal/Stripe CSVs robustly.
+ * Handles formats like: 1,234.56 (US), 1.234,56 (EU), $1,234.56, -1234.56
+ * Returns amount in CENTS (integer) for database consistency.
+ */
+function parseCurrency(raw: string): number {
+  if (!raw || typeof raw !== 'string') return 0;
+  
+  // Remove everything except digits, dots, commas, and minus
+  let cleaned = raw.replace(/[^\d.,-]/g, '');
+  
+  if (!cleaned) return 0;
+  
+  // Handle negative
+  const isNegative = cleaned.startsWith('-');
+  cleaned = cleaned.replace(/-/g, '');
+  
+  // Determine decimal separator
+  const lastDot = cleaned.lastIndexOf('.');
+  const lastComma = cleaned.lastIndexOf(',');
+  
+  let floatValue: number;
+  
+  if (lastDot > lastComma) {
+    // US format: 1,234.56 - dot is decimal
+    cleaned = cleaned.replace(/,/g, '');
+    floatValue = parseFloat(cleaned);
+  } else if (lastComma > lastDot) {
+    // EU format: 1.234,56 - comma is decimal
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+    floatValue = parseFloat(cleaned);
+  } else if (lastDot === -1 && lastComma === -1) {
+    // No separators: just digits
+    floatValue = parseFloat(cleaned);
+  } else if (lastComma !== -1 && lastDot === -1) {
+    // Only comma: check if it's decimal (2 digits after) or thousands
+    const afterComma = cleaned.split(',')[1];
+    if (afterComma && afterComma.length === 2) {
+      // Likely decimal: 123,45 -> 123.45
+      cleaned = cleaned.replace(',', '.');
+    } else {
+      // Likely thousands: 1,234 -> 1234
+      cleaned = cleaned.replace(/,/g, '');
+    }
+    floatValue = parseFloat(cleaned);
+  } else {
+    // Fallback
+    cleaned = cleaned.replace(/,/g, '');
+    floatValue = parseFloat(cleaned);
+  }
+  
+  if (isNaN(floatValue)) return 0;
+  
+  // Convert to cents (integer)
+  const cents = Math.round((isNegative ? -floatValue : floatValue) * 100);
+  return cents;
+}
+
 // ============= Helper: Process in batches =============
 
 async function processBatches<T>(
@@ -135,12 +195,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
       continue;
     }
 
-    // Clean PayPal amount: remove currency symbols, spaces, and handle comma as decimal/thousands
-    const cleanedAmount = rawAmount
-      .replace(/[^\d.,-]/g, '')  // Keep only digits, dots, commas, minus
-      .replace(/,(\d{2})$/, '.$1')  // Convert trailing comma decimal (European format)
-      .replace(/,/g, '');  // Remove thousands separator commas
-    const amount = parseFloat(cleanedAmount) || 0;
+    // CRITICAL FIX #3: Use robust currency parser (returns cents)
+    const amountCents = parseCurrency(rawAmount);
 
     let status = 'pending';
     const lowerStatus = rawStatus.toLowerCase();
@@ -163,10 +219,11 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    parsedRowsMap.set(trimmedTxId, { email: trimmedEmail, amount, status, transactionDate, transactionId: trimmedTxId, currency });
+    // Store amount in CENTS for consistency
+    parsedRowsMap.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, transactionDate, transactionId: trimmedTxId, currency });
     
-    // Update cache with deduplication by transaction ID
-    paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount, status, date: transactionDate });
+    // Update cache with amount in CENTS
+    paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, date: transactionDate });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
@@ -194,12 +251,12 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     last_sync: string;
   }> = [];
 
-  // Aggregate payments per email
-  const emailPayments = new Map<string, { paidAmount: number; hasFailed: boolean }>();
+  // Aggregate payments per email (amounts already in cents)
+  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean }>();
   for (const row of newRows) {
-    const existing = emailPayments.get(row.email) || { paidAmount: 0, hasFailed: false };
+    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false };
     if (row.status === 'paid') {
-      existing.paidAmount += row.amount;
+      existing.paidAmountCents += row.amount; // Already in cents
     }
     if (row.status === 'failed') {
       existing.hasFailed = true;
@@ -209,10 +266,11 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   for (const [email, payments] of emailPayments) {
     const existingClient = clientMap.get(email);
-    const newTotalPaid = (existingClient?.total_paid || 0) + payments.paidAmount;
+    // total_paid stored in dollars for display
+    const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
     
     let paymentStatus = existingClient?.payment_status || 'none';
-    if (payments.paidAmount > 0) {
+    if (payments.paidAmountCents > 0) {
       paymentStatus = 'paid';
     } else if (payments.hasFailed && paymentStatus !== 'paid') {
       paymentStatus = 'failed';
@@ -248,14 +306,15 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Step 6: Prepare transactions for batch UPSERT (force update existing)
+  // Step 6: Prepare transactions for batch UPSERT
+  // CRITICAL FIX #1 & #2: Amount already in cents, use clean transaction ID (no prefix)
   const transactionsToUpsert = newRows.map(row => ({
     customer_email: row.email,
-    amount: Math.round(row.amount * 100),
+    amount: row.amount, // Already in cents from parseCurrency
     status: row.status,
     source: 'paypal',
-    external_transaction_id: row.transactionId,
-    stripe_payment_intent_id: `paypal_${row.transactionId}`,
+    external_transaction_id: row.transactionId, // Clean ID, no prefix
+    stripe_payment_intent_id: `paypal_${row.transactionId}`, // Keep paypal_ prefix for upsert conflict
     stripe_created_at: row.transactionDate.toISOString(),
     currency: row.currency,
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
@@ -594,6 +653,7 @@ export async function getMetrics(): Promise<DashboardMetrics> {
   }
 
   // Add PayPal from cache only if NOT already in DB (deduplicated by transaction ID)
+  // Note: Cache amounts are now in CENTS
   for (const [txId, tx] of paypalTransactionsCache) {
     const txDate = new Date(tx.date);
     
@@ -601,10 +661,12 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     if (txDate >= firstDayOfMonth && txDate <= today && tx.status === 'paid') {
       const paypalPaymentIntentId = `paypal_${txId}`;
       if (!dbTransactionIds.has(paypalPaymentIntentId)) {
-        if (tx.amount > 500) {
-          salesMonthMXN += tx.amount;
+        // tx.amount is already in cents, convert to currency for display
+        const amountInCurrency = tx.amount / 100;
+        if (tx.amount > 50000) { // 500 USD = 50000 cents threshold for MXN
+          salesMonthMXN += amountInCurrency;
         } else {
-          salesMonthUSD += tx.amount;
+          salesMonthUSD += amountInCurrency;
         }
       }
     }
@@ -624,22 +686,20 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     emailSubscriptions.set(sub.email, existing);
   }
 
-  let trialCount = 0;
-  let convertedCount = 0;
+  // CRITICAL FIX #4: Count UNIQUE emails for trials, not rows
   const trialEmails = new Set<string>();
+  const convertedEmails = new Set<string>();
 
   // Trial keywords: Trial, Prueba, Gratis, Demo, Free
   const trialKeywords = ['trial', 'prueba', 'gratis', 'demo', 'free'];
 
-  // First pass: identify trial users
+  // First pass: identify UNIQUE trial emails
   for (const sub of subscriptionDataCache) {
+    if (!sub.email) continue;
     const planLower = sub.planName.toLowerCase();
     const isTrial = trialKeywords.some(keyword => planLower.includes(keyword));
     if (isTrial) {
-      trialCount++;
-      if (sub.email) {
-        trialEmails.add(sub.email);
-      }
+      trialEmails.add(sub.email);
     }
   }
 
@@ -653,9 +713,13 @@ export async function getMetrics(): Promise<DashboardMetrics> {
       return statusLower === 'active' && !isTrialPlan;
     });
     if (hasActivePaidPlan) {
-      convertedCount++;
+      convertedEmails.add(email);
     }
   }
+
+  // Use SET SIZE for unique counts
+  const trialCount = trialEmails.size;
+  const convertedCount = convertedEmails.size;
 
   const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
 
@@ -843,8 +907,9 @@ export async function processPaymentCSV(
       continue;
     }
 
-    const amount = parseFloat(rawAmount.replace(/[^\d.-]/g, '')) || 0;
-    parsedRowsMap.set(transactionId, { email, transactionId, amount, status, date });
+    // CRITICAL FIX #1 & #3: Use robust currency parser (returns cents)
+    const amountCents = parseCurrency(rawAmount);
+    parsedRowsMap.set(transactionId, { email, transactionId, amount: amountCents, status, date });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
@@ -861,13 +926,13 @@ export async function processPaymentCSV(
 
   const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
 
-  // Step 4: Aggregate payments per email and prepare client upserts
-  const emailPayments = new Map<string, { paidAmount: number; hasFailed: boolean }>();
+  // Step 4: Aggregate payments per email (amounts already in cents)
+  const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean }>();
   for (const row of newRows) {
-    const existing = emailPayments.get(row.email) || { paidAmount: 0, hasFailed: false };
+    const existing = emailPayments.get(row.email) || { paidAmountCents: 0, hasFailed: false };
     const isPaid = row.status === 'succeeded' || row.status === 'paid';
     if (isPaid) {
-      existing.paidAmount += row.amount;
+      existing.paidAmountCents += row.amount; // Already in cents
     }
     if (row.status === 'failed') {
       existing.hasFailed = true;
@@ -885,10 +950,11 @@ export async function processPaymentCSV(
 
   for (const [email, payments] of emailPayments) {
     const existingClient = clientMap.get(email);
-    const newTotalPaid = (existingClient?.total_paid || 0) + payments.paidAmount;
+    // total_paid stored in dollars for display
+    const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
     
     let paymentStatus = existingClient?.payment_status || 'none';
-    if (payments.paidAmount > 0) {
+    if (payments.paidAmountCents > 0) {
       paymentStatus = 'paid';
     } else if (payments.hasFailed && paymentStatus !== 'paid') {
       paymentStatus = 'failed';
@@ -924,14 +990,15 @@ export async function processPaymentCSV(
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Step 6: Prepare transactions for batch UPSERT (force update existing)
+  // Step 6: Prepare transactions for batch UPSERT
+  // CRITICAL FIX #1 & #2: Amount already in cents, use clean transaction ID
   const transactionsToUpsert = newRows.map(row => ({
     customer_email: row.email,
-    amount: Math.round(row.amount * 100),
+    amount: row.amount, // Already in cents from parseCurrency
     status: row.status,
     source: 'stripe',
-    external_transaction_id: row.transactionId,
-    stripe_payment_intent_id: `stripe_${row.transactionId}`,
+    external_transaction_id: row.transactionId, // Clean ID, no prefix
+    stripe_payment_intent_id: row.transactionId, // Use clean ID for Stripe
     stripe_created_at: new Date(row.date).toISOString(),
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
     failure_message: row.status === 'failed' ? 'Payment failed' : null

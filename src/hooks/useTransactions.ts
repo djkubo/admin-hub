@@ -47,9 +47,11 @@ export function useTransactions() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      // CRITICAL FIX #5: Read synced_transactions instead of synced
+      const syncedCount = data?.synced_transactions ?? data?.synced_count ?? data?.synced ?? 0;
       toast({
         title: "Sincronización completada",
-        description: `Se sincronizaron ${data?.synced || 0} transacciones fallidas desde Stripe.`,
+        description: `Se sincronizaron ${syncedCount} transacciones desde Stripe.`,
       });
     },
     onError: (error: Error) => {
