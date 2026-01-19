@@ -2,9 +2,7 @@ import { cn } from "@/lib/utils";
 import { 
   Users, 
   LayoutDashboard, 
-  Settings, 
   BarChart3, 
-  Bell,
   LogOut
 } from "lucide-react";
 
@@ -17,8 +15,6 @@ const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "notifications", label: "Notificaciones", icon: Bell },
-  { id: "settings", label: "Configuración", icon: Settings },
 ];
 
 export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps) {
