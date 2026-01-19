@@ -29,7 +29,7 @@ const Index = () => {
   
   const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
-  const { metrics, isLoading: isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
+  const { metrics, isLoading: _isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
   const { signOut, user } = useAuth();
   const { toast } = useToast();
 

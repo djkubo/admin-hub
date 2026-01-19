@@ -21,7 +21,7 @@ export const cleanPhoneNumber = (phone: string): string => {
 };
 
 // Utility function to open WhatsApp with Safari/iOS compatible URL
-export const openWhatsApp = (phone: string, name: string, message: string) => {
+export const openWhatsApp = (phone: string, _name: string, message: string) => {
   const cleanPhone = cleanPhoneNumber(phone);
   const encodedMessage = encodeURIComponent(message);
   // Using wa.me format for Safari/iOS compatibility
