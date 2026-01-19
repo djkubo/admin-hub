@@ -71,7 +71,11 @@ export function useClients() {
     }) => {
       const { data, error } = await supabase
         .from("clients")
-        .insert([{ ...client, last_sync: new Date().toISOString() }])
+        .insert([{ 
+          ...client, 
+          last_sync: new Date().toISOString(),
+          lifecycle_stage: 'LEAD'
+        }])
         .select()
         .single();
 
