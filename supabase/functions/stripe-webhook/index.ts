@@ -9,40 +9,20 @@ interface StripeEvent {
   id: string;
   type: string;
   data: {
-    object: {
-      id: string;
-      amount: number;
-      currency: string;
-      status: string;
-      receipt_email?: string;
-      customer?: string;
-      created: number;
-      last_payment_error?: {
-        code?: string;
-        message?: string;
-      };
-      metadata?: Record<string, string>;
-    };
+    object: Record<string, unknown>;
   };
 }
 
 async function getCustomerEmail(customerId: string, stripeSecretKey: string): Promise<string | null> {
   try {
     const response = await fetch(`https://api.stripe.com/v1/customers/${customerId}`, {
-      headers: {
-        'Authorization': `Bearer ${stripeSecretKey}`,
-      },
+      headers: { 'Authorization': `Bearer ${stripeSecretKey}` },
     });
-    
-    if (!response.ok) {
-      console.error('Failed to fetch customer:', response.status);
-      return null;
-    }
-    
+    if (!response.ok) return null;
     const customer = await response.json();
     return customer.email || null;
   } catch (error) {
-    console.error('Error fetching customer email:', error);
+    console.error('Error fetching customer:', error);
     return null;
   }
 }
@@ -50,20 +30,27 @@ async function getCustomerEmail(customerId: string, stripeSecretKey: string): Pr
 function mapStripeStatus(status: string): string {
   switch (status) {
     case 'succeeded':
+    case 'paid':
+    case 'complete':
+    case 'active':
       return 'paid';
     case 'requires_payment_method':
     case 'requires_action':
     case 'requires_confirmation':
     case 'canceled':
-    case 'processing':
+    case 'incomplete':
+    case 'incomplete_expired':
+    case 'past_due':
+    case 'unpaid':
       return 'failed';
+    case 'trialing':
+      return 'trial';
     default:
       return status;
   }
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -78,59 +65,177 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Get the raw body for signature verification (optional, can add later)
     const body = await req.text();
     const event: StripeEvent = JSON.parse(body);
 
-    console.log(`Received Stripe event: ${event.type}, ID: ${event.id}`);
+    console.log(`🔔 Stripe Event: ${event.type}, ID: ${event.id}`);
 
-    // Handle payment intent events
-    if (event.type === 'payment_intent.succeeded' || 
-        event.type === 'payment_intent.payment_failed' ||
-        event.type === 'payment_intent.canceled' ||
-        event.type === 'payment_intent.requires_action') {
+    const obj = event.data.object as Record<string, unknown>;
+    let email: string | null = null;
+    let amount = 0;
+    let status = '';
+    let paymentIntentId = '';
+    let customerId: string | null = null;
+    let createdAt: string | null = null;
+    let failureCode: string | null = null;
+    let failureMessage: string | null = null;
+    let processed = false;
+
+    // PAYMENT INTENT EVENTS
+    if (event.type.startsWith('payment_intent.')) {
+      paymentIntentId = obj.id as string;
+      amount = (obj.amount as number) / 100;
+      status = mapStripeStatus(obj.status as string);
+      email = obj.receipt_email as string | null;
+      customerId = obj.customer as string | null;
+      createdAt = new Date((obj.created as number) * 1000).toISOString();
       
-      const paymentIntent = event.data.object;
+      const lastError = obj.last_payment_error as Record<string, unknown> | null;
+      if (lastError) {
+        failureCode = lastError.code as string || null;
+        failureMessage = lastError.message as string || null;
+      }
+      processed = true;
+    }
+    
+    // CHARGE EVENTS
+    else if (event.type.startsWith('charge.')) {
+      paymentIntentId = (obj.payment_intent as string) || `charge_${obj.id}`;
+      amount = (obj.amount as number) / 100;
+      status = mapStripeStatus(obj.status as string);
+      email = obj.receipt_email as string | null;
+      customerId = obj.customer as string | null;
+      createdAt = new Date((obj.created as number) * 1000).toISOString();
       
-      // Get customer email
-      let email = paymentIntent.receipt_email;
+      const outcome = obj.outcome as Record<string, unknown> | null;
+      if (obj.failure_code) failureCode = obj.failure_code as string;
+      if (obj.failure_message) failureMessage = obj.failure_message as string;
+      if (outcome?.risk_level === 'elevated') failureCode = 'high_risk';
+      processed = true;
+    }
+    
+    // INVOICE EVENTS
+    else if (event.type.startsWith('invoice.')) {
+      paymentIntentId = (obj.payment_intent as string) || `invoice_${obj.id}`;
+      amount = (obj.amount_paid as number || obj.total as number) / 100;
+      status = mapStripeStatus(obj.status as string);
+      email = obj.customer_email as string | null;
+      customerId = obj.customer as string | null;
+      createdAt = obj.created ? new Date((obj.created as number) * 1000).toISOString() : new Date().toISOString();
+      processed = true;
+    }
+    
+    // SUBSCRIPTION EVENTS
+    else if (event.type.startsWith('customer.subscription.')) {
+      paymentIntentId = `subscription_${obj.id}`;
+      const items = obj.items as { data?: Array<{ price?: { unit_amount?: number } }> };
+      amount = ((items?.data?.[0]?.price?.unit_amount || 0) / 100);
+      status = mapStripeStatus(obj.status as string);
+      customerId = obj.customer as string | null;
+      createdAt = obj.created ? new Date((obj.created as number) * 1000).toISOString() : new Date().toISOString();
       
-      if (!email && paymentIntent.customer) {
-        const customerEmail = await getCustomerEmail(paymentIntent.customer, stripeSecretKey);
-        if (customerEmail) {
-          email = customerEmail;
+      if (obj.cancel_at_period_end) {
+        failureCode = 'pending_cancellation';
+      }
+      processed = true;
+    }
+    
+    // CUSTOMER EVENTS
+    else if (event.type.startsWith('customer.')) {
+      customerId = obj.id as string;
+      email = obj.email as string | null;
+      
+      if (email) {
+        const clientData: Record<string, unknown> = {
+          email,
+          full_name: obj.name as string || null,
+          phone: obj.phone as string || null,
+          last_sync: new Date().toISOString(),
+        };
+        
+        if (event.type === 'customer.created') {
+          clientData.created_at = new Date((obj.created as number) * 1000).toISOString();
+          clientData.status = 'active';
+        } else if (event.type === 'customer.deleted') {
+          clientData.status = 'deleted';
         }
+
+        const { error } = await supabase
+          .from('clients')
+          .upsert(clientData, { onConflict: 'email' });
+
+        if (error) console.error('Error upserting client:', error);
+        else console.log(`✅ Client ${event.type}: ${email}`);
+      }
+
+      return new Response(
+        JSON.stringify({ received: true, processed: true, type: event.type }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    // CHECKOUT SESSION EVENTS
+    else if (event.type.startsWith('checkout.session.')) {
+      paymentIntentId = (obj.payment_intent as string) || `checkout_${obj.id}`;
+      amount = (obj.amount_total as number || 0) / 100;
+      status = mapStripeStatus(obj.payment_status as string || obj.status as string);
+      email = obj.customer_email as string | null;
+      customerId = obj.customer as string | null;
+      createdAt = obj.created ? new Date((obj.created as number) * 1000).toISOString() : new Date().toISOString();
+      processed = true;
+    }
+    
+    // PAYMENT METHOD EVENTS
+    else if (event.type.startsWith('payment_method.')) {
+      customerId = obj.customer as string | null;
+      if (customerId) {
+        const customerEmail = await getCustomerEmail(customerId, stripeSecretKey);
+        if (customerEmail) {
+          await supabase
+            .from('clients')
+            .upsert({
+              email: customerEmail,
+              last_sync: new Date().toISOString(),
+            }, { onConflict: 'email' });
+          console.log(`✅ Payment method ${event.type} for: ${customerEmail}`);
+        }
+      }
+      return new Response(
+        JSON.stringify({ received: true, processed: true, type: event.type }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Process transaction if we have data
+    if (processed && paymentIntentId) {
+      // Try to get email from customer if not available
+      if (!email && customerId) {
+        email = await getCustomerEmail(customerId, stripeSecretKey);
       }
 
       if (!email) {
-        console.log(`Skipping payment ${paymentIntent.id}: no email available`);
+        console.log(`⚠️ Skipping ${event.type}: no email for ${paymentIntentId}`);
         return new Response(
           JSON.stringify({ received: true, skipped: true, reason: 'no_email' }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
-      const mappedStatus = mapStripeStatus(paymentIntent.status);
-      const isFailure = mappedStatus === 'failed';
-
+      // Upsert transaction
       const transactionData = {
-        stripe_payment_intent_id: paymentIntent.id,
-        amount: paymentIntent.amount / 100,
-        currency: paymentIntent.currency?.toUpperCase() || 'USD',
-        status: mappedStatus,
+        stripe_payment_intent_id: paymentIntentId,
+        amount,
+        currency: (obj.currency as string)?.toUpperCase() || 'USD',
+        status,
         customer_email: email,
-        stripe_customer_id: paymentIntent.customer || null,
-        stripe_created_at: new Date(paymentIntent.created * 1000).toISOString(),
+        stripe_customer_id: customerId,
+        stripe_created_at: createdAt,
         source: 'stripe',
-        failure_code: isFailure ? (paymentIntent.last_payment_error?.code || paymentIntent.status) : null,
-        failure_message: isFailure ? (paymentIntent.last_payment_error?.message || `Payment ${paymentIntent.status}`) : null,
-        metadata: paymentIntent.metadata || null,
+        failure_code: failureCode,
+        failure_message: failureMessage,
+        metadata: obj.metadata || null,
       };
 
-      console.log(`Processing payment: ${paymentIntent.id}, status: ${mappedStatus}, email: ${email}`);
-
-      // Upsert transaction
       const { error: txError } = await supabase
         .from('transactions')
         .upsert(transactionData, { onConflict: 'stripe_payment_intent_id' });
@@ -140,53 +245,59 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
-      // Update client record if payment succeeded
-      if (mappedStatus === 'paid') {
-        // Get current client data
+      // Update client
+      if (status === 'paid' && amount > 0) {
         const { data: existingClient } = await supabase
           .from('clients')
           .select('total_paid')
           .eq('email', email)
           .single();
 
-        const currentTotal = existingClient?.total_paid || 0;
-
         const { error: clientError } = await supabase
           .from('clients')
           .upsert({
-            email: email,
+            email,
             payment_status: 'paid',
-            total_paid: currentTotal + (paymentIntent.amount / 100),
+            total_paid: (existingClient?.total_paid || 0) + amount,
             last_sync: new Date().toISOString(),
           }, { onConflict: 'email' });
 
-        if (clientError) {
-          console.error('Error upserting client:', clientError);
-        }
+        if (clientError) console.error('Error upserting client:', clientError);
+      } else if (status === 'trial') {
+        await supabase
+          .from('clients')
+          .upsert({
+            email,
+            status: 'trial',
+            trial_started_at: createdAt,
+            last_sync: new Date().toISOString(),
+          }, { onConflict: 'email' });
       }
 
-      console.log(`Successfully processed payment: ${paymentIntent.id}`);
+      console.log(`✅ ${event.type}: ${paymentIntentId} - ${status} - $${amount} - ${email}`);
 
       return new Response(
         JSON.stringify({ 
           received: true, 
           processed: true,
-          payment_intent: paymentIntent.id,
-          status: mappedStatus
+          type: event.type,
+          payment_id: paymentIntentId,
+          status,
+          amount,
+          email
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // For other event types, just acknowledge
-    console.log(`Event type ${event.type} not processed`);
+    console.log(`ℹ️ Event ${event.type} acknowledged but not processed`);
     return new Response(
-      JSON.stringify({ received: true, processed: false }),
+      JSON.stringify({ received: true, processed: false, type: event.type }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('❌ Webhook error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ error: errorMessage }),
