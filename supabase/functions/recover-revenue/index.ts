@@ -10,6 +10,9 @@ const corsHeaders = {
 // Subscription statuses to SKIP (don't charge)
 const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired"];
 
+// Invoice statuses that should NOT be charged (extra safety)
+const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
+
 // Delay between API calls to respect rate limits (ms)
 const API_DELAY_MS = 200;
 
@@ -153,7 +156,21 @@ serve(async (req) => {
 
       console.log(`\n💳 Processing invoice ${invoice.id} - $${(invoice.amount_due / 100).toFixed(2)}`);
 
-      // Check subscription status (SECURITY FILTER)
+      // SAFETY CHECK 1: Skip invoices that are already paid/void/uncollectible
+      if (SKIP_INVOICE_STATUSES.includes(invoice.status)) {
+        console.log(`🚫 SKIPPING: Invoice ${invoice.id} is ${invoice.status}`);
+        result.skipped.push({
+          invoice_id: invoice.id,
+          customer_email: customerEmail,
+          amount_due: invoice.amount_due,
+          currency: invoice.currency,
+          reason: `Invoice is ${invoice.status}`,
+        });
+        result.summary.total_skipped_amount += invoice.amount_due;
+        continue;
+      }
+
+      // SAFETY CHECK 2: Check subscription status
       if (invoice.subscription) {
         const subscription = invoice.subscription as Stripe.Subscription;
         
