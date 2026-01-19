@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Upload, FileText, Check, AlertCircle, Loader2, X } from 'lucide-react';
+import { Upload, FileText, Check, AlertCircle, Loader2, X, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -7,17 +7,20 @@ import {
   processPayPalCSV, 
   processPaymentCSV,
   processSubscriptionsCSV,
-  ProcessingResult 
+  processStripeCustomersCSV,
+  ProcessingResult,
+  StripeCustomerResult
 } from '@/lib/csvProcessor';
 import { toast } from 'sonner';
 
 interface CSVFile {
   name: string;
-  type: 'web' | 'stripe' | 'paypal' | 'subscriptions';
+  type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers';
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
-  result?: ProcessingResult;
+  result?: ProcessingResult | StripeCustomerResult;
   subscriptionCount?: number;
+  duplicatesResolved?: number;
 }
 
 interface CSVUploaderProps {
@@ -29,7 +32,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions'> => {
+  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers'> => {
     const lowerName = file.name.toLowerCase();
     
     // Read content for column-based detection (more reliable)
@@ -41,6 +44,16 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       console.log(`[CSV Detection] File: ${file.name}`);
       console.log(`[CSV Detection] Headers: ${firstLine.substring(0, 200)}...`);
       
+      // STRIPE CUSTOMERS (unified_customers.csv) - detect by Total Spend or Delinquent columns
+      if (firstLine.includes('total spend') || 
+          firstLine.includes('total_spend') ||
+          firstLine.includes('delinquent') ||
+          firstLine.includes('lifetime value') ||
+          (firstLine.includes('customer id') && firstLine.includes('email') && !firstLine.includes('amount'))) {
+        console.log(`[CSV Detection] Detected as: Stripe Customers (LTV Master)`);
+        return 'stripe_customers';
+      }
+      
       // PayPal detection: unique Spanish column names or "Bruto" column
       if (firstLine.includes('correo electrónico del remitente') || 
           firstLine.includes('from email address') ||
@@ -51,7 +64,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         return 'paypal';
       }
       
-      // Stripe detection: has specific Stripe column patterns
+      // Stripe transactions: has specific Stripe column patterns
       if (firstLine.includes('payment_intent') ||
           firstLine.includes('created (utc)') ||
           firstLine.includes('created date (utc)') ||
@@ -81,6 +94,10 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       }
       
       // Fallback to filename patterns
+      if (lowerName.includes('unified_customer') || lowerName.includes('customers')) {
+        console.log(`[CSV Detection] Filename fallback: Stripe Customers`);
+        return 'stripe_customers';
+      }
       if (lowerName.includes('download') || lowerName.includes('paypal')) {
         console.log(`[CSV Detection] Filename fallback: PayPal`);
         return 'paypal';
@@ -126,7 +143,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
   };
 
-  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions') => {
+  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers') => {
     setFiles(prev => prev.map((f, i) => i === index ? { ...f, type } : f));
   };
 
@@ -139,9 +156,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     
     setIsProcessing(true);
     
-    // Process in order: Web (for phones) -> Subscriptions -> Payments
+    // Process in order: Web (for phones) -> Stripe Customers (LTV) -> Subscriptions -> Payments
     const sortedFiles = [...files].sort((a, b) => {
-      const priority = { web: 0, subscriptions: 1, stripe: 2, paypal: 3 };
+      const priority = { web: 0, stripe_customers: 1, subscriptions: 2, stripe: 3, paypal: 4 };
       return priority[a.type] - priority[b.type];
     });
 
@@ -156,7 +173,31 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       try {
         const text = await file.file.text();
 
-        if (file.type === 'subscriptions') {
+        if (file.type === 'stripe_customers') {
+          // Process Stripe Customers (LTV Master Data)
+          const customerResult = await processStripeCustomersCSV(text);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done', 
+              result: customerResult,
+              duplicatesResolved: customerResult.duplicatesResolved
+            } : f
+          ));
+          toast.success(
+            `${file.name}: ${customerResult.clientsUpdated} clientes actualizados con LTV. ` +
+            `${customerResult.duplicatesResolved} duplicados resueltos. ` +
+            `Total LTV: $${(customerResult.totalLTV / 100).toFixed(2)}`
+          );
+          
+          if (customerResult.delinquentCount > 0) {
+            toast.warning(`⚠️ ${customerResult.delinquentCount} clientes morosos detectados`);
+          }
+          
+          if (customerResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
+          }
+        } else if (file.type === 'subscriptions') {
           const subsResult = await processSubscriptionsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
@@ -208,6 +249,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     switch (type) {
       case 'web': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
       case 'stripe': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
+      case 'stripe_customers': return 'bg-amber-500/20 text-amber-400 border-amber-500/30';
       case 'paypal': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
       case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
       default: return 'bg-muted text-muted-foreground';
@@ -217,7 +259,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const getTypeLabel = (type: string) => {
     switch (type) {
       case 'web': return 'Usuarios Web';
-      case 'stripe': return 'Stripe';
+      case 'stripe': return 'Stripe Pagos';
+      case 'stripe_customers': return 'Clientes LTV';
       case 'paypal': return 'PayPal';
       case 'subscriptions': return 'Suscripciones';
       default: return type;
@@ -245,8 +288,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     if (f.subscriptionCount) {
       acc.subscriptions += f.subscriptionCount;
     }
+    if (f.duplicatesResolved) {
+      acc.duplicatesResolved += f.duplicatesResolved;
+    }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0 });
 
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
@@ -256,7 +302,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         </div>
         <div>
           <h3 className="text-lg font-semibold text-white">Cargar Archivos CSV</h3>
-          <p className="text-sm text-gray-400">PayPal, Usuarios Web, Suscripciones</p>
+          <p className="text-sm text-gray-400">PayPal, Stripe, unified_customers.csv (LTV), Suscripciones</p>
         </div>
       </div>
 
@@ -277,7 +323,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           Arrastra archivos o haz clic para seleccionar
         </p>
         <p className="text-xs text-gray-500">
-          Detecta automáticamente: Download-X.csv (PayPal), users.csv (Web), subscriptions.csv
+          Detecta: unified_customers.csv (LTV), Download-X.csv (PayPal), subscriptions.csv
         </p>
       </div>
 
@@ -292,13 +338,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               <div className="flex items-center gap-2">
                 <select
                   value={file.type}
-                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions')}
+                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers')}
                   disabled={file.status !== 'pending'}
                   className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
                 >
                   <option value="web">Usuarios Web</option>
                   <option value="paypal">PayPal</option>
-                  <option value="stripe">Stripe</option>
+                  <option value="stripe">Stripe Pagos</option>
+                  <option value="stripe_customers">Clientes LTV</option>
                   <option value="subscriptions">Suscripciones</option>
                 </select>
                 <Badge className={`${getTypeColor(file.type)} border`}>
@@ -321,7 +368,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       {files.some(f => f.status === 'done') && (
         <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
           <h4 className="font-medium text-emerald-400 mb-2">Resumen</h4>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
             <div className="text-gray-400">
               Clientes únicos: <span className="text-white font-medium ml-1">{totalResults.uniqueClients}</span>
             </div>
@@ -335,11 +382,17 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               Transacciones: <span className="text-white font-medium ml-1">{totalResults.transactionsCreated}</span>
             </div>
             <div className="text-gray-400">
-              Duplicados: <span className="text-yellow-400 font-medium ml-1">{totalResults.transactionsSkipped}</span>
+              Duplicados TX: <span className="text-yellow-400 font-medium ml-1">{totalResults.transactionsSkipped}</span>
             </div>
             <div className="text-gray-400">
               Suscripciones: <span className="text-white font-medium ml-1">{totalResults.subscriptions}</span>
             </div>
+            {totalResults.duplicatesResolved > 0 && (
+              <div className="text-gray-400 col-span-2">
+                <Users className="inline h-3 w-3 mr-1" />
+                Duplicados LTV resueltos: <span className="text-amber-400 font-medium ml-1">{totalResults.duplicatesResolved}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
