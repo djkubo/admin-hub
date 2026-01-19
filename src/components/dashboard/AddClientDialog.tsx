@@ -21,9 +21,9 @@ interface AddClientDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdd: (client: {
-    email: string;
-    phone: string;
-    full_name: string;
+    email: string | null;
+    phone: string | null;
+    full_name: string | null;
     status: string;
   }) => void;
   isLoading?: boolean;
@@ -39,7 +39,12 @@ export function AddClientDialog({ open, onOpenChange, onAdd, isLoading }: AddCli
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onAdd(formData);
+    onAdd({
+      email: formData.email || null,
+      phone: formData.phone || null,
+      full_name: formData.full_name || null,
+      status: formData.status,
+    });
     setFormData({ email: "", phone: "", full_name: "", status: "active" });
   };
 
@@ -58,26 +63,24 @@ export function AddClientDialog({ open, onOpenChange, onAdd, isLoading }: AddCli
               value={formData.full_name}
               onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
               placeholder="Juan Pérez"
-              required
               className="bg-background border-border"
             />
           </div>
           
           <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email">Email (opcional)</Label>
             <Input
               id="email"
               type="email"
               value={formData.email}
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               placeholder="juan@ejemplo.com"
-              required
               className="bg-background border-border"
             />
           </div>
           
           <div className="space-y-2">
-            <Label htmlFor="phone">Teléfono</Label>
+            <Label htmlFor="phone">Teléfono (opcional)</Label>
             <Input
               id="phone"
               value={formData.phone}

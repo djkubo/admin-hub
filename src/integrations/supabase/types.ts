@@ -18,8 +18,9 @@ export type Database = {
         Row: {
           converted_at: string | null
           created_at: string | null
-          email: string
+          email: string | null
           full_name: string | null
+          id: string
           last_sync: string | null
           payment_status: string | null
           phone: string | null
@@ -30,8 +31,9 @@ export type Database = {
         Insert: {
           converted_at?: string | null
           created_at?: string | null
-          email: string
+          email?: string | null
           full_name?: string | null
+          id?: string
           last_sync?: string | null
           payment_status?: string | null
           phone?: string | null
@@ -42,8 +44,9 @@ export type Database = {
         Update: {
           converted_at?: string | null
           created_at?: string | null
-          email?: string
+          email?: string | null
           full_name?: string | null
+          id?: string
           last_sync?: string | null
           payment_status?: string | null
           phone?: string | null

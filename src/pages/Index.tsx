@@ -11,8 +11,11 @@ import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
-import { Users, UserCheck, UserX, Clock } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { Users, UserCheck, UserX, Clock, LogOut } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
 const Index = () => {
   const [activeMenuItem, setActiveMenuItem] = useState("dashboard");
@@ -22,6 +25,8 @@ const Index = () => {
   const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
   const { metrics, isLoading: isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
+  const { signOut, user } = useAuth();
+  const { toast } = useToast();
 
   const stats = useMemo(() => {
     // Use totalCount from the count query (not clients.length which is just current page)
@@ -42,15 +47,15 @@ const Index = () => {
     return clients.filter(
       (client) =>
         client.full_name?.toLowerCase().includes(query) ||
-        client.email.toLowerCase().includes(query) ||
+        client.email?.toLowerCase().includes(query) ||
         client.phone?.toLowerCase().includes(query)
     );
   }, [clients, searchQuery]);
 
   const handleAddClient = (clientData: {
-    email: string;
-    phone: string;
-    full_name: string;
+    email: string | null;
+    phone: string | null;
+    full_name: string | null;
     status: string;
   }) => {
     addClient.mutate(clientData, {
@@ -64,6 +69,17 @@ const Index = () => {
     refetchMetrics();
   };
 
+  const handleLogout = async () => {
+    const { error } = await signOut();
+    if (error) {
+      toast({
+        title: "Error al cerrar sesión",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0f1225]">
       {/* Background glow effect */}
@@ -73,15 +89,32 @@ const Index = () => {
       
       <main className="pl-64">
         <div className="p-8 space-y-6">
-          <Header
-            title="Dashboard"
-            subtitle="Gestiona tus clientes y monitorea el estado de tu SaaS"
-            searchValue={searchQuery}
-            onSearchChange={setSearchQuery}
-            onAddClient={() => setIsAddDialogOpen(true)}
-            onSyncData={() => syncStripe.mutate()}
-            isSyncing={syncStripe.isPending}
-          />
+          {/* User info and logout */}
+          <div className="flex items-center justify-between">
+            <Header
+              title="Dashboard"
+              subtitle="Gestiona tus clientes y monitorea el estado de tu SaaS"
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              onAddClient={() => setIsAddDialogOpen(true)}
+              onSyncData={() => syncStripe.mutate()}
+              isSyncing={syncStripe.isPending}
+            />
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-muted-foreground">
+                {user?.email}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLogout}
+                className="gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Salir
+              </Button>
+            </div>
+          </div>
 
           {/* KPI Metrics Cards */}
           <MetricsCards metrics={metrics} />
@@ -146,7 +179,7 @@ const Index = () => {
                 <ClientsTable
                   clients={filteredClients}
                   isLoading={isLoading}
-                  onDelete={(email) => deleteClient.mutate(email)}
+                  onDelete={(id) => deleteClient.mutate(id)}
                   page={page}
                   totalPages={totalPages}
                   onPageChange={setPage}

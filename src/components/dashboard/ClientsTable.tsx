@@ -12,7 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 
 export interface Client {
-  email: string;
+  id: string;
+  email: string | null;
   phone: string | null;
   full_name: string | null;
   status: string | null;
@@ -23,7 +24,7 @@ interface ClientsTableProps {
   clients: Client[];
   isLoading?: boolean;
   onEdit?: (client: Client) => void;
-  onDelete?: (email: string) => void;
+  onDelete?: (id: string) => void;
   page?: number;
   totalPages?: number;
   onPageChange?: (page: number) => void;
@@ -95,7 +96,7 @@ export function ClientsTable({ clients, isLoading, onEdit, onDelete, page = 0, t
           <tbody className="divide-y divide-border">
             {clients.map((client) => (
               <tr
-                key={client.email}
+                key={client.id}
                 className="transition-colors hover:bg-muted/20"
               >
                 <td className="px-6 py-4">
@@ -112,15 +113,20 @@ export function ClientsTable({ clients, isLoading, onEdit, onDelete, page = 0, t
                 </td>
                 <td className="px-6 py-4">
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Mail className="h-3.5 w-3.5" />
-                      {client.email}
-                    </div>
+                    {client.email && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Mail className="h-3.5 w-3.5" />
+                        {client.email}
+                      </div>
+                    )}
                     {client.phone && (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Phone className="h-3.5 w-3.5" />
                         {client.phone}
                       </div>
+                    )}
+                    {!client.email && !client.phone && (
+                      <span className="text-sm text-muted-foreground">Sin contacto</span>
                     )}
                   </div>
                 </td>
@@ -148,7 +154,7 @@ export function ClientsTable({ clients, isLoading, onEdit, onDelete, page = 0, t
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className="text-destructive"
-                        onClick={() => onDelete?.(client.email)}
+                        onClick={() => onDelete?.(client.id)}
                       >
                         Eliminar
                       </DropdownMenuItem>

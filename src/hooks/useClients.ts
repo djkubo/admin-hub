@@ -4,7 +4,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
 export interface Client {
-  email: string;
+  id: string;
+  email: string | null;
   phone: string | null;
   full_name: string | null;
   status: string | null;
@@ -58,7 +59,7 @@ export function useClients() {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   const addClient = useMutation({
-    mutationFn: async (client: Omit<Client, "last_sync" | "created_at">) => {
+    mutationFn: async (client: Omit<Client, "id" | "last_sync" | "created_at">) => {
       const { data, error } = await supabase
         .from("clients")
         .insert([{ ...client, last_sync: new Date().toISOString() }])
@@ -70,6 +71,7 @@ export function useClients() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clients"] });
+      queryClient.invalidateQueries({ queryKey: ["clients-count"] });
       toast({
         title: "Cliente agregado",
         description: "El cliente se ha agregado correctamente.",
@@ -85,16 +87,17 @@ export function useClients() {
   });
 
   const deleteClient = useMutation({
-    mutationFn: async (email: string) => {
+    mutationFn: async (id: string) => {
       const { error } = await supabase
         .from("clients")
         .delete()
-        .eq("email", email);
+        .eq("id", id);
 
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clients"] });
+      queryClient.invalidateQueries({ queryKey: ["clients-count"] });
       toast({
         title: "Cliente eliminado",
         description: "El cliente se ha eliminado correctamente.",
