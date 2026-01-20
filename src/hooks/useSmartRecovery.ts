@@ -383,53 +383,78 @@ export function useSmartRecovery() {
     const excludeMsg = excludeHours > 0 ? ` (omitiendo facturas ya procesadas en ${excludeHours}h)` : "";
     setProgress({ batch: 0, message: `Iniciando Smart Recovery en segundo plano...${excludeMsg}` });
 
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
     try {
-      // Use fetch directly with longer timeout for background mode
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          },
-          body: JSON.stringify({ 
-            hours_lookback, 
-            background: true,
-            exclude_recent_hours: excludeHours,
-          }),
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+          const response = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+                'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+              },
+              body: JSON.stringify({ 
+                hours_lookback, 
+                background: true,
+                exclude_recent_hours: excludeHours,
+              }),
+              signal: controller.signal,
+            }
+          );
+
+          clearTimeout(timeoutId);
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || `HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          const syncRunId = data?.sync_run_id;
+          
+          if (!syncRunId) {
+            throw new Error("No sync_run_id received from background process");
+          }
+
+          setBackgroundSyncId(syncRunId);
+          saveBackgroundState({
+            sync_run_id: syncRunId,
+            hours_lookback,
+            started_at: new Date().toISOString(),
+          });
+
+          const toastMsg = excludeHours > 0 
+            ? `Omitirá facturas ya procesadas en las últimas ${excludeHours}h.`
+            : "El proceso continúa en segundo plano.";
+          toast({
+            title: "Smart Recovery Iniciado",
+            description: toastMsg,
+          });
+
+          setProgress({ batch: 0, message: "Proceso iniciado. Esperando actualizaciones..." });
+          startPolling(syncRunId);
+          return; // Success, exit the function
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.log(`Background recovery attempt ${attempt}/${maxRetries} failed:`, lastError.message);
+          
+          if (attempt < maxRetries) {
+            setProgress({ batch: 0, message: `Reintentando conexión... (${attempt}/${maxRetries})` });
+            await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
+          }
         }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
-      const data = await response.json();
-      const syncRunId = data?.sync_run_id;
-      
-      if (!syncRunId) {
-        throw new Error("No sync_run_id received from background process");
-      }
-
-      setBackgroundSyncId(syncRunId);
-      saveBackgroundState({
-        sync_run_id: syncRunId,
-        hours_lookback,
-        started_at: new Date().toISOString(),
-      });
-
-      const toastMsg = excludeHours > 0 
-        ? `Omitirá facturas ya procesadas en las últimas ${excludeHours}h.`
-        : "El proceso continúa en segundo plano.";
-      toast({
-        title: "Smart Recovery Iniciado",
-        description: toastMsg,
-      });
-
-      startPolling(syncRunId);
+      // All retries failed
+      throw lastError || new Error("Failed after all retries");
     } catch (error) {
       console.error("Background recovery error:", error);
       setIsRunning(false);
