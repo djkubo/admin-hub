@@ -15,6 +15,7 @@ interface SyncRequest {
   batch_size?: number;
   checkpoint?: { cursor?: string };
   background?: boolean;
+  continue_run_id?: string; // For auto-continuation
 }
 
 interface SyncStats {
@@ -35,7 +36,8 @@ async function runGHLSync(
   syncRunId: string,
   dryRun: boolean,
   batchSize: number,
-  initialCursor?: string
+  initialCursor?: string,
+  adminKey?: string
 ): Promise<SyncStats> {
   let cursor = initialCursor;
   let totalFetched = 0;
@@ -45,7 +47,7 @@ async function runGHLSync(
   let totalConflicts = 0;
   let hasMore = true;
   let pageCount = 0;
-  const maxPages = 100; // Increased for larger syncs
+  const maxPages = 15; // Reduced to avoid CPU timeout - will auto-continue
 
   try {
     while (hasMore && pageCount < maxPages) {
@@ -192,11 +194,66 @@ async function runGHLSync(
       }
     }
 
-    // Final update
+    // If there's more data, schedule a continuation
+    if (hasMore && cursor && adminKey) {
+      console.log(`[sync-ghl] Scheduling continuation from cursor ${cursor}...`);
+      
+      // Update status to partial before continuing
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'continuing',
+          total_fetched: totalFetched,
+          total_inserted: totalInserted,
+          total_updated: totalUpdated,
+          total_skipped: totalSkipped,
+          total_conflicts: totalConflicts,
+          checkpoint: { cursor }
+        })
+        .eq('id', syncRunId);
+
+      // Auto-continue by calling self
+      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+      try {
+        const continueResponse = await fetch(`${supabaseUrl}/functions/v1/sync-ghl`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-key': adminKey
+          },
+          body: JSON.stringify({
+            dry_run: dryRun,
+            batch_size: batchSize,
+            checkpoint: { cursor },
+            continue_run_id: syncRunId
+          })
+        });
+        
+        if (continueResponse.ok) {
+          console.log(`[sync-ghl] Continuation triggered successfully`);
+        } else {
+          console.error(`[sync-ghl] Failed to trigger continuation: ${continueResponse.status}`);
+        }
+      } catch (continueError) {
+        console.error(`[sync-ghl] Error triggering continuation:`, continueError);
+      }
+
+      return {
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        total_updated: totalUpdated,
+        total_skipped: totalSkipped,
+        total_conflicts: totalConflicts,
+        has_more: true,
+        next_cursor: cursor
+      };
+    }
+
+    // Final update - sync complete
     await supabase
       .from('sync_runs')
       .update({
-        status: hasMore ? 'partial' : 'completed',
+        status: 'completed',
         completed_at: new Date().toISOString(),
         total_fetched: totalFetched,
         total_inserted: totalInserted,
@@ -215,7 +272,7 @@ async function runGHLSync(
       total_updated: totalUpdated,
       total_skipped: totalSkipped,
       total_conflicts: totalConflicts,
-      has_more: hasMore,
+      has_more: false,
       next_cursor: cursor
     };
 
@@ -268,30 +325,45 @@ Deno.serve(async (req) => {
     }
     
     const dryRun = body.dry_run ?? false;
-    const batchSize = body.batch_size ?? 100;
-    const background = body.background ?? true; // Default to background
+    const batchSize = body.batch_size ?? 50; // Reduced to avoid CPU timeout
+    const background = body.background ?? true;
     const cursor = body.checkpoint?.cursor;
+    const continueRunId = (body as { continue_run_id?: string }).continue_run_id;
 
-    console.log(`[sync-ghl] Starting sync, dry_run=${dryRun}, batch_size=${batchSize}, background=${background}`);
+    // If continuing an existing run, use that ID instead of creating new
+    let syncRunId: string;
+    
+    if (continueRunId) {
+      console.log(`[sync-ghl] CONTINUING run ${continueRunId} from cursor=${cursor}`);
+      syncRunId = continueRunId;
+      
+      // Update status to running
+      await supabase
+        .from('sync_runs')
+        .update({ status: 'running' })
+        .eq('id', syncRunId);
+    } else {
+      console.log(`[sync-ghl] Starting NEW sync, dry_run=${dryRun}, batch_size=${batchSize}, background=${background}`);
 
-    // Create sync run
-    const { data: syncRun, error: syncError } = await supabase
-      .from('sync_runs')
-      .insert({
-        source: 'ghl',
-        status: 'running',
-        dry_run: dryRun,
-        checkpoint: { cursor }
-      })
-      .select()
-      .single();
+      // Create sync run
+      const { data: syncRun, error: syncError } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'ghl',
+          status: 'running',
+          dry_run: dryRun,
+          checkpoint: { cursor }
+        })
+        .select()
+        .single();
 
-    if (syncError) {
-      console.error('[sync-ghl] Failed to create sync run:', syncError);
-      throw syncError;
+      if (syncError) {
+        console.error('[sync-ghl] Failed to create sync run:', syncError);
+        throw syncError;
+      }
+
+      syncRunId = syncRun.id;
     }
-
-    const syncRunId = syncRun.id;
 
     // Background mode: return immediately
     if (background) {
@@ -302,7 +374,8 @@ Deno.serve(async (req) => {
         syncRunId,
         dryRun,
         batchSize,
-        cursor
+        cursor,
+        providedKey! // Pass admin key for auto-continuation
       );
       
       EdgeRuntime.waitUntil(syncTask);
@@ -312,7 +385,9 @@ Deno.serve(async (req) => {
           success: true,
           mode: 'background',
           sync_run_id: syncRunId,
-          message: 'GHL sync started in background. Check sync_runs table for progress.',
+          message: continueRunId 
+            ? 'GHL sync continuing in background.' 
+            : 'GHL sync started in background. Check sync_runs table for progress.',
           dry_run: dryRun
         }),
         { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -327,7 +402,8 @@ Deno.serve(async (req) => {
       syncRunId,
       dryRun,
       batchSize,
-      cursor
+      cursor,
+      providedKey!
     );
 
     const duration = Date.now() - startTime;
