@@ -764,6 +764,62 @@ export type Database = {
         }
         Relationships: []
       }
+      messages: {
+        Row: {
+          body: string
+          channel: string
+          client_id: string | null
+          created_at: string | null
+          direction: string
+          external_message_id: string | null
+          from_address: string | null
+          id: string
+          metadata: Json | null
+          read_at: string | null
+          status: string | null
+          subject: string | null
+          to_address: string | null
+        }
+        Insert: {
+          body: string
+          channel: string
+          client_id?: string | null
+          created_at?: string | null
+          direction: string
+          external_message_id?: string | null
+          from_address?: string | null
+          id?: string
+          metadata?: Json | null
+          read_at?: string | null
+          status?: string | null
+          subject?: string | null
+          to_address?: string | null
+        }
+        Update: {
+          body?: string
+          channel?: string
+          client_id?: string | null
+          created_at?: string | null
+          direction?: string
+          external_message_id?: string | null
+          from_address?: string | null
+          id?: string
+          metadata?: Json | null
+          read_at?: string | null
+          status?: string | null
+          subject?: string | null
+          to_address?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       metrics_snapshots: {
         Row: {
           created_at: string

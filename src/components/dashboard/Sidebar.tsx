@@ -10,7 +10,7 @@ import {
   Settings,
   LogOut,
   Send,
-  RefreshCw,
+  MessageSquare,
   Shield
 } from "lucide-react";
 
@@ -21,6 +21,7 @@ interface SidebarProps {
 
 const menuItems = [
   { id: "dashboard", label: "Command Center", icon: LayoutDashboard },
+  { id: "messages", label: "Mensajes", icon: MessageSquare },
   { id: "recovery", label: "Recovery", icon: AlertTriangle },
   { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },

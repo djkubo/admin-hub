@@ -8,9 +8,8 @@ verify_jwt = false
 
 # ============================================
 # WEBHOOKS EXTERNOS (verify_jwt = false)
-# Estos endpoints reciben llamadas de Stripe/PayPal
-# La seguridad se maneja con verificación de firma
-# Responden 503 si los secrets no están configurados
+# Estos endpoints reciben llamadas de Stripe/PayPal/Twilio
+# La seguridad se maneja con verificación de firma/AccountSid
 # ============================================
 [functions.stripe-webhook]
 verify_jwt = false
@@ -19,6 +18,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.ses-webhook]
+verify_jwt = false
+
+[functions.twilio-inbound]
 verify_jwt = false
 
 # ============================================
