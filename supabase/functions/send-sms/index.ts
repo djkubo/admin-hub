@@ -26,6 +26,7 @@ interface SMSRequest {
   template?: 'friendly' | 'urgent' | 'final' | 'custom';
   client_name?: string;
   amount?: number;
+  channel?: 'sms' | 'whatsapp';
 }
 
 serve(async (req) => {
@@ -61,7 +62,8 @@ serve(async (req) => {
     }
 
     const payload: SMSRequest = await req.json();
-    console.log('SMS Request received:', { to: payload.to, template: payload.template });
+    const channel = payload.channel || 'sms';
+    console.log('SMS Request received:', { to: payload.to, template: payload.template, channel });
 
     let phoneNumber = payload.to.replace(/[^\d+]/g, '');
     
@@ -74,6 +76,13 @@ serve(async (req) => {
         phoneNumber = '+' + phoneNumber;
       }
     }
+
+    // Format for WhatsApp: whatsapp:+1234567890
+    const toAddress = channel === 'whatsapp' ? `whatsapp:${phoneNumber}` : phoneNumber;
+    
+    // Get the appropriate "From" number for the channel
+    const TWILIO_WHATSAPP_NUMBER = Deno.env.get('TWILIO_WHATSAPP_NUMBER') || `whatsapp:${TWILIO_PHONE_NUMBER}`;
+    const fromAddress = channel === 'whatsapp' ? TWILIO_WHATSAPP_NUMBER : TWILIO_PHONE_NUMBER;
 
     let message = payload.message;
     if (payload.template && payload.template !== 'custom') {
@@ -93,13 +102,13 @@ serve(async (req) => {
       }
     }
 
-    console.log('Sending SMS to:', phoneNumber);
+    console.log(`Sending ${channel.toUpperCase()} to:`, toAddress);
 
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
     
     const formData = new URLSearchParams();
-    formData.append('To', phoneNumber);
-    formData.append('From', TWILIO_PHONE_NUMBER);
+    formData.append('To', toAddress);
+    formData.append('From', fromAddress);
     formData.append('Body', message);
 
     const twilioResponse = await fetch(twilioUrl, {
@@ -132,7 +141,7 @@ serve(async (req) => {
         client_id: payload.client_id,
         event_type: 'email_sent',
         metadata: {
-          channel: 'sms',
+          channel: channel,
           template: payload.template || 'custom',
           phone: phoneNumber,
           message_sid: twilioResult.sid,
