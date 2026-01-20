@@ -1,5 +1,14 @@
 project_id = "qskmzaxzhkrlchycbria"
 
+[functions.receive-lead]
+verify_jwt = false
+
+[functions.receive-lead-manychat]
+verify_jwt = false
+
+[functions.receive-lead-ghl]
+verify_jwt = false
+
 # ============================================
 # WEBHOOKS EXTERNOS (verify_jwt = false)
 # Estos endpoints reciben llamadas de Stripe/PayPal

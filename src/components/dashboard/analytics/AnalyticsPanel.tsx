@@ -2,10 +2,12 @@ import { MRRMovementsChart } from "./MRRMovementsChart";
 import { CohortRetentionTable } from "./CohortRetentionTable";
 import { LTVMetrics } from "./LTVMetrics";
 import { RevenueByPlanChart } from "./RevenueByPlanChart";
+import { SourceAnalytics } from "./SourceAnalytics";
 import { AnalyzeButton } from "./AnalyzeButton";
 import { Transaction } from "@/hooks/useTransactions";
 import { Client } from "@/hooks/useClients";
 import { Sparkles } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface AnalyticsPanelProps {
   transactions: Transaction[];
@@ -31,17 +33,34 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
         <AnalyzeButton />
       </div>
 
-      {/* LTV Metrics Row */}
-      <LTVMetrics transactions={transactions} />
+      <Tabs defaultValue="source" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="source">Por Fuente</TabsTrigger>
+          <TabsTrigger value="ltv">LTV & MRR</TabsTrigger>
+          <TabsTrigger value="cohorts">Cohortes</TabsTrigger>
+        </TabsList>
 
-      {/* Revenue by Plan Chart - Pareto Analysis */}
-      <RevenueByPlanChart />
+        <TabsContent value="source" className="space-y-6">
+          {/* Source Attribution Analytics */}
+          <SourceAnalytics />
+        </TabsContent>
 
-      {/* MRR Movements Chart */}
-      <MRRMovementsChart transactions={transactions} clients={clients} />
+        <TabsContent value="ltv" className="space-y-6">
+          {/* LTV Metrics Row */}
+          <LTVMetrics transactions={transactions} />
 
-      {/* Cohort Retention Table */}
-      <CohortRetentionTable transactions={transactions} />
+          {/* Revenue by Plan Chart - Pareto Analysis */}
+          <RevenueByPlanChart />
+
+          {/* MRR Movements Chart */}
+          <MRRMovementsChart transactions={transactions} clients={clients} />
+        </TabsContent>
+
+        <TabsContent value="cohorts" className="space-y-6">
+          {/* Cohort Retention Table */}
+          <CohortRetentionTable transactions={transactions} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
