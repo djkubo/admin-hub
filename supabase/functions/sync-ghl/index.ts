@@ -3,8 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
+
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
+}
 
 interface SyncRequest {
   dry_run?: boolean;
@@ -18,6 +31,18 @@ serve(async (req) => {
   }
 
   try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log("✅ Admin key verified");
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const ghlApiKey = Deno.env.get('GHL_API_KEY');
@@ -63,13 +88,12 @@ serve(async (req) => {
     let totalConflicts = 0;
     let hasMore = true;
     let pageCount = 0;
-    const maxPages = 50; // Safety limit
+    const maxPages = 50;
 
     while (hasMore && pageCount < maxPages) {
       pageCount++;
       console.log(`[sync-ghl] Fetching page ${pageCount}, cursor=${cursor || 'initial'}`);
 
-      // Fetch contacts from GHL API v2
       const ghlUrl = new URL(`https://services.leadconnectorhq.com/contacts/`);
       ghlUrl.searchParams.set('locationId', ghlLocationId);
       ghlUrl.searchParams.set('limit', batchSize.toString());
@@ -78,8 +102,6 @@ serve(async (req) => {
       }
 
       console.log(`[sync-ghl] Calling GHL API: ${ghlUrl.toString()}`);
-      console.log(`[sync-ghl] Location ID: ${ghlLocationId}`);
-      console.log(`[sync-ghl] API Key prefix: ${ghlApiKey?.substring(0, 10)}...`);
 
       const ghlResponse = await fetch(ghlUrl.toString(), {
         headers: {
@@ -93,7 +115,6 @@ serve(async (req) => {
         const errorText = await ghlResponse.text();
         console.error(`[sync-ghl] GHL API error: ${ghlResponse.status}`);
         console.error(`[sync-ghl] Error response: ${errorText}`);
-        console.error(`[sync-ghl] Check that Private Integration has 'contacts.readonly' scope enabled`);
         throw new Error(`GHL API error: ${ghlResponse.status} - ${errorText}`);
       }
 
@@ -103,10 +124,8 @@ serve(async (req) => {
       console.log(`[sync-ghl] Fetched ${contacts.length} contacts`);
       totalFetched += contacts.length;
 
-      // Process each contact
       for (const contact of contacts) {
         try {
-          // Store raw data for audit
           if (!dryRun) {
             await supabase
               .from('ghl_contacts_raw')
@@ -118,7 +137,6 @@ serve(async (req) => {
               .select();
           }
 
-          // Extract fields with GHL field mapping
           const email = contact.email || null;
           const phone = contact.phone || contact.phoneNumber || null;
           const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.name || null;
@@ -127,7 +145,6 @@ serve(async (req) => {
           const smsOptIn = contact.dndSettings?.sms?.status !== 'active';
           const emailOptIn = contact.dndSettings?.email?.status !== 'active';
 
-          // Call merge function
           const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
             p_source: 'ghl',
             p_external_id: contact.id,
@@ -161,12 +178,10 @@ serve(async (req) => {
         }
       }
 
-      // Check pagination
       if (contacts.length < batchSize) {
         hasMore = false;
       } else {
         cursor = contacts[contacts.length - 1]?.id;
-        // Update checkpoint
         await supabase
           .from('sync_runs')
           .update({
@@ -181,7 +196,6 @@ serve(async (req) => {
       }
     }
 
-    // Mark sync as complete
     await supabase
       .from('sync_runs')
       .update({

@@ -3,8 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
+
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
+}
 
 interface ManyChatRequest {
   subscriber_id?: string;
@@ -19,12 +32,23 @@ interface ManyChatRequest {
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log("✅ Admin key verified");
+
     const MANYCHAT_API_KEY = Deno.env.get('MANYCHAT_API_KEY');
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -44,7 +68,6 @@ serve(async (req) => {
       template: payload.template 
     });
 
-    // Build message based on template
     let message = payload.message;
     if (payload.template && payload.template !== 'custom') {
       const name = payload.client_name || 'Cliente';
@@ -65,11 +88,9 @@ serve(async (req) => {
 
     let subscriberId = payload.subscriber_id;
 
-    // If no subscriber_id, try to find by email or phone
     if (!subscriberId && (payload.email || payload.phone)) {
       console.log('Searching for subscriber by email/phone...');
       
-      // Search by email first
       if (payload.email) {
         const searchResponse = await fetch(
           `https://api.manychat.com/fb/subscriber/findBySystemField?field=email&value=${encodeURIComponent(payload.email)}`,
@@ -89,9 +110,7 @@ serve(async (req) => {
         }
       }
       
-      // If not found by email, try phone
       if (!subscriberId && payload.phone) {
-        // Clean phone number
         const cleanPhone = payload.phone.replace(/[^\d+]/g, '');
         
         const searchResponse = await fetch(
@@ -126,7 +145,6 @@ serve(async (req) => {
 
     console.log('Sending message to subscriber:', subscriberId);
 
-    // Send message via ManyChat
     const sendResponse = await fetch('https://api.manychat.com/fb/sending/sendContent', {
       method: 'POST',
       headers: {
@@ -152,7 +170,6 @@ serve(async (req) => {
     const sendResult = await sendResponse.json();
     console.log('ManyChat send response:', sendResult);
 
-    // Add tag if provided
     if (payload.tag && subscriberId) {
       await fetch('https://api.manychat.com/fb/subscriber/addTagByName', {
         method: 'POST',
@@ -179,13 +196,12 @@ serve(async (req) => {
       );
     }
 
-    // Log event to client_events if client_id provided
     if (payload.client_id) {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       
       await supabase.from('client_events').insert({
         client_id: payload.client_id,
-        event_type: 'email_sent', // Using email_sent as closest match
+        event_type: 'email_sent',
         metadata: {
           channel: 'manychat',
           template: payload.template || 'custom',

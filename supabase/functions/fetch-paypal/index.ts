@@ -1,21 +1,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const ALLOWED_ORIGINS = [
-  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
-  "https://lovable.dev",
-  "http://localhost:5173",
-  "http://localhost:3000",
-];
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
-function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
-    ? origin 
-    : ALLOWED_ORIGINS[0];
-  return {
-    "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
 }
 
 interface PayPalTokenResponse {
@@ -100,41 +101,22 @@ function mapPayPalStatus(status: string, eventCode: string): string {
 }
 
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-  const corsHeaders = getCorsHeaders(origin);
-
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // SECURITY: Verify JWT authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
-
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
-    
-    if (claimsError || !claimsData?.user) {
-      console.error("Auth error:", claimsError);
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log("✅ User authenticated:", claimsData.user.email);
+    console.log("✅ Admin key verified");
 
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
@@ -146,6 +128,7 @@ Deno.serve(async (req) => {
       );
     }
 
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -279,13 +262,12 @@ Deno.serve(async (req) => {
 
       const transactionId = info.transaction_id;
       
-      // Check for duplicate using clean transaction ID (no prefix)
       if (transactionsMap.has(transactionId)) {
         skippedDuplicate++;
         continue;
       }
 
-      const paymentIntentId = `paypal_${transactionId}`; // For backwards compat
+      const paymentIntentId = `paypal_${transactionId}`;
 
       const amount = parseFloat(info.transaction_amount?.value || '0');
       const currency = info.transaction_amount?.currency_code || 'USD';
@@ -301,14 +283,13 @@ Deno.serve(async (req) => {
         failedCount++;
       }
 
-      // NORMALIZED: payment_key = transaction_id (NO prefix) for perfect dedup
       transactionsMap.set(transactionId, {
-        stripe_payment_intent_id: paymentIntentId, // Backwards compat with prefix
-        payment_key: transactionId, // CANONICAL dedup key (NO prefix)
-        external_transaction_id: transactionId, // Clean ID for reference
+        stripe_payment_intent_id: paymentIntentId,
+        payment_key: transactionId,
+        external_transaction_id: transactionId,
         customer_email: email,
-        amount: Math.round(Math.abs(amount) * 100), // Convert dollars to cents
-        currency: currency.toLowerCase(), // Normalize to lowercase
+        amount: Math.round(Math.abs(amount) * 100),
+        currency: currency.toLowerCase(),
         status,
         failure_code: status === 'failed' ? info.transaction_status : null,
         failure_message: status === 'failed' ? `PayPal status: ${info.transaction_status}` : null,
@@ -350,7 +331,6 @@ Deno.serve(async (req) => {
     
     for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
       const batch = transactions.slice(i, i + BATCH_SIZE);
-      // Use new UNIQUE constraint: (source, payment_key)
       const { data: upsertedData, error: upsertError } = await supabase
         .from("transactions")
         .upsert(batch, { onConflict: "source,payment_key", ignoreDuplicates: false })
@@ -417,11 +397,10 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    const origin = req.headers.get("origin");
     console.error("Unexpected error:", error);
     return new Response(
       JSON.stringify({ error: "Internal server error", details: String(error) }),
-      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

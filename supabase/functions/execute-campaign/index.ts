@@ -3,8 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
+
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
+}
 
 interface TriggerPayload {
   trigger_event: 'payment_failed' | 'trial_started' | 'trial_end_24h' | 'canceled' | 'invoice_open';
@@ -60,6 +73,18 @@ serve(async (req) => {
   }
 
   try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log("✅ Admin key verified");
+
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -67,7 +92,6 @@ serve(async (req) => {
     const payload: TriggerPayload = await req.json();
     console.log('Campaign trigger received:', payload);
 
-    // Get active rule for this event
     const { data: rule, error: ruleError } = await supabase
       .from('campaign_rules')
       .select('*')
@@ -83,7 +107,6 @@ serve(async (req) => {
       );
     }
 
-    // Get client info
     const { data: client, error: clientError } = await supabase
       .from('clients')
       .select('*')
@@ -98,7 +121,6 @@ serve(async (req) => {
       );
     }
 
-    // Check opt-out status
     const { data: optOut } = await supabase
       .from('opt_outs')
       .select('*')
@@ -122,7 +144,6 @@ serve(async (req) => {
       );
     }
 
-    // Check for recent campaigns (avoid spam)
     const { data: recentCampaigns } = await supabase
       .from('campaign_executions')
       .select('*')
@@ -139,7 +160,6 @@ serve(async (req) => {
       );
     }
 
-    // Build message
     const clientName = client.full_name || 'Cliente';
     const amount = payload.revenue_at_risk 
       ? `$${(payload.revenue_at_risk / 100).toFixed(2)}` 
@@ -152,7 +172,6 @@ serve(async (req) => {
           : (templateFn as (name: string, amount: string) => string)(clientName, amount))
       : `Hola ${clientName}, tenemos un mensaje importante para ti.`;
 
-    // Try channels in priority order
     const channelPriority = rule.channel_priority || ['whatsapp', 'sms', 'manychat', 'ghl'];
     let successChannel: string | null = null;
     let externalMessageId: string | null = null;
@@ -160,7 +179,6 @@ serve(async (req) => {
     for (const channel of channelPriority) {
       try {
         if (channel === 'whatsapp' && client.phone) {
-          // WhatsApp via Twilio
           const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID');
           const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
           const TWILIO_PHONE_NUMBER = Deno.env.get('TWILIO_PHONE_NUMBER');
@@ -171,7 +189,6 @@ serve(async (req) => {
               phoneNumber = phoneNumber.length === 10 ? '+1' + phoneNumber : '+' + phoneNumber;
             }
 
-            // Use WhatsApp-enabled number format
             const whatsappTo = `whatsapp:${phoneNumber}`;
             const whatsappFrom = `whatsapp:${TWILIO_PHONE_NUMBER}`;
 
@@ -201,7 +218,6 @@ serve(async (req) => {
         }
 
         if (channel === 'sms' && client.phone) {
-          // SMS via Twilio
           const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID');
           const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
           const TWILIO_PHONE_NUMBER = Deno.env.get('TWILIO_PHONE_NUMBER');
@@ -238,7 +254,6 @@ serve(async (req) => {
         }
 
         if (channel === 'manychat') {
-          // ManyChat
           const MANYCHAT_API_KEY = Deno.env.get('MANYCHAT_API_KEY');
           if (MANYCHAT_API_KEY && (client.email || client.phone)) {
             const searchField = client.email ? 'email' : 'phone';
@@ -277,7 +292,6 @@ serve(async (req) => {
         }
 
         if (channel === 'ghl') {
-          // GoHighLevel
           const { data: ghlSetting } = await supabase
             .from('system_settings')
             .select('value')
@@ -315,7 +329,6 @@ serve(async (req) => {
       }
     }
 
-    // Record execution
     const execution = {
       rule_id: rule.id,
       client_id: client.id,
@@ -331,7 +344,6 @@ serve(async (req) => {
 
     await supabase.from('campaign_executions').insert(execution);
 
-    // Also log to client_events
     await supabase.from('client_events').insert({
       client_id: client.id,
       event_type: successChannel ? 'email_sent' : 'custom',
@@ -343,7 +355,6 @@ serve(async (req) => {
       }
     });
 
-    // Update revenue_score
     const newScore = (client.revenue_score || 0) + (payload.revenue_at_risk ? 1 : 0);
     await supabase
       .from('clients')
