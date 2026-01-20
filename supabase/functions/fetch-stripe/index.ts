@@ -142,6 +142,19 @@ Deno.serve(async (req) => {
 
     console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, startDate: ${startDate}, endDate: ${endDate}`);
 
+    // Create sync_run record
+    const { data: syncRun } = await supabase
+      .from('sync_runs')
+      .insert({
+        source: 'stripe',
+        status: 'running',
+        metadata: { fetchAll, startDate, endDate }
+      })
+      .select('id')
+      .single();
+    
+    const syncRunId = syncRun?.id;
+
     let totalSynced = 0;
     let totalClients = 0;
     let paidCount = 0;
@@ -278,6 +291,21 @@ Deno.serve(async (req) => {
       console.log(`📄 Page ${pageCount}: saved ${transactions.length} tx (total: ${totalSynced})`);
     }
 
+    // Update sync_run record
+    if (syncRunId) {
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          total_fetched: totalSynced + skippedNoEmail,
+          total_inserted: totalSynced,
+          total_skipped: skippedNoEmail,
+          metadata: { fetchAll, startDate, endDate, paidCount, failedCount, pages: pageCount }
+        })
+        .eq('id', syncRunId);
+    }
+
     console.log(`✅ Done: ${totalSynced} transactions, ${totalClients} clients`);
 
     return new Response(
@@ -291,6 +319,7 @@ Deno.serve(async (req) => {
         skipped_no_email: skippedNoEmail,
         pages_fetched: pageCount,
         has_more: hasMore,
+        sync_run_id: syncRunId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

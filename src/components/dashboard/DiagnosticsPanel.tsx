@@ -57,6 +57,18 @@ interface RebuildLog {
   promoted: boolean;
 }
 
+interface SyncRun {
+  id: string;
+  source: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  total_fetched: number | null;
+  total_inserted: number | null;
+  total_skipped: number | null;
+  error_message: string | null;
+}
+
 const CHECK_LABELS: Record<string, string> = {
   'payments_without_email': 'Pagos sin Email',
   'clients_without_phone': 'Clientes sin Teléfono',
@@ -65,6 +77,154 @@ const CHECK_LABELS: Record<string, string> = {
   'mixed_currencies': 'Monedas Mezcladas',
   'clients_without_source': 'Clientes sin Fuente',
 };
+
+// Sync Health Panel Component
+function SyncHealthPanel() {
+  const { data: syncRuns = [], isLoading } = useQuery({
+    queryKey: ['sync-runs-health'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('sync_runs')
+        .select('*')
+        .order('started_at', { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return data as SyncRun[];
+    },
+    refetchInterval: 30000
+  });
+
+  const { data: webhookStats = [] } = useQuery({
+    queryKey: ['webhook-stats'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('webhook_events')
+        .select('source, event_type')
+        .order('processed_at', { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      
+      const stats = new Map<string, { count: number; types: Set<string> }>();
+      for (const e of data || []) {
+        const existing = stats.get(e.source) || { count: 0, types: new Set() };
+        existing.count++;
+        existing.types.add(e.event_type);
+        stats.set(e.source, existing);
+      }
+      return Array.from(stats.entries()).map(([source, data]) => ({
+        source,
+        count: data.count,
+        types: Array.from(data.types).slice(0, 3)
+      }));
+    }
+  });
+
+  // Group sync runs by source
+  const syncBySource = syncRuns.reduce((acc, run) => {
+    if (!acc[run.source]) acc[run.source] = [];
+    acc[run.source].push(run);
+    return acc;
+  }, {} as Record<string, SyncRun[]>);
+
+  const getStatusBadge = (status: string) => {
+    if (status === 'completed') return <Badge className="bg-green-500/20 text-green-400"><CheckCircle className="w-3 h-3 mr-1" /> OK</Badge>;
+    if (status === 'running') return <Badge className="bg-blue-500/20 text-blue-400"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Running</Badge>;
+    return <Badge className="bg-red-500/20 text-red-400"><XCircle className="w-3 h-3 mr-1" /> Error</Badge>;
+  };
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>;
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Sync Health Monitor</CardTitle>
+        <CardDescription>
+          Historial de sincronizaciones, webhooks procesados y estado de dedupe
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Last Sync by Source */}
+        <div className="grid gap-4 md:grid-cols-3">
+          {['stripe', 'paypal', 'csv'].map(source => {
+            const runs = syncBySource[source] || [];
+            const lastRun = runs[0];
+            const last7dRuns = runs.filter(r => new Date(r.started_at) > subDays(new Date(), 7));
+            const totalInserted = last7dRuns.reduce((sum, r) => sum + (r.total_inserted || 0), 0);
+            
+            return (
+              <div key={source} className="p-4 rounded-lg border border-border/50 bg-muted/30">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium capitalize">{source}</span>
+                  {lastRun ? getStatusBadge(lastRun.status) : <Badge variant="outline">Sin datos</Badge>}
+                </div>
+                {lastRun ? (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      Último: {format(new Date(lastRun.started_at), 'dd/MM HH:mm')}
+                    </p>
+                    <p className="text-sm text-foreground">
+                      {lastRun.total_inserted || 0} insertados, {lastRun.total_skipped || 0} omitidos
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      7d: {last7dRuns.length} syncs, {totalInserted} filas
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No hay sincronizaciones</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Webhook Stats */}
+        {webhookStats.length > 0 && (
+          <div className="p-4 rounded-lg border border-border/50 bg-muted/30">
+            <h4 className="font-medium mb-2">Webhooks Procesados (últimos 100)</h4>
+            <div className="flex gap-4 flex-wrap">
+              {webhookStats.map(stat => (
+                <div key={stat.source} className="text-sm">
+                  <span className="font-medium capitalize">{stat.source}:</span>{' '}
+                  <span className="text-muted-foreground">{stat.count} eventos</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recent Sync Runs Table */}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Fuente</TableHead>
+              <TableHead>Fecha</TableHead>
+              <TableHead>Estado</TableHead>
+              <TableHead className="text-right">Fetched</TableHead>
+              <TableHead className="text-right">Inserted</TableHead>
+              <TableHead className="text-right">Skipped</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {syncRuns.slice(0, 15).map(run => (
+              <TableRow key={run.id}>
+                <TableCell className="font-medium capitalize">{run.source}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {format(new Date(run.started_at), 'dd/MM HH:mm')}
+                </TableCell>
+                <TableCell>{getStatusBadge(run.status)}</TableCell>
+                <TableCell className="text-right">{run.total_fetched || 0}</TableCell>
+                <TableCell className="text-right">{run.total_inserted || 0}</TableCell>
+                <TableCell className="text-right">{run.total_skipped || 0}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function DiagnosticsPanel() {
   const queryClient = useQueryClient();
@@ -358,8 +518,12 @@ Responde en español, de forma concisa.`;
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="quality" className="space-y-4">
+      <Tabs defaultValue="sync-health" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="sync-health" className="gap-2">
+            <RefreshCw className="w-4 h-4" />
+            Sync Health
+          </TabsTrigger>
           <TabsTrigger value="quality" className="gap-2">
             <Database className="w-4 h-4" />
             Data Quality
@@ -377,6 +541,11 @@ Responde en español, de forma concisa.`;
             AI Audit
           </TabsTrigger>
         </TabsList>
+
+        {/* Sync Health Tab - NEW */}
+        <TabsContent value="sync-health">
+          <SyncHealthPanel />
+        </TabsContent>
 
         {/* Data Quality Tab */}
         <TabsContent value="quality">
