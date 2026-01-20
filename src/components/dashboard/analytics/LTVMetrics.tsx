@@ -113,53 +113,51 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
     subtext?: string;
     color: string;
   }) => (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-5 hover:border-primary/30 transition-all">
-      <div className="flex items-start justify-between mb-3">
-        <div
-          className={`p-2.5 rounded-lg ${color}`}
-        >
-          <Icon className="w-5 h-5" />
+    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-5 hover:border-primary/30 transition-all">
+      <div className="flex items-start justify-between mb-2 sm:mb-3">
+        <div className={`p-1.5 sm:p-2.5 rounded-lg ${color}`}>
+          <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
         </div>
       </div>
-      <p className="text-2xl font-bold text-white mb-1">{value}</p>
-      <p className="text-sm text-gray-400">{label}</p>
+      <p className="text-lg sm:text-2xl font-bold text-white mb-0.5 sm:mb-1">{value}</p>
+      <p className="text-xs sm:text-sm text-gray-400">{label}</p>
       {subtext && (
-        <p className="text-xs text-muted-foreground mt-1">{subtext}</p>
+        <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1">{subtext}</p>
       )}
     </div>
   );
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-0">
         <div>
-          <h3 className="text-lg font-semibold text-white">Métricas de LTV</h3>
-          <p className="text-sm text-muted-foreground">
-            Fórmula ChartMogul: ARPU / User Churn Rate
+          <h3 className="text-base sm:text-lg font-semibold text-white">Métricas de LTV</h3>
+          <p className="text-xs sm:text-sm text-muted-foreground">
+            Fórmula: ARPU / User Churn Rate
           </p>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           icon={DollarSign}
-          label="LTV (Lifetime Value)"
+          label="LTV"
           value={`$${metrics.ltv.toLocaleString(undefined, {
             minimumFractionDigits: 0,
             maximumFractionDigits: 0,
           })}`}
-          subtext="Valor total por cliente"
+          subtext="Valor por cliente"
           color="bg-emerald-500/20 text-emerald-400"
         />
 
         <MetricCard
           icon={TrendingUp}
-          label="MRR (Monthly Revenue)"
+          label="MRR"
           value={`$${metrics.mrr.toLocaleString(undefined, {
             minimumFractionDigits: 0,
             maximumFractionDigits: 0,
           })}`}
-          subtext="Ingresos del último mes"
+          subtext="Último mes"
           color="bg-indigo-500/20 text-indigo-400"
         />
 
@@ -170,23 +168,23 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           })}`}
-          subtext={`${metrics.activeCustomers} clientes activos`}
+          subtext={`${metrics.activeCustomers} activos`}
           color="bg-purple-500/20 text-purple-400"
         />
 
         <MetricCard
           icon={Calendar}
-          label="Churn Rate"
+          label="Churn"
           value={`${metrics.churnRate.toFixed(1)}%`}
-          subtext={`~${metrics.avgLifespanMonths.toFixed(0)} meses vida promedio`}
+          subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m vida`}
           color="bg-rose-500/20 text-rose-400"
         />
       </div>
 
-      {/* LTV Formula Explanation */}
-      <div className="rounded-lg bg-gray-800/30 border border-gray-700/50 p-4 mt-4">
-        <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
+      {/* LTV Formula Explanation - Hidden on mobile */}
+      <div className="hidden sm:block rounded-lg bg-gray-800/30 border border-gray-700/50 p-3 sm:p-4 mt-3 sm:mt-4">
+        <div className="flex items-center gap-4 sm:gap-6 text-xs sm:text-sm overflow-x-auto">
+          <div className="flex items-center gap-1 sm:gap-2 whitespace-nowrap">
             <span className="text-gray-400">LTV =</span>
             <span className="font-mono text-primary">
               ${metrics.arpu.toFixed(2)}

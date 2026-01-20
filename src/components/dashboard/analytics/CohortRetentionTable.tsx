@@ -121,28 +121,28 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
   };
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
-      <div className="mb-6">
-        <h3 className="text-lg font-semibold text-white">Análisis de Cohortes</h3>
-        <p className="text-sm text-muted-foreground">
-          Retención de clientes por mes de adquisición (% activo)
+    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
+      <div className="mb-4 sm:mb-6">
+        <h3 className="text-sm sm:text-lg font-semibold text-white">Análisis de Cohortes</h3>
+        <p className="text-xs sm:text-sm text-muted-foreground">
+          Retención por mes de adquisición
         </p>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
+        <table className="w-full text-xs sm:text-sm min-w-[600px]">
           <thead>
             <tr>
-              <th className="text-left py-3 px-2 text-gray-400 font-medium sticky left-0 bg-[#1a1f36] z-10">
+              <th className="text-left py-2 sm:py-3 px-1 sm:px-2 text-gray-400 font-medium sticky left-0 bg-[#1a1f36] z-10">
                 Cohorte
               </th>
-              <th className="text-center py-3 px-2 text-gray-400 font-medium">
-                Usuarios
+              <th className="text-center py-2 sm:py-3 px-1 sm:px-2 text-gray-400 font-medium">
+                #
               </th>
               {Array.from({ length: 12 }, (_, i) => (
                 <th
                   key={i}
-                  className="text-center py-3 px-2 text-gray-400 font-medium min-w-[50px]"
+                  className="text-center py-2 sm:py-3 px-0.5 sm:px-2 text-gray-400 font-medium min-w-[32px] sm:min-w-[50px]"
                 >
                   M{i + 1}
                 </th>
@@ -152,16 +152,16 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
           <tbody>
             {cohortData.map((cohort, idx) => (
               <tr key={idx} className="border-t border-gray-700/30">
-                <td className="py-2 px-2 text-white font-medium sticky left-0 bg-[#1a1f36] z-10">
+                <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-white font-medium sticky left-0 bg-[#1a1f36] z-10 text-xs sm:text-sm">
                   {cohort.cohortMonth}
                 </td>
-                <td className="py-2 px-2 text-center text-gray-300">
+                <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-center text-gray-300 text-xs sm:text-sm">
                   {cohort.totalUsers}
                 </td>
                 {cohort.retention.map((value, monthIdx) => (
-                  <td key={monthIdx} className="py-2 px-1 text-center">
+                  <td key={monthIdx} className="py-1 sm:py-2 px-0.5 sm:px-1 text-center">
                     <div
-                      className={`rounded px-2 py-1 text-xs font-medium ${getRetentionColor(
+                      className={`rounded px-1 sm:px-2 py-0.5 sm:py-1 text-[10px] sm:text-xs font-medium ${getRetentionColor(
                         value
                       )}`}
                     >
@@ -175,27 +175,27 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
         </table>
       </div>
 
-      {/* Legend */}
-      <div className="mt-4 flex items-center justify-center gap-4 text-xs">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-emerald-500/80" />
-          <span className="text-gray-400">80-100%</span>
+      {/* Legend - Hidden on small mobile */}
+      <div className="mt-3 sm:mt-4 flex flex-wrap items-center justify-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
+        <div className="flex items-center gap-1 sm:gap-2">
+          <div className="w-3 h-3 sm:w-4 sm:h-4 rounded bg-emerald-500/80" />
+          <span className="text-gray-400">80%+</span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-emerald-500/60" />
-          <span className="text-gray-400">60-79%</span>
+        <div className="flex items-center gap-1 sm:gap-2">
+          <div className="w-3 h-3 sm:w-4 sm:h-4 rounded bg-emerald-500/60" />
+          <span className="text-gray-400">60%+</span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-yellow-500/60" />
-          <span className="text-gray-400">40-59%</span>
+        <div className="flex items-center gap-1 sm:gap-2">
+          <div className="w-3 h-3 sm:w-4 sm:h-4 rounded bg-yellow-500/60" />
+          <span className="text-gray-400">40%+</span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-orange-500/60" />
-          <span className="text-gray-400">20-39%</span>
+        <div className="flex items-center gap-1 sm:gap-2">
+          <div className="w-3 h-3 sm:w-4 sm:h-4 rounded bg-orange-500/60" />
+          <span className="text-gray-400">20%+</span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-rose-500/60" />
-          <span className="text-gray-400">0-19%</span>
+        <div className="flex items-center gap-1 sm:gap-2">
+          <div className="w-3 h-3 sm:w-4 sm:h-4 rounded bg-rose-500/60" />
+          <span className="text-gray-400">&lt;20%</span>
         </div>
       </div>
     </div>

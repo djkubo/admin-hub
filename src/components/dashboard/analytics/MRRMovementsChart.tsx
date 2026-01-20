@@ -187,48 +187,49 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
   };
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
-      <div className="mb-6">
-        <h3 className="text-lg font-semibold text-white">Movimientos de MRR</h3>
-        <p className="text-sm text-muted-foreground">
-          Análisis de nuevo negocio, reactivaciones y churn por mes
+    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
+      <div className="mb-4 sm:mb-6">
+        <h3 className="text-sm sm:text-lg font-semibold text-white">Movimientos de MRR</h3>
+        <p className="text-xs sm:text-sm text-muted-foreground">
+          Nuevo negocio, reactivaciones y churn
         </p>
       </div>
 
-      <div className="h-[300px]">
+      <div className="h-[200px] sm:h-[300px]">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} stackOffset="sign">
+          <BarChart data={chartData} stackOffset="sign" margin={{ top: 5, right: 5, left: -15, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
             <XAxis
               dataKey="month"
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#9CA3AF", fontSize: 12 }}
+              tick={{ fill: "#9CA3AF", fontSize: 10 }}
             />
             <YAxis
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#9CA3AF", fontSize: 12 }}
-              tickFormatter={(value) => `$${Math.abs(value)}`}
+              tick={{ fill: "#9CA3AF", fontSize: 10 }}
+              tickFormatter={(value) => `$${Math.abs(value) >= 1000 ? `${(Math.abs(value)/1000).toFixed(0)}k` : Math.abs(value)}`}
+              width={40}
             />
             <Tooltip content={renderTooltipContent} />
             <Legend
-              wrapperStyle={{ paddingTop: "20px" }}
+              wrapperStyle={{ paddingTop: "10px" }}
               formatter={(value) => (
-                <span className="text-gray-300 text-sm">{value}</span>
+                <span className="text-gray-300 text-[10px] sm:text-sm">{value}</span>
               )}
             />
             <ReferenceLine y={0} stroke="#4B5563" />
             <Bar
               dataKey="newBusiness"
-              name="Nuevo Negocio"
+              name="Nuevo"
               stackId="stack"
               fill="#10B981"
               radius={[4, 4, 0, 0]}
             />
             <Bar
               dataKey="reactivation"
-              name="Reactivación"
+              name="Reactiv"
               stackId="stack"
               fill="#6366F1"
               radius={[4, 4, 0, 0]}
@@ -245,22 +246,22 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
       </div>
 
       {/* Summary */}
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        <div className="text-center p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-          <p className="text-xs text-emerald-400 mb-1">Nuevo Negocio (6m)</p>
-          <p className="text-lg font-bold text-emerald-400">
+      <div className="mt-3 sm:mt-4 grid grid-cols-3 gap-2 sm:gap-4">
+        <div className="text-center p-2 sm:p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+          <p className="text-[10px] sm:text-xs text-emerald-400 mb-0.5 sm:mb-1">Nuevo (6m)</p>
+          <p className="text-sm sm:text-lg font-bold text-emerald-400">
             ${chartData.reduce((sum, d) => sum + d.newBusiness, 0).toLocaleString()}
           </p>
         </div>
-        <div className="text-center p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-          <p className="text-xs text-indigo-400 mb-1">Reactivaciones (6m)</p>
-          <p className="text-lg font-bold text-indigo-400">
+        <div className="text-center p-2 sm:p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+          <p className="text-[10px] sm:text-xs text-indigo-400 mb-0.5 sm:mb-1">Reactiv (6m)</p>
+          <p className="text-sm sm:text-lg font-bold text-indigo-400">
             ${chartData.reduce((sum, d) => sum + d.reactivation, 0).toLocaleString()}
           </p>
         </div>
-        <div className="text-center p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
-          <p className="text-xs text-rose-400 mb-1">Churn (6m)</p>
-          <p className="text-lg font-bold text-rose-400">
+        <div className="text-center p-2 sm:p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
+          <p className="text-[10px] sm:text-xs text-rose-400 mb-0.5 sm:mb-1">Churn (6m)</p>
+          <p className="text-sm sm:text-lg font-bold text-rose-400">
             ${Math.abs(chartData.reduce((sum, d) => sum + d.churn, 0)).toLocaleString()}
           </p>
         </div>

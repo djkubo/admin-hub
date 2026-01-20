@@ -96,50 +96,50 @@ function SegmentCard({ segment }: { segment: ActionableSegment }) {
   const Icon = segmentIcons[segment.segment] || Users;
   
   return (
-    <div className="p-4 rounded-lg bg-background/50 border border-border/30 hover:border-primary/30 transition-colors">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-            <Icon className="h-5 w-5 text-primary" />
+    <div className="p-3 sm:p-4 rounded-lg bg-background/50 border border-border/30 hover:border-primary/30 transition-colors">
+      <div className="flex items-start justify-between mb-2 sm:mb-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
+            <Icon className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-white capitalize">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+              <span className="font-semibold text-white capitalize text-xs sm:text-sm truncate">
                 {segment.segment.replace(/_/g, ' ')}
               </span>
-              <Badge className={priorityColors[segment.priority]}>
-                {segment.priority === 'high' ? 'Urgente' : segment.priority === 'medium' ? 'Importante' : 'Normal'}
+              <Badge className={`${priorityColors[segment.priority]} text-[10px] sm:text-xs`}>
+                {segment.priority === 'high' ? 'Urgente' : segment.priority === 'medium' ? 'Import' : 'Normal'}
               </Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{segment.description}</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground truncate">{segment.description}</p>
           </div>
         </div>
-        <div className="text-right">
-          <span className="text-2xl font-bold text-white">{segment.count}</span>
-          <p className="text-xs text-muted-foreground">clientes</p>
+        <div className="text-right shrink-0 ml-2">
+          <span className="text-lg sm:text-2xl font-bold text-white">{segment.count}</span>
+          <p className="text-[10px] sm:text-xs text-muted-foreground">clientes</p>
         </div>
       </div>
 
-      <p className="text-sm text-primary mb-3">
+      <p className="text-xs sm:text-sm text-primary mb-2 sm:mb-3">
         💡 {segment.action}
       </p>
 
       {segment.clients.length > 0 && (
         <>
-          <div className="space-y-1 mb-3 max-h-32 overflow-y-auto">
+          <div className="space-y-1 mb-2 sm:mb-3 max-h-24 sm:max-h-32 overflow-y-auto">
             {segment.clients.slice(0, 5).map((client, idx) => (
-              <div key={idx} className="flex items-center justify-between text-xs py-1 px-2 rounded bg-background/30">
-                <div className="flex items-center gap-2 truncate">
+              <div key={idx} className="flex items-center justify-between text-[10px] sm:text-xs py-0.5 sm:py-1 px-1.5 sm:px-2 rounded bg-background/30">
+                <div className="flex items-center gap-1.5 sm:gap-2 truncate min-w-0">
                   <span className="text-muted-foreground">{idx + 1}.</span>
                   <span className="text-foreground truncate">{client.email}</span>
                 </div>
                 {client.amount !== undefined && (
-                  <span className="text-emerald-400 font-medium">${client.amount.toFixed(2)}</span>
+                  <span className="text-emerald-400 font-medium shrink-0 ml-1">${client.amount.toFixed(0)}</span>
                 )}
               </div>
             ))}
             {segment.clients.length > 5 && (
-              <p className="text-xs text-muted-foreground text-center py-1">
+              <p className="text-[10px] sm:text-xs text-muted-foreground text-center py-0.5 sm:py-1">
                 +{segment.clients.length - 5} más...
               </p>
             )}
@@ -148,11 +148,11 @@ function SegmentCard({ segment }: { segment: ActionableSegment }) {
           <Button
             variant="outline"
             size="sm"
-            className="w-full"
+            className="w-full h-7 sm:h-8 text-xs sm:text-sm"
             onClick={() => downloadCSV(segment)}
           >
-            <Download className="h-4 w-4 mr-2" />
-            Descargar Lista CSV
+            <Download className="h-3 w-3 sm:h-4 sm:w-4 mr-1.5 sm:mr-2" />
+            Descargar CSV
           </Button>
         </>
       )}
@@ -178,10 +178,10 @@ export function AIInsightsWidget() {
 
   if (isLoading) {
     return (
-      <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] to-[#0f1225] p-6">
-        <div className="flex items-center justify-center py-8">
-          <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          <span className="ml-2 text-muted-foreground">Cargando insights...</span>
+      <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] to-[#0f1225] p-4 sm:p-6">
+        <div className="flex items-center justify-center py-6 sm:py-8">
+          <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 animate-spin text-primary" />
+          <span className="ml-2 text-xs sm:text-sm text-muted-foreground">Cargando insights...</span>
         </div>
       </div>
     );
@@ -189,19 +189,19 @@ export function AIInsightsWidget() {
 
   if (error || !insight) {
     return (
-      <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] to-[#0f1225] p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-            <Sparkles className="h-5 w-5 text-primary" />
+      <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] to-[#0f1225] p-4 sm:p-6">
+        <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4">
+          <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
+            <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-white">Centro de Comando IA</h3>
-            <p className="text-sm text-muted-foreground">Tu análisis diario accionable</p>
+            <h3 className="text-sm sm:text-lg font-semibold text-white">Centro de Comando IA</h3>
+            <p className="text-[10px] sm:text-sm text-muted-foreground">Tu análisis diario</p>
           </div>
         </div>
-        <div className="text-center py-6 text-muted-foreground">
-          <p>No hay análisis disponible aún.</p>
-          <p className="text-sm mt-1">Ejecuta el análisis desde la pestaña Analytics.</p>
+        <div className="text-center py-4 sm:py-6 text-muted-foreground">
+          <p className="text-xs sm:text-sm">No hay análisis disponible aún.</p>
+          <p className="text-[10px] sm:text-sm mt-1">Ejecuta el análisis desde Analytics.</p>
         </div>
       </div>
     );
@@ -220,20 +220,20 @@ export function AIInsightsWidget() {
   });
 
   return (
-    <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] via-[#1a1f36] to-primary/5 p-6 relative overflow-hidden">
+    <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] via-[#1a1f36] to-primary/5 p-4 sm:p-6 relative overflow-hidden">
       {/* Glow effect */}
-      <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 rounded-full blur-3xl" />
+      <div className="absolute top-0 right-0 w-24 h-24 sm:w-32 sm:h-32 bg-primary/10 rounded-full blur-3xl" />
       
       {/* Header */}
-      <div className="flex items-center justify-between mb-6 relative">
-        <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
-            <Sparkles className="h-6 w-6 text-primary" />
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0 mb-4 sm:mb-6 relative">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 shrink-0">
+            <Sparkles className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
           </div>
           <div>
-            <h3 className="text-xl font-bold text-white">Centro de Comando IA</h3>
-            <p className="text-sm text-muted-foreground">
-              Análisis del {format(new Date(insight.date), "d 'de' MMMM, yyyy", { locale: es })}
+            <h3 className="text-base sm:text-xl font-bold text-white">Centro de Comando IA</h3>
+            <p className="text-[10px] sm:text-sm text-muted-foreground">
+              Análisis del {format(new Date(insight.date), "d 'de' MMMM", { locale: es })}
             </p>
           </div>
         </div>
@@ -241,41 +241,41 @@ export function AIInsightsWidget() {
 
       {/* Quick Stats */}
       {metrics?.summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-center">
-            <p className="text-2xl font-bold text-emerald-400">{metrics.summary.conversions}</p>
-            <p className="text-xs text-muted-foreground">Conversiones</p>
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4 sm:mb-6 md:grid-cols-4">
+          <div className="p-2 sm:p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-center">
+            <p className="text-lg sm:text-2xl font-bold text-emerald-400">{metrics.summary.conversions}</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">Conversiones</p>
           </div>
-          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-center">
-            <p className="text-2xl font-bold text-blue-400">{metrics.summary.newTrials}</p>
-            <p className="text-xs text-muted-foreground">Nuevos Trials</p>
+          <div className="p-2 sm:p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-center">
+            <p className="text-lg sm:text-2xl font-bold text-blue-400">{metrics.summary.newTrials}</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">Nuevos Trials</p>
           </div>
-          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-center">
-            <p className="text-2xl font-bold text-amber-400">{metrics.summary.failedPayments}</p>
-            <p className="text-xs text-muted-foreground">Pagos Fallidos</p>
+          <div className="p-2 sm:p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-center">
+            <p className="text-lg sm:text-2xl font-bold text-amber-400">{metrics.summary.failedPayments}</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">Pagos Fallidos</p>
           </div>
-          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-center">
-            <p className="text-2xl font-bold text-red-400">{metrics.summary.cancellations}</p>
-            <p className="text-xs text-muted-foreground">Cancelaciones</p>
+          <div className="p-2 sm:p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-center">
+            <p className="text-lg sm:text-2xl font-bold text-red-400">{metrics.summary.cancellations}</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">Cancelaciones</p>
           </div>
         </div>
       )}
 
       {/* Summary */}
-      <div className="mb-6 p-4 rounded-lg bg-background/50 border border-border/30">
-        <p className="text-foreground leading-relaxed">{insight.summary}</p>
+      <div className="mb-4 sm:mb-6 p-3 sm:p-4 rounded-lg bg-background/50 border border-border/30">
+        <p className="text-xs sm:text-sm text-foreground leading-relaxed">{insight.summary}</p>
       </div>
 
       {/* Priority Actions */}
       {priorityActions.length > 0 && (
-        <div className="mb-6 p-4 rounded-lg bg-primary/5 border border-primary/20">
-          <h4 className="font-semibold text-white mb-3 flex items-center gap-2">
-            <Zap className="h-4 w-4 text-primary" />
-            Acciones Prioritarias para Hoy
+        <div className="mb-4 sm:mb-6 p-3 sm:p-4 rounded-lg bg-primary/5 border border-primary/20">
+          <h4 className="font-semibold text-white mb-2 sm:mb-3 flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm">
+            <Zap className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-primary" />
+            Acciones Prioritarias
           </h4>
-          <div className="space-y-2">
+          <div className="space-y-1.5 sm:space-y-2">
             {priorityActions.map((action, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-sm">
+              <div key={idx} className="flex items-start gap-1.5 sm:gap-2 text-xs sm:text-sm">
                 <span className="text-primary font-bold">{idx + 1}.</span>
                 <span className="text-foreground">{action.action}</span>
               </div>
@@ -285,63 +285,65 @@ export function AIInsightsWidget() {
       )}
 
       <Tabs defaultValue="segments" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 mb-4">
-          <TabsTrigger value="segments">Segmentos</TabsTrigger>
-          <TabsTrigger value="opportunities">Oportunidades</TabsTrigger>
-          <TabsTrigger value="risks">Riesgos</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+          <TabsList className="grid w-max sm:w-full grid-cols-3 mb-3 sm:mb-4">
+            <TabsTrigger value="segments" className="text-xs sm:text-sm px-2 sm:px-3">Segmentos</TabsTrigger>
+            <TabsTrigger value="opportunities" className="text-xs sm:text-sm px-2 sm:px-3">Oportun.</TabsTrigger>
+            <TabsTrigger value="risks" className="text-xs sm:text-sm px-2 sm:px-3">Riesgos</TabsTrigger>
+          </TabsList>
+        </div>
 
-        <TabsContent value="segments" className="space-y-4">
+        <TabsContent value="segments" className="space-y-3 sm:space-y-4">
           {sortedSegments.length > 0 ? (
-            <div className="grid md:grid-cols-2 gap-4">
+            <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
               {sortedSegments.map((segment, idx) => (
                 <SegmentCard key={idx} segment={segment} />
               ))}
             </div>
           ) : (
-            <p className="text-center text-muted-foreground py-4">
-              Ejecuta el análisis para ver los segmentos accionables
+            <p className="text-center text-muted-foreground py-3 sm:py-4 text-xs sm:text-sm">
+              Ejecuta el análisis para ver segmentos
             </p>
           )}
         </TabsContent>
 
-        <TabsContent value="opportunities" className="space-y-3">
-          <div className="flex items-center gap-2 text-emerald-400 mb-2">
-            <TrendingUp className="h-4 w-4" />
-            <span className="text-sm font-semibold uppercase tracking-wider">Oportunidades de Crecimiento</span>
+        <TabsContent value="opportunities" className="space-y-2 sm:space-y-3">
+          <div className="flex items-center gap-1.5 sm:gap-2 text-emerald-400 mb-1.5 sm:mb-2">
+            <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="text-[10px] sm:text-sm font-semibold uppercase tracking-wider">Oportunidades</span>
           </div>
           {opportunities.length > 0 ? (
             opportunities.map((opp, idx) => (
-              <div key={idx} className="p-4 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
-                <p className="font-medium text-emerald-300">{opp.title}</p>
-                <p className="text-sm text-muted-foreground mt-1">{opp.description}</p>
+              <div key={idx} className="p-3 sm:p-4 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                <p className="font-medium text-emerald-300 text-xs sm:text-sm">{opp.title}</p>
+                <p className="text-[10px] sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">{opp.description}</p>
                 {opp.action && (
-                  <p className="text-sm text-emerald-400 mt-2">→ {opp.action}</p>
+                  <p className="text-[10px] sm:text-sm text-emerald-400 mt-1.5 sm:mt-2">→ {opp.action}</p>
                 )}
               </div>
             ))
           ) : (
-            <p className="text-sm text-muted-foreground">Sin oportunidades detectadas</p>
+            <p className="text-xs sm:text-sm text-muted-foreground">Sin oportunidades detectadas</p>
           )}
         </TabsContent>
 
-        <TabsContent value="risks" className="space-y-3">
-          <div className="flex items-center gap-2 text-amber-400 mb-2">
-            <AlertTriangle className="h-4 w-4" />
-            <span className="text-sm font-semibold uppercase tracking-wider">Riesgos a Mitigar</span>
+        <TabsContent value="risks" className="space-y-2 sm:space-y-3">
+          <div className="flex items-center gap-1.5 sm:gap-2 text-amber-400 mb-1.5 sm:mb-2">
+            <AlertTriangle className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="text-[10px] sm:text-sm font-semibold uppercase tracking-wider">Riesgos</span>
           </div>
           {risks.length > 0 ? (
             risks.map((risk, idx) => (
-              <div key={idx} className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/20">
-                <p className="font-medium text-amber-300">{risk.title}</p>
-                <p className="text-sm text-muted-foreground mt-1">{risk.description}</p>
+              <div key={idx} className="p-3 sm:p-4 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <p className="font-medium text-amber-300 text-xs sm:text-sm">{risk.title}</p>
+                <p className="text-[10px] sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">{risk.description}</p>
                 {risk.prevention && (
-                  <p className="text-sm text-amber-400 mt-2">→ {risk.prevention}</p>
+                  <p className="text-[10px] sm:text-sm text-amber-400 mt-1.5 sm:mt-2">→ {risk.prevention}</p>
                 )}
               </div>
             ))
           ) : (
-            <p className="text-sm text-muted-foreground">Sin riesgos detectados</p>
+            <p className="text-xs sm:text-sm text-muted-foreground">Sin riesgos detectados</p>
           )}
         </TabsContent>
       </Tabs>

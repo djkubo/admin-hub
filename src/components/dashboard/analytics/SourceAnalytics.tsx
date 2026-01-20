@@ -156,60 +156,60 @@ export function SourceAnalytics() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-4">
         <Card className="bg-card border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-blue-500/10">
-                <Users className="h-5 w-5 text-blue-400" />
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="p-1.5 sm:p-2 rounded-lg bg-blue-500/10 shrink-0">
+                <Users className="h-4 w-4 sm:h-5 sm:w-5 text-blue-400" />
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Leads Totales</p>
-                <p className="text-2xl font-bold text-white">{totals.leads.toLocaleString()}</p>
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-sm text-muted-foreground">Leads</p>
+                <p className="text-lg sm:text-2xl font-bold text-white">{totals.leads.toLocaleString()}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         
         <Card className="bg-card border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-amber-500/10">
-                <TrendingUp className="h-5 w-5 text-amber-400" />
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="p-1.5 sm:p-2 rounded-lg bg-amber-500/10 shrink-0">
+                <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5 text-amber-400" />
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">En Trial</p>
-                <p className="text-2xl font-bold text-white">{totals.trials.toLocaleString()}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-card border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-green-500/10">
-                <Target className="h-5 w-5 text-green-400" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Clientes</p>
-                <p className="text-2xl font-bold text-white">{totals.customers.toLocaleString()}</p>
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-sm text-muted-foreground">En Trial</p>
+                <p className="text-lg sm:text-2xl font-bold text-white">{totals.trials.toLocaleString()}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         
         <Card className="bg-card border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <DollarSign className="h-5 w-5 text-primary" />
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="p-1.5 sm:p-2 rounded-lg bg-green-500/10 shrink-0">
+                <Target className="h-4 w-4 sm:h-5 sm:w-5 text-green-400" />
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Revenue 30d</p>
-                <p className="text-2xl font-bold text-white">${totals.revenue.toLocaleString()}</p>
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-sm text-muted-foreground">Clientes</p>
+                <p className="text-lg sm:text-2xl font-bold text-white">{totals.customers.toLocaleString()}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card className="bg-card border-border">
+          <CardContent className="p-3 sm:p-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="p-1.5 sm:p-2 rounded-lg bg-primary/10 shrink-0">
+                <DollarSign className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-sm text-muted-foreground">Rev 30d</p>
+                <p className="text-lg sm:text-2xl font-bold text-white">${totals.revenue.toLocaleString()}</p>
               </div>
             </div>
           </CardContent>
@@ -218,38 +218,41 @@ export function SourceAnalytics() {
 
       {/* Main Analytics */}
       <Card className="bg-card border-border">
-        <CardHeader>
-          <CardTitle className="text-white flex items-center gap-2">
-            <Target className="h-5 w-5 text-primary" />
-            Analytics por Fuente de Adquisición
+        <CardHeader className="p-3 sm:p-6 pb-2 sm:pb-4">
+          <CardTitle className="text-white flex items-center gap-2 text-sm sm:text-base">
+            <Target className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
+            Analytics por Fuente
           </CardTitle>
-          <CardDescription>
-            Atribución de leads, conversiones y revenue por canal
+          <CardDescription className="text-xs sm:text-sm">
+            Atribución por canal
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-3 sm:p-6 pt-0 sm:pt-0">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="mb-4">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="revenue">Revenue</TabsTrigger>
-              <TabsTrigger value="conversion">Conversión</TabsTrigger>
-              <TabsTrigger value="ltv">LTV</TabsTrigger>
-            </TabsList>
+            <div className="overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
+              <TabsList className="mb-3 sm:mb-4 w-max sm:w-auto">
+                <TabsTrigger value="overview" className="text-xs sm:text-sm px-2 sm:px-3">Overview</TabsTrigger>
+                <TabsTrigger value="revenue" className="text-xs sm:text-sm px-2 sm:px-3">Revenue</TabsTrigger>
+                <TabsTrigger value="conversion" className="text-xs sm:text-sm px-2 sm:px-3">Convers.</TabsTrigger>
+                <TabsTrigger value="ltv" className="text-xs sm:text-sm px-2 sm:px-3">LTV</TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="overview">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-2">
                 {/* Bar Chart */}
-                <div className="h-80">
+                <div className="h-[200px] sm:h-80">
                   <ChartContainer config={{}}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={metrics.slice(0, 8)} layout="vertical">
-                        <XAxis type="number" stroke="#6b7280" fontSize={12} />
+                      <BarChart data={metrics.slice(0, 8)} layout="vertical" margin={{ left: 0, right: 10 }}>
+                        <XAxis type="number" stroke="#6b7280" fontSize={10} />
                         <YAxis 
                           dataKey="source" 
                           type="category" 
                           stroke="#6b7280" 
-                          fontSize={12}
-                          width={80}
+                          fontSize={10}
+                          width={60}
+                          tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
                         <Bar dataKey="leads" name="Leads" fill="#3b82f6" stackId="stack" />
@@ -261,7 +264,7 @@ export function SourceAnalytics() {
                 </div>
 
                 {/* Pie Chart */}
-                <div className="h-80">
+                <div className="h-[200px] sm:h-80">
                   <ChartContainer config={{}}>
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
@@ -271,14 +274,15 @@ export function SourceAnalytics() {
                           nameKey="name"
                           cx="50%"
                           cy="50%"
-                          outerRadius={100}
-                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                          outerRadius={60}
+                          label={({ name, percent }) => `${name.slice(0,6)}: ${(percent * 100).toFixed(0)}%`}
+                          labelLine={false}
                         >
                           {pieData.map((_, index) => (
                             <Cell key={index} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
-                        <Legend />
+                        <Legend wrapperStyle={{ fontSize: '10px' }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </ChartContainer>
@@ -287,12 +291,20 @@ export function SourceAnalytics() {
             </TabsContent>
 
             <TabsContent value="revenue">
-              <div className="h-80">
+              <div className="h-[200px] sm:h-80">
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.slice(0, 10)}>
-                      <XAxis dataKey="source" stroke="#6b7280" fontSize={12} />
-                      <YAxis stroke="#6b7280" fontSize={12} />
+                    <BarChart data={metrics.slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
+                      <XAxis 
+                        dataKey="source" 
+                        stroke="#6b7280" 
+                        fontSize={10} 
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                        tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
+                      />
+                      <YAxis stroke="#6b7280" fontSize={10} width={40} />
                       <ChartTooltip 
                         content={<ChartTooltipContent />}
                         formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Revenue 30d']}
@@ -305,15 +317,23 @@ export function SourceAnalytics() {
             </TabsContent>
 
             <TabsContent value="conversion">
-              <div className="h-80">
+              <div className="h-[200px] sm:h-80">
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.slice(0, 10)}>
-                      <XAxis dataKey="source" stroke="#6b7280" fontSize={12} />
-                      <YAxis stroke="#6b7280" fontSize={12} unit="%" />
+                    <BarChart data={metrics.slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
+                      <XAxis 
+                        dataKey="source" 
+                        stroke="#6b7280" 
+                        fontSize={10}
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                        tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
+                      />
+                      <YAxis stroke="#6b7280" fontSize={10} unit="%" width={35} />
                       <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="conversionRate" name="Lead→Paid %" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="trialToPaid" name="Trial→Paid %" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="conversionRate" name="Lead→Paid" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="trialToPaid" name="Trial→Paid" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -321,17 +341,25 @@ export function SourceAnalytics() {
             </TabsContent>
 
             <TabsContent value="ltv">
-              <div className="h-80">
+              <div className="h-[200px] sm:h-80">
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.filter(m => m.ltv > 0).slice(0, 10)}>
-                      <XAxis dataKey="source" stroke="#6b7280" fontSize={12} />
-                      <YAxis stroke="#6b7280" fontSize={12} />
+                    <BarChart data={metrics.filter(m => m.ltv > 0).slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
+                      <XAxis 
+                        dataKey="source" 
+                        stroke="#6b7280" 
+                        fontSize={10}
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                        tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
+                      />
+                      <YAxis stroke="#6b7280" fontSize={10} width={40} />
                       <ChartTooltip 
                         content={<ChartTooltipContent />}
-                        formatter={(value) => [`$${Number(value).toLocaleString()}`, 'LTV Promedio']}
+                        formatter={(value) => [`$${Number(value).toLocaleString()}`, 'LTV']}
                       />
-                      <Bar dataKey="ltv" name="LTV Promedio" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="ltv" name="LTV" fill="#f59e0b" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -339,39 +367,38 @@ export function SourceAnalytics() {
             </TabsContent>
           </Tabs>
 
-          {/* Table */}
-          <div className="mt-6 overflow-x-auto">
-            <table className="w-full text-sm">
+          {/* Table - Mobile optimized */}
+          <div className="mt-4 sm:mt-6 overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
+            <table className="w-full text-xs sm:text-sm min-w-[500px]">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="text-left py-3 px-2 text-muted-foreground font-medium">Fuente</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Leads</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Trials</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Clientes</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Conv %</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Trial→Paid</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">LTV</th>
-                  <th className="text-right py-3 px-2 text-muted-foreground font-medium">Revenue 30d</th>
+                  <th className="text-left py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium sticky left-0 bg-card">Fuente</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Leads</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Trial</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Client</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium hidden sm:table-cell">Conv%</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium hidden sm:table-cell">LTV</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Rev</th>
                 </tr>
               </thead>
               <tbody>
                 {metrics.map((row, idx) => (
                   <tr key={row.source} className="border-b border-border/50 hover:bg-muted/30">
-                    <td className="py-3 px-2">
+                    <td className="py-2 sm:py-3 px-1 sm:px-2 sticky left-0 bg-card">
                       <Badge 
                         variant="outline" 
+                        className="text-[10px] sm:text-xs"
                         style={{ borderColor: COLORS[idx % COLORS.length], color: COLORS[idx % COLORS.length] }}
                       >
-                        {row.source}
+                        {row.source.length > 10 ? row.source.slice(0, 10) + '...' : row.source}
                       </Badge>
                     </td>
-                    <td className="text-right py-3 px-2 text-white">{row.leads.toLocaleString()}</td>
-                    <td className="text-right py-3 px-2 text-amber-400">{row.trials.toLocaleString()}</td>
-                    <td className="text-right py-3 px-2 text-green-400">{row.customers.toLocaleString()}</td>
-                    <td className="text-right py-3 px-2 text-blue-400">{row.conversionRate}%</td>
-                    <td className="text-right py-3 px-2 text-purple-400">{row.trialToPaid}%</td>
-                    <td className="text-right py-3 px-2 text-amber-400">${row.ltv.toLocaleString()}</td>
-                    <td className="text-right py-3 px-2 text-green-400 font-medium">${row.revenue.toLocaleString()}</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-white">{row.leads}</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-amber-400">{row.trials}</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-green-400">{row.customers}</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-blue-400 hidden sm:table-cell">{row.conversionRate}%</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-amber-400 hidden sm:table-cell">${row.ltv}</td>
+                    <td className="text-right py-2 sm:py-3 px-1 sm:px-2 text-green-400 font-medium">${row.revenue}</td>
                   </tr>
                 ))}
               </tbody>

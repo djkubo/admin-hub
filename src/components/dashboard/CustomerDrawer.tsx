@@ -242,84 +242,78 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full sm:max-w-lg bg-card border-border">
-        <SheetHeader className="pb-4">
-          <SheetTitle className="flex items-center gap-3">
-            <div className={`flex h-12 w-12 items-center justify-center rounded-full ${isVip ? 'bg-yellow-500/20' : 'bg-primary/10'}`}>
-              <span className={`text-lg font-medium ${isVip ? 'text-yellow-500' : 'text-primary'}`}>
+      <SheetContent className="w-full sm:max-w-lg bg-card border-border p-4 sm:p-6">
+        <SheetHeader className="pb-3 sm:pb-4">
+          <SheetTitle className="flex items-center gap-2 sm:gap-3">
+            <div className={`flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-full ${isVip ? 'bg-yellow-500/20' : 'bg-primary/10'} shrink-0`}>
+              <span className={`text-sm sm:text-lg font-medium ${isVip ? 'text-yellow-500' : 'text-primary'}`}>
                 {client.full_name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || '??'}
               </span>
             </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-foreground">{client.full_name || 'Sin nombre'}</span>
-                {isVip && <Crown className="h-4 w-4 text-yellow-500" />}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="text-foreground text-sm sm:text-base truncate">{client.full_name || 'Sin nombre'}</span>
+                {isVip && <Crown className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-yellow-500 shrink-0" />}
               </div>
-              <Badge variant="outline" className={`text-xs ${status.color}`}>
-                <StatusIcon className="h-3 w-3 mr-1" />
+              <Badge variant="outline" className={`text-[10px] sm:text-xs ${status.color}`}>
+                <StatusIcon className="h-2.5 w-2.5 sm:h-3 sm:w-3 mr-0.5 sm:mr-1" />
                 {status.label}
               </Badge>
             </div>
           </SheetTitle>
         </SheetHeader>
 
-        <ScrollArea className="h-[calc(100vh-200px)] pr-4">
+        <ScrollArea className="h-[calc(100vh-160px)] sm:h-[calc(100vh-200px)] pr-2 sm:pr-4">
           {/* Contact Info */}
-          <div className="space-y-3 mb-6">
-            <h3 className="text-sm font-medium text-muted-foreground">Datos de Contacto</h3>
-            <div className="space-y-2 rounded-lg border border-border/50 bg-background/50 p-3">
+          <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-6">
+            <h3 className="text-xs sm:text-sm font-medium text-muted-foreground">Datos de Contacto</h3>
+            <div className="space-y-1.5 sm:space-y-2 rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3">
               {client.email && (
-                <div className="flex items-center gap-2 text-sm">
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-foreground">{client.email}</span>
+                <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm">
+                  <Mail className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-muted-foreground shrink-0" />
+                  <span className="text-foreground truncate">{client.email}</span>
                 </div>
               )}
               {client.phone && (
-                <div className="flex items-center gap-2 text-sm">
-                  <Phone className="h-4 w-4 text-muted-foreground" />
+                <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm">
+                  <Phone className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-muted-foreground shrink-0" />
                   <span className="text-foreground">{client.phone}</span>
                 </div>
               )}
               {!client.email && !client.phone && (
-                <p className="text-sm text-muted-foreground">Sin datos de contacto</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">Sin datos de contacto</p>
               )}
             </div>
           </div>
 
           {/* Attribution Info */}
           {(client.acquisition_source || client.utm_source || client.utm_campaign) && (
-            <div className="space-y-3 mb-6">
-              <h3 className="text-sm font-medium text-muted-foreground">Atribución</h3>
-              <div className="space-y-2 rounded-lg border border-border/50 bg-background/50 p-3">
+            <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-6">
+              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground">Atribución</h3>
+              <div className="space-y-1.5 sm:space-y-2 rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3">
                 {client.acquisition_source && (
-                  <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center justify-between text-xs sm:text-sm">
                     <span className="text-muted-foreground">Fuente:</span>
-                    <Badge variant="outline">{client.acquisition_source}</Badge>
+                    <Badge variant="outline" className="text-[10px] sm:text-xs">{client.acquisition_source}</Badge>
                   </div>
                 )}
                 {client.utm_source && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">UTM Source:</span>
-                    <span className="text-foreground">{client.utm_source}</span>
+                  <div className="flex items-center justify-between text-xs sm:text-sm">
+                    <span className="text-muted-foreground">UTM:</span>
+                    <span className="text-foreground text-[10px] sm:text-xs">{client.utm_source}</span>
                   </div>
                 )}
                 {client.utm_campaign && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Campaign:</span>
-                    <span className="text-foreground">{client.utm_campaign}</span>
-                  </div>
-                )}
-                {client.utm_medium && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Medium:</span>
-                    <span className="text-foreground">{client.utm_medium}</span>
+                  <div className="flex items-center justify-between text-xs sm:text-sm">
+                    <span className="text-muted-foreground">Camp:</span>
+                    <span className="text-foreground text-[10px] sm:text-xs truncate max-w-[120px]">{client.utm_campaign}</span>
                   </div>
                 )}
                 {client.first_seen_at && (
-                  <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center justify-between text-xs sm:text-sm">
                     <span className="text-muted-foreground">Primera vez:</span>
-                    <span className="text-foreground">
-                      {format(new Date(client.first_seen_at), 'd MMM yyyy', { locale: es })}
+                    <span className="text-foreground text-[10px] sm:text-xs">
+                      {format(new Date(client.first_seen_at), 'd MMM yy', { locale: es })}
                     </span>
                   </div>
                 )}
@@ -328,58 +322,58 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
           )}
 
           {/* Stats */}
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-center">
-              <DollarSign className="h-5 w-5 mx-auto text-emerald-400 mb-1" />
-              <p className={`text-lg font-bold ${isVip ? 'text-yellow-400' : 'text-foreground'}`}>
+          <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4 sm:mb-6">
+            <div className="rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3 text-center">
+              <DollarSign className="h-4 w-4 sm:h-5 sm:w-5 mx-auto text-emerald-400 mb-0.5 sm:mb-1" />
+              <p className={`text-sm sm:text-lg font-bold ${isVip ? 'text-yellow-400' : 'text-foreground'}`}>
                 ${totalSpendUSD.toLocaleString()}
               </p>
-              <p className="text-xs text-muted-foreground">LTV</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">LTV</p>
             </div>
-            <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-center">
-              <CreditCard className="h-5 w-5 mx-auto text-blue-400 mb-1" />
-              <p className="text-lg font-bold text-foreground">{transactions?.filter(t => t.status === 'paid' || t.status === 'succeeded').length || 0}</p>
-              <p className="text-xs text-muted-foreground">Pagos</p>
+            <div className="rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3 text-center">
+              <CreditCard className="h-4 w-4 sm:h-5 sm:w-5 mx-auto text-blue-400 mb-0.5 sm:mb-1" />
+              <p className="text-sm sm:text-lg font-bold text-foreground">{transactions?.filter(t => t.status === 'paid' || t.status === 'succeeded').length || 0}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">Pagos</p>
             </div>
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-2 mb-6">
+          <div className="flex gap-2 mb-4 sm:mb-6">
             <Button
               onClick={handleWhatsApp}
               disabled={!client.phone}
-              className="flex-1 gap-2 bg-[#25D366] hover:bg-[#1da851]"
+              className="flex-1 gap-1.5 sm:gap-2 bg-[#25D366] hover:bg-[#1da851] h-8 sm:h-9 text-xs sm:text-sm"
               size="sm"
             >
-              <MessageCircle className="h-4 w-4" />
+              <MessageCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               WhatsApp
             </Button>
             <Button
               onClick={handlePortalLink}
               disabled={!client.stripe_customer_id || loadingPortal}
               variant="outline"
-              className="flex-1 gap-2"
+              className="flex-1 gap-1.5 sm:gap-2 h-8 sm:h-9 text-xs sm:text-sm"
               size="sm"
             >
-              {loadingPortal ? <Loader2 className="h-4 w-4 animate-spin" /> : copiedLink ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
-              Portal Stripe
+              {loadingPortal ? <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" /> : copiedLink ? <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> : <ExternalLink className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
+              Portal
             </Button>
           </div>
 
           {/* Pending Invoices */}
           {invoices && invoices.filter(i => i.status === 'open' || i.status === 'draft').length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
-                <FileText className="h-4 w-4" />
+            <div className="mb-4 sm:mb-6">
+              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-1.5 sm:mb-2 flex items-center gap-1.5 sm:gap-2">
+                <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                 Facturas Pendientes
               </h3>
-              <div className="space-y-2">
+              <div className="space-y-1.5 sm:space-y-2">
                 {invoices.filter(i => i.status === 'open' || i.status === 'draft').map((inv) => (
-                  <div key={inv.id} className="flex items-center justify-between p-2 rounded-lg border border-amber-500/30 bg-amber-500/10">
-                    <span className="text-sm text-amber-400">${(inv.amount_due / 100).toFixed(2)}</span>
+                  <div key={inv.id} className="flex items-center justify-between p-1.5 sm:p-2 rounded-lg border border-amber-500/30 bg-amber-500/10">
+                    <span className="text-xs sm:text-sm text-amber-400">${(inv.amount_due / 100).toFixed(2)}</span>
                     {inv.hosted_invoice_url && (
-                      <Button size="sm" variant="ghost" className="h-6 gap-1 text-xs" onClick={() => window.open(inv.hosted_invoice_url!, '_blank')}>
-                        Ver <ExternalLink className="h-3 w-3" />
+                      <Button size="sm" variant="ghost" className="h-5 sm:h-6 gap-0.5 sm:gap-1 text-[10px] sm:text-xs px-1.5 sm:px-2" onClick={() => window.open(inv.hosted_invoice_url!, '_blank')}>
+                        Ver <ExternalLink className="h-2.5 w-2.5 sm:h-3 sm:w-3" />
                       </Button>
                     )}
                   </div>
@@ -388,30 +382,30 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
             </div>
           )}
 
-          <Separator className="my-4" />
+          <Separator className="my-3 sm:my-4" />
 
           {/* Timeline */}
-          <h3 className="text-sm font-medium text-muted-foreground mb-3">Timeline de Actividad</h3>
+          <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 sm:mb-3">Timeline</h3>
           <div className="relative">
-            <div className="absolute left-4 top-2 bottom-2 w-px bg-border/50" />
-            <div className="space-y-3">
+            <div className="absolute left-3 sm:left-4 top-2 bottom-2 w-px bg-border/50" />
+            <div className="space-y-2 sm:space-y-3">
               {timelineItems.slice(0, 15).map((item, idx) => {
                 if (!item) return null;
                 const Icon = item.icon;
                 return (
-                  <div key={idx} className="relative pl-10">
-                    <div className={`absolute left-0 flex h-8 w-8 items-center justify-center rounded-full bg-card border border-border ${idx === 0 ? 'ring-2 ring-primary/30' : ''}`}>
-                      <Icon className={`h-4 w-4 ${item.color}`} />
+                  <div key={idx} className="relative pl-8 sm:pl-10">
+                    <div className={`absolute left-0 flex h-6 w-6 sm:h-8 sm:w-8 items-center justify-center rounded-full bg-card border border-border ${idx === 0 ? 'ring-2 ring-primary/30' : ''}`}>
+                      <Icon className={`h-3 w-3 sm:h-4 sm:w-4 ${item.color}`} />
                     </div>
-                    <div className="rounded-lg bg-background/50 border border-border/30 p-2">
-                      <div className="flex items-center justify-between">
-                        <span className={`text-sm font-medium capitalize ${item.color}`}>{item.label}</span>
-                        <span className="text-xs text-muted-foreground">
+                    <div className="rounded-lg bg-background/50 border border-border/30 p-1.5 sm:p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`text-[10px] sm:text-sm font-medium capitalize ${item.color} truncate`}>{item.label}</span>
+                        <span className="text-[9px] sm:text-xs text-muted-foreground shrink-0">
                           {format(new Date(item.date), 'd MMM HH:mm', { locale: es })}
                         </span>
                       </div>
                       {'amount' in item && typeof item.amount === 'number' && (
-                        <p className="text-xs text-muted-foreground mt-1">
+                        <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5">
                           ${item.amount.toFixed(2)} {('currency' in item && item.currency) ? String(item.currency).toUpperCase() : ''}
                         </p>
                       )}
@@ -420,7 +414,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
                 );
               })}
               {timelineItems.length === 0 && (
-                <p className="text-sm text-muted-foreground text-center py-4">Sin actividad registrada</p>
+                <p className="text-xs sm:text-sm text-muted-foreground text-center py-3 sm:py-4">Sin actividad registrada</p>
               )}
             </div>
           </div>

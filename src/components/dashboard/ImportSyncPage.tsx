@@ -21,33 +21,37 @@ export function ImportSyncPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-          <Upload className="h-8 w-8 text-cyan-500" />
-          Importar / Sincronizar
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          Importa datos por CSV o sincroniza directamente desde APIs
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div>
+          <h1 className="text-xl sm:text-3xl font-bold text-white flex items-center gap-2 sm:gap-3">
+            <Upload className="h-6 w-6 sm:h-8 sm:w-8 text-cyan-500" />
+            Importar / Sincronizar
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">
+            Importa datos por CSV o sincroniza desde APIs
+          </p>
+        </div>
       </div>
 
-      <Tabs defaultValue="api" className="space-y-6">
-        <TabsList className="bg-card border border-border/50">
-          <TabsTrigger value="api" className="gap-2 data-[state=active]:bg-primary/20">
-            <Database className="h-4 w-4" />
-            API Sync
-          </TabsTrigger>
-          <TabsTrigger value="csv" className="gap-2 data-[state=active]:bg-primary/20">
-            <FileText className="h-4 w-4" />
-            CSV Import
-          </TabsTrigger>
-          <TabsTrigger value="recovery" className="gap-2 data-[state=active]:bg-primary/20">
-            <RefreshCw className="h-4 w-4" />
-            Smart Recovery
-          </TabsTrigger>
-        </TabsList>
+      <Tabs defaultValue="api" className="space-y-4 sm:space-y-6">
+        <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+          <TabsList className="bg-card border border-border/50 w-max sm:w-auto">
+            <TabsTrigger value="api" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
+              <Database className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="hidden xs:inline">API</span> Sync
+            </TabsTrigger>
+            <TabsTrigger value="csv" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
+              <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              CSV
+            </TabsTrigger>
+            <TabsTrigger value="recovery" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
+              <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              Recovery
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="api">
           <APISyncPanel />
