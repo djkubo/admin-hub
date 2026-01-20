@@ -2,24 +2,28 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
 
-// Subscription statuses to SKIP (don't charge)
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
+
 const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired"];
-
-// Invoice statuses that should NOT be charged (extra safety)
 const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
-
-// Delay between API calls to respect rate limits (ms)
 const API_DELAY_MS = 150;
-
-// Max invoices to process per batch to avoid timeout
 const BATCH_SIZE = 15;
-
-// Max execution time before returning partial results (ms) - leave buffer for response
 const MAX_EXECUTION_MS = 45000;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -75,7 +79,6 @@ async function processInvoice(
 
   console.log(`\n💳 Processing invoice ${invoice.id} - $${(invoice.amount_due / 100).toFixed(2)}`);
 
-  // SAFETY CHECK 1: Skip invoices that are already paid/void/uncollectible
   if (SKIP_INVOICE_STATUSES.includes(invoice.status!)) {
     console.log(`🚫 SKIPPING: Invoice ${invoice.id} is ${invoice.status}`);
     result.skipped.push({
@@ -89,7 +92,6 @@ async function processInvoice(
     return true;
   }
 
-  // SAFETY CHECK 2: Check subscription status
   if (invoice.subscription) {
     const subscription = invoice.subscription as Stripe.Subscription;
     
@@ -109,7 +111,6 @@ async function processInvoice(
     console.log(`✅ Subscription status: ${subscription.status} - proceeding`);
   }
 
-  // Get customer's payment methods
   await sleep(API_DELAY_MS);
   let paymentMethods: Stripe.PaymentMethod[] = [];
   try {
@@ -123,12 +124,10 @@ async function processInvoice(
     console.error(`❌ Error fetching payment methods:`, pmError);
   }
 
-  // Try to charge with multi-card attack
   let charged = false;
   let lastError = "";
   let cardsTried = 0;
 
-  // First, try with default (no specific payment method)
   try {
     await sleep(API_DELAY_MS);
     console.log(`💰 Attempting to pay with default payment method...`);
@@ -152,9 +151,8 @@ async function processInvoice(
     console.log(`❌ Default payment failed: ${lastError}`);
   }
 
-  // If default failed, try other payment methods (max 2 alternates to save time)
   if (!charged && paymentMethods.length > 0) {
-    const methodsToTry = paymentMethods.slice(0, 2); // Limit to 2 alternate cards
+    const methodsToTry = paymentMethods.slice(0, 2);
     
     for (const pm of methodsToTry) {
       if (charged) break;
@@ -163,7 +161,6 @@ async function processInvoice(
         await sleep(API_DELAY_MS);
         console.log(`💳 Trying payment method ${pm.id} (${pm.card?.brand} ****${pm.card?.last4})...`);
         
-        // Update invoice's default payment method and retry
         await stripe.invoices.update(invoice.id, {
           default_payment_method: pm.id,
         });
@@ -191,7 +188,6 @@ async function processInvoice(
     }
   }
 
-  // If all cards failed
   if (!charged) {
     console.log(`❌ FAILED: All ${cardsTried} payment attempts failed`);
     result.failed.push({
@@ -209,6 +205,9 @@ async function processInvoice(
 }
 
 serve(async (req) => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -216,7 +215,7 @@ serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    // Verify authentication
+    // SECURITY: Verify JWT authentication
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
@@ -243,7 +242,6 @@ serve(async (req) => {
 
     const { hours_lookback = 24, starting_after } = await req.json();
     
-    // Validate hours_lookback
     const validHours = [24, 168, 360, 720, 1440];
     if (!validHours.includes(hours_lookback)) {
       return new Response(
@@ -266,11 +264,9 @@ serve(async (req) => {
       apiVersion: "2023-10-16",
     });
 
-    // Calculate cutoff timestamp
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
     console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
 
-    // Fetch open invoices - only one page at a time for chunking
     const params: Stripe.InvoiceListParams = {
       status: "open",
       limit: BATCH_SIZE,
@@ -305,7 +301,6 @@ serve(async (req) => {
     let lastProcessedId: string | undefined;
 
     for (const invoice of invoices) {
-      // Check if we're running out of time
       const elapsed = Date.now() - startTime;
       if (elapsed > MAX_EXECUTION_MS) {
         console.log(`⏰ Time limit approaching (${elapsed}ms), returning partial results`);
@@ -322,10 +317,9 @@ serve(async (req) => {
       lastProcessedId = invoice.id;
     }
 
-    // If there are more pages and we didn't timeout
     if (hasMore && !result.summary.is_partial) {
       result.summary.is_partial = true;
-      result.summary.remaining_invoices = -1; // Unknown exact count
+      result.summary.remaining_invoices = -1;
       result.summary.next_starting_after = lastProcessedId;
     }
 
@@ -345,11 +339,12 @@ serve(async (req) => {
     );
 
   } catch (error: unknown) {
+    const origin = req.headers.get("origin");
     console.error("❌ Fatal error:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return new Response(
       JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
     );
   }
 });

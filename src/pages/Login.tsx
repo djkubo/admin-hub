@@ -11,13 +11,15 @@ import { z } from "zod";
 const emailSchema = z.string().email("Email inválido");
 const passwordSchema = z.string().min(6, "La contraseña debe tener al menos 6 caracteres");
 
+// Admin email - only this user can access the dashboard
+const ADMIN_EMAIL = "djkubo@live.com.mx";
+
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   
-  const { signIn, signUp } = useAuth();
+  const { signIn } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -41,47 +43,35 @@ export default function Login() {
       }
     }
 
+    // Check if email is admin
+    if (email.toLowerCase().trim() !== ADMIN_EMAIL.toLowerCase()) {
+      toast({
+        title: "Acceso denegado",
+        description: "No tienes permisos para acceder a esta aplicación.",
+        variant: "destructive",
+      });
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      let result;
-      
-      if (isSignUp) {
-        result = await signUp(email, password);
-        if (result.error) {
-          if (result.error.message.includes("already registered")) {
-            toast({
-              title: "Usuario ya registrado",
-              description: "Este email ya está registrado. Intenta iniciar sesión.",
-              variant: "destructive",
-            });
-          } else {
-            throw result.error;
-          }
-        } else {
+      const result = await signIn(email, password);
+      if (result.error) {
+        if (result.error.message.includes("Invalid login")) {
           toast({
-            title: "Cuenta creada",
-            description: "Tu cuenta ha sido creada exitosamente.",
+            title: "Credenciales inválidas",
+            description: "Email o contraseña incorrectos.",
+            variant: "destructive",
           });
-          navigate("/");
+        } else {
+          throw result.error;
         }
       } else {
-        result = await signIn(email, password);
-        if (result.error) {
-          if (result.error.message.includes("Invalid login")) {
-            toast({
-              title: "Credenciales inválidas",
-              description: "Email o contraseña incorrectos.",
-              variant: "destructive",
-            });
-          } else {
-            throw result.error;
-          }
-        } else {
-          toast({
-            title: "Bienvenido",
-            description: "Has iniciado sesión correctamente.",
-          });
-          navigate("/");
-        }
+        toast({
+          title: "Bienvenido",
+          description: "Has iniciado sesión correctamente.",
+        });
+        navigate("/");
       }
     } catch (error) {
       toast({
@@ -99,13 +89,10 @@ export default function Login() {
       <Card className="w-full max-w-md bg-card border-border">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold text-foreground">
-            {isSignUp ? "Crear Cuenta" : "Iniciar Sesión"}
+            Panel de Administración
           </CardTitle>
           <CardDescription>
-            {isSignUp 
-              ? "Crea una cuenta para acceder al dashboard" 
-              : "Ingresa tus credenciales para continuar"
-            }
+            Ingresa tus credenciales para continuar
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -144,26 +131,9 @@ export default function Login() {
               className="w-full" 
               disabled={isLoading}
             >
-              {isLoading 
-                ? "Cargando..." 
-                : isSignUp ? "Crear Cuenta" : "Iniciar Sesión"
-              }
+              {isLoading ? "Cargando..." : "Iniciar Sesión"}
             </Button>
           </form>
-          
-          <div className="mt-4 text-center">
-            <button
-              type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-sm text-muted-foreground hover:text-primary transition-colors"
-              disabled={isLoading}
-            >
-              {isSignUp 
-                ? "¿Ya tienes cuenta? Inicia sesión" 
-                : "¿No tienes cuenta? Regístrate"
-              }
-            </button>
-          </div>
         </CardContent>
       </Card>
     </div>

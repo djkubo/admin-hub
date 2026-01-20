@@ -1,9 +1,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 interface PayPalTokenResponse {
   access_token: string;
@@ -87,11 +100,42 @@ function mapPayPalStatus(status: string, eventCode: string): string {
 }
 
 Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // SECURITY: Verify JWT authentication
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    
+    if (claimsError || !claimsData?.user) {
+      console.error("Auth error:", claimsError);
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", claimsData.user.email);
+
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
     
@@ -102,11 +146,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Parse request for date range (default: last 31 days, max allowed by PayPal)
     let startDate: string;
     let endDate: string;
     let fetchAll = false;
@@ -119,7 +161,6 @@ Deno.serve(async (req) => {
         startDate = body.startDate;
         endDate = body.endDate;
       } else {
-        // Default to last 31 days
         const now = new Date();
         const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         startDate = thirtyOneDaysAgo.toISOString();
@@ -134,11 +175,9 @@ Deno.serve(async (req) => {
 
     console.log(`🔄 PayPal Sync - from ${startDate} to ${endDate}, fetchAll: ${fetchAll}`);
 
-    // Get access token
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
     console.log("✅ Got PayPal access token");
 
-    // Fetch transactions with pagination
     let allTransactions: PayPalTransaction[] = [];
     let currentPage = 1;
     let totalPages = 1;
@@ -163,7 +202,6 @@ Deno.serve(async (req) => {
         const error = await response.text();
         console.error("PayPal API error:", error);
         
-        // If it's a "no data" response, return success with 0 transactions
         if (response.status === 404 || error.includes("NO_DATA")) {
           console.log("No transactions found in date range");
           break;
@@ -189,13 +227,11 @@ Deno.serve(async (req) => {
 
     console.log(`✅ Fetched ${allTransactions.length} total transactions from PayPal`);
 
-    // Process transactions with DEDUPLICATION
     let paidCount = 0;
     let failedCount = 0;
     let skippedNoEmail = 0;
     let skippedDuplicate = 0;
 
-    // Use Map to deduplicate by transaction ID
     const transactionsMap = new Map<string, {
       stripe_payment_intent_id: string;
       customer_email: string;
@@ -229,7 +265,6 @@ Deno.serve(async (req) => {
       const transactionId = info.transaction_id;
       const paymentIntentId = `paypal_${transactionId}`;
 
-      // Skip if we already have this transaction (CRITICAL: prevents duplicate constraint error)
       if (transactionsMap.has(paymentIntentId)) {
         skippedDuplicate++;
         continue;
@@ -252,7 +287,7 @@ Deno.serve(async (req) => {
       transactionsMap.set(paymentIntentId, {
         stripe_payment_intent_id: paymentIntentId,
         customer_email: email,
-        amount: Math.round(Math.abs(amount) * 100), // Convert to cents, use absolute value
+        amount: Math.round(Math.abs(amount) * 100),
         currency: currency.toLowerCase(),
         status,
         failure_code: status === 'failed' ? info.transaction_status : null,
@@ -265,7 +300,6 @@ Deno.serve(async (req) => {
         },
       });
 
-      // Aggregate client data
       const existing = clientsMap.get(email) || { 
         email, 
         full_name: fullName,
@@ -287,12 +321,10 @@ Deno.serve(async (req) => {
       clientsMap.set(email, existing);
     }
 
-    // Convert Map to Array (already deduplicated)
     const transactions = Array.from(transactionsMap.values());
 
     console.log(`📊 Stats: ${paidCount} paid, ${failedCount} failed, ${skippedNoEmail} skipped (no email), ${skippedDuplicate} duplicates removed`);
 
-    // Batch upsert transactions
     let syncedCount = 0;
     const BATCH_SIZE = 500;
     
@@ -310,7 +342,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Upsert clients
     const clientsToUpsert = Array.from(clientsMap.values()).map(c => ({
       email: c.email,
       full_name: c.full_name,
@@ -349,10 +380,11 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
+    const origin = req.headers.get("origin");
     console.error("Unexpected error:", error);
     return new Response(
       JSON.stringify({ error: "Internal server error", details: String(error) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
     );
   }
 });

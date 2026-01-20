@@ -1,9 +1,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 interface StripeCustomer {
   id: string;
@@ -62,11 +75,42 @@ async function getCustomerEmail(customerId: string, stripeSecretKey: string): Pr
 }
 
 Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // SECURITY: Verify JWT authentication
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    
+    if (claimsError || !claimsData?.user) {
+      console.error("Auth error:", claimsError);
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", claimsData.user.email);
+
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeSecretKey) {
       return new Response(
@@ -75,7 +119,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -87,7 +130,6 @@ Deno.serve(async (req) => {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       
-      // Parse date filters (convert ISO strings to Unix timestamps)
       if (body.startDate) {
         startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
       }
@@ -108,15 +150,13 @@ Deno.serve(async (req) => {
     let hasMore = true;
     let cursor: string | null = null;
     let pageCount = 0;
-    const maxPages = fetchAll ? 50 : 1; // Reduced to 50 pages (5000 tx) to avoid timeout
+    const maxPages = fetchAll ? 50 : 1;
 
-    // Process page by page and save immediately to avoid timeout
     while (hasMore && pageCount < maxPages) {
       const url = new URL("https://api.stripe.com/v1/payment_intents");
       url.searchParams.set("limit", "100");
       url.searchParams.append("expand[]", "data.customer");
       
-      // Add date range filters
       if (startDate) {
         url.searchParams.set("created[gte]", startDate.toString());
       }
@@ -144,7 +184,6 @@ Deno.serve(async (req) => {
       
       if (data.data.length === 0) break;
 
-      // Process this page immediately
       const transactions: Array<Record<string, unknown>> = [];
       const clientsMap = new Map<string, Record<string, unknown>>();
 
@@ -187,7 +226,6 @@ Deno.serve(async (req) => {
           source: "stripe",
         });
 
-        // Aggregate client
         const existing = clientsMap.get(email) || { 
           email, 
           payment_status: 'none', 
@@ -205,7 +243,6 @@ Deno.serve(async (req) => {
         clientsMap.set(email, existing);
       }
 
-      // Save transactions immediately
       if (transactions.length > 0) {
         const { error: txError, data: txData } = await supabase
           .from("transactions")
@@ -219,7 +256,6 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Save clients immediately
       const clientsToSave = Array.from(clientsMap.values());
       if (clientsToSave.length > 0) {
         const { error: clientError, data: clientData } = await supabase
@@ -256,10 +292,11 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
+    const origin = req.headers.get("origin");
     console.error("Error:", error);
     return new Response(
       JSON.stringify({ error: String(error) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
     );
   }
 });

@@ -1,29 +1,59 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-sync-secret',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Validate sync secret (optional extra security layer)
-    const syncSecret = req.headers.get('x-sync-secret');
-    const expectedSecret = Deno.env.get('SYNC_SECRET');
-    
-    if (expectedSecret && syncSecret !== expectedSecret) {
-      console.error('Invalid sync secret');
+    // SECURITY: Verify JWT authentication
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    
+    if (claimsError || !claimsData?.user) {
+      console.error("Auth error:", claimsError);
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", claimsData.user.email);
 
     const { clients } = await req.json();
 
@@ -36,14 +66,12 @@ Deno.serve(async (req) => {
 
     console.log(`📥 Received ${clients.length} clients to sync`);
 
-    // Use service role to bypass RLS
     const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
+      supabaseUrl,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
       { auth: { persistSession: false } }
     );
 
-    // Validate and clean client data
     const validClients = clients
       .filter((c: any) => c.email && c.email.includes('@'))
       .map((c: any) => ({
@@ -52,7 +80,6 @@ Deno.serve(async (req) => {
         phone: c.phone?.trim() || null,
         status: c.status || 'active',
         last_sync: new Date().toISOString(),
-        // Preserve lifecycle_stage if client is already a CUSTOMER
         lifecycle_stage: c.lifecycle_stage || 'LEAD',
       }));
 
@@ -63,7 +90,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Get existing clients to preserve their lifecycle_stage
     const emails = validClients.map((c: any) => c.email);
     const { data: existingClients } = await supabaseAdmin
       .from('clients')
@@ -74,25 +100,20 @@ Deno.serve(async (req) => {
       (existingClients || []).map((c: any) => [c.email, c])
     );
 
-    // Merge: preserve CUSTOMER status and total_paid
     const mergedClients = validClients.map((c: any) => {
       const existing = existingMap.get(c.email);
       if (existing) {
         return {
           ...c,
-          // Never downgrade CUSTOMER to LEAD
           lifecycle_stage: existing.lifecycle_stage === 'CUSTOMER' ? 'CUSTOMER' : c.lifecycle_stage,
-          // Preserve total_paid
           total_paid: existing.total_paid || 0,
         };
       }
       return c;
     });
 
-    // Upsert in batches of 500
     const batchSize = 500;
     let totalInserted = 0;
-    let totalUpdated = 0;
 
     for (let i = 0; i < mergedClients.length; i += batchSize) {
       const batch = mergedClients.slice(i, i + batchSize);
@@ -127,11 +148,12 @@ Deno.serve(async (req) => {
     );
 
   } catch (error: unknown) {
+    const origin = req.headers.get("origin");
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('❌ Sync error:', errorMessage);
     return new Response(
       JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' } }
     );
   }
 });
