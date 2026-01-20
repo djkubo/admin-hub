@@ -63,41 +63,51 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
+    // SECURITY: Require all environment variables
     if (!stripeSecretKey || !supabaseUrl || !supabaseServiceKey) {
-      throw new Error('Missing required environment variables');
+      console.error('❌ Missing required environment variables');
+      return new Response(
+        JSON.stringify({ error: 'Server configuration error', code: 'MISSING_ENV' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // SECURITY: REQUIRE webhook secret - reject if not configured
+    if (!stripeWebhookSecret) {
+      console.error('❌ STRIPE_WEBHOOK_SECRET not configured - webhook disabled for security');
+      return new Response(
+        JSON.stringify({ 
+          error: 'Webhook not configured', 
+          code: 'MISSING_WEBHOOK_SECRET',
+          message: 'STRIPE_WEBHOOK_SECRET must be configured to process webhooks'
+        }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     const body = await req.text();
     let event: StripeEvent;
-    let signatureVerified = false;
 
-    // SECURITY: Verify Stripe signature (REQUIRED for production)
-    if (stripeWebhookSecret) {
-      const signature = req.headers.get('stripe-signature');
-      if (!signature) {
-        console.error('❌ Missing stripe-signature header');
-        return new Response(
-          JSON.stringify({ error: 'Missing signature' }),
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
+    // SECURITY: Verify Stripe signature (REQUIRED)
+    const signature = req.headers.get('stripe-signature');
+    if (!signature) {
+      console.error('❌ Missing stripe-signature header');
+      return new Response(
+        JSON.stringify({ error: 'Missing signature', code: 'NO_SIGNATURE' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-      try {
-        const stripe = new Stripe(stripeSecretKey, { apiVersion: '2023-10-16' });
-        event = stripe.webhooks.constructEvent(body, signature, stripeWebhookSecret) as unknown as StripeEvent;
-        signatureVerified = true;
-        console.log(`✅ signature_verified=true for event: ${event.id}`);
-      } catch (err) {
-        console.error('❌ Signature verification failed:', err);
-        return new Response(
-          JSON.stringify({ error: 'Invalid signature' }),
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-    } else {
-      // No webhook secret - parse directly (DEV ONLY - log warning)
-      console.warn('⚠️ STRIPE_WEBHOOK_SECRET not configured - signature NOT verified (unsafe for production)');
-      event = JSON.parse(body);
+    try {
+      const stripe = new Stripe(stripeSecretKey, { apiVersion: '2023-10-16' });
+      event = stripe.webhooks.constructEvent(body, signature, stripeWebhookSecret) as unknown as StripeEvent;
+      console.log(`✅ signature_verified=true for event: ${event.id}`);
+    } catch (err) {
+      console.error('❌ Signature verification failed:', err);
+      return new Response(
+        JSON.stringify({ error: 'Invalid signature', code: 'INVALID_SIGNATURE' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -117,7 +127,7 @@ Deno.serve(async (req) => {
           received: true, 
           skipped: true, 
           reason: 'already_processed',
-          signature_verified: signatureVerified 
+          signature_verified: true 
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -145,7 +155,7 @@ Deno.serve(async (req) => {
       console.error('Error recording webhook event:', webhookEventError);
     }
 
-    console.log(`🔔 Stripe Event: ${event.type}, ID: ${event.id}, signature_verified=${signatureVerified}`);
+    console.log(`🔔 Stripe Event: ${event.type}, ID: ${event.id}, signature_verified=true`);
 
     const obj = event.data.object as Record<string, unknown>;
     let email: string | null = null;
@@ -246,7 +256,7 @@ Deno.serve(async (req) => {
       }
 
       return new Response(
-        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: signatureVerified }),
+        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -278,7 +288,7 @@ Deno.serve(async (req) => {
         }
       }
       return new Response(
-        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: signatureVerified }),
+        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -293,7 +303,7 @@ Deno.serve(async (req) => {
       if (!email) {
         console.log(`⚠️ Skipping ${event.type}: no email for ${paymentIntentId}`);
         return new Response(
-          JSON.stringify({ received: true, skipped: true, reason: 'no_email', signature_verified: signatureVerified }),
+          JSON.stringify({ received: true, skipped: true, reason: 'no_email', signature_verified: true }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -426,7 +436,7 @@ Deno.serve(async (req) => {
           status,
           amount,
           email,
-          signature_verified: signatureVerified
+          signature_verified: true
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -434,7 +444,7 @@ Deno.serve(async (req) => {
 
     console.log(`ℹ️ Event ${event.type} acknowledged but not processed`);
     return new Response(
-      JSON.stringify({ received: true, processed: false, type: event.type, signature_verified: signatureVerified }),
+      JSON.stringify({ received: true, processed: false, type: event.type, signature_verified: true }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

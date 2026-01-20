@@ -20,16 +20,15 @@ interface SidebarProps {
 }
 
 const menuItems = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "recovery", label: "Revenue Ops", icon: AlertTriangle },
-  { id: "campaigns", label: "Campañas", icon: Send },
-  { id: "sync-center", label: "Sync Center", icon: RefreshCw },
-  { id: "diagnostics", label: "Diagnostics", icon: Shield },
+  { id: "dashboard", label: "Command Center", icon: LayoutDashboard },
+  { id: "recovery", label: "Recovery", icon: AlertTriangle },
   { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
-  { id: "import", label: "Importar/Sync", icon: Upload },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "import", label: "Importar/Sync", icon: Upload },
+  { id: "diagnostics", label: "Diagnostics", icon: Shield },
+  { id: "campaigns", label: "Campañas", icon: Send },
   { id: "settings", label: "Ajustes", icon: Settings },
 ];
 
