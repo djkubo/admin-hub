@@ -100,6 +100,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     today: 'Hoy',
     '7d': '7d',
     month: 'Mes',
+    all: 'Todo',
   };
 
   const handleSyncAll = async (range: SyncRange = 'today') => {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
-export type TimeFilter = 'today' | '7d' | 'month';
+export type TimeFilter = 'today' | '7d' | 'month' | 'all';
 
 export interface DailyKPIs {
   // Registrations
@@ -55,6 +55,10 @@ function getDateRange(filter: TimeFilter): { start: Date; end: Date } {
     case 'month':
       // First day of current month in UTC
       start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      break;
+    case 'all':
+      // All time - 10 years back to cover everything
+      start = new Date(Date.UTC(now.getUTCFullYear() - 10, 0, 1));
       break;
     default:
       start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
