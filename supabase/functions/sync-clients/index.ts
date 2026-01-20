@@ -164,11 +164,113 @@ Deno.serve(async (req) => {
 
     console.log(`🎉 Sync complete: ${totalInserted} total records processed`);
 
+    // ============================================
+    // POST-PROCESSING: Cross-reference with payments
+    // ============================================
+    console.log("🔄 Starting post-processing: cross-referencing with transactions...");
+
+    // Get all synced emails
+    const syncedEmails = mergedClients.map((c: any) => c.email);
+
+    // Find first successful payment per email in transactions table
+    const { data: paymentData, error: paymentError } = await supabaseAdmin
+      .from('transactions')
+      .select('customer_email, amount, status, stripe_created_at, payment_type')
+      .in('customer_email', syncedEmails)
+      .in('status', ['succeeded', 'paid'])
+      .gt('amount', 0)
+      .order('stripe_created_at', { ascending: true });
+
+    if (paymentError) {
+      console.error("⚠️ Error fetching payment data:", paymentError);
+    }
+
+    // Build payment map: email -> first payment info
+    const paymentMap = new Map<string, { 
+      hasPaid: boolean; 
+      firstPaymentDate: string | null;
+      totalPaid: number;
+      paymentType: string | null;
+    }>();
+
+    for (const tx of (paymentData || [])) {
+      const email = tx.customer_email?.toLowerCase();
+      if (!email) continue;
+
+      const existing = paymentMap.get(email);
+      if (!existing) {
+        paymentMap.set(email, {
+          hasPaid: true,
+          firstPaymentDate: tx.stripe_created_at,
+          totalPaid: tx.amount || 0,
+          paymentType: tx.payment_type
+        });
+      } else {
+        // Sum up total paid
+        paymentMap.set(email, {
+          ...existing,
+          totalPaid: existing.totalPaid + (tx.amount || 0)
+        });
+      }
+    }
+
+    // Update lifecycle_stage based on payment history
+    let upgradedToCustomer = 0;
+    let newLeads = 0;
+    let alreadyCustomers = 0;
+
+    for (const client of mergedClients) {
+      const paymentInfo = paymentMap.get(client.email);
+      const currentStage = client.lifecycle_stage;
+
+      if (paymentInfo?.hasPaid) {
+        // Has payment history -> should be CUSTOMER
+        if (currentStage !== 'CUSTOMER') {
+          const { error: updateError } = await supabaseAdmin
+            .from('clients')
+            .update({ 
+              lifecycle_stage: 'CUSTOMER',
+              first_payment_at: paymentInfo.firstPaymentDate,
+              total_paid: paymentInfo.totalPaid
+            })
+            .eq('email', client.email);
+
+          if (!updateError) {
+            upgradedToCustomer++;
+            console.log(`🎯 Upgraded to CUSTOMER: ${client.email} (paid: $${(paymentInfo.totalPaid / 100).toFixed(2)})`);
+          }
+        } else {
+          alreadyCustomers++;
+        }
+      } else {
+        // No payment history -> stays as LEAD
+        newLeads++;
+      }
+    }
+
+    console.log("📊 Post-processing results:");
+    console.log(`   ✅ New LEADs (no payment yet): ${newLeads}`);
+    console.log(`   🎯 Upgraded to CUSTOMER: ${upgradedToCustomer}`);
+    console.log(`   👥 Already CUSTOMER: ${alreadyCustomers}`);
+
+    // Build segmentation report
+    const segmentationReport = {
+      total_synced: mergedClients.length,
+      new_leads: newLeads,
+      upgraded_to_customer: upgradedToCustomer,
+      already_customers: alreadyCustomers,
+      leads_for_onboarding: newLeads,
+      conversions_for_followup: upgradedToCustomer + alreadyCustomers
+    };
+
+    console.log(`🎉 Full sync complete with payment cross-reference`);
+
     return new Response(
       JSON.stringify({
         success: true,
         processed: mergedClients.length,
-        message: `Synced ${mergedClients.length} clients successfully`
+        message: `Synced ${mergedClients.length} clients successfully`,
+        segmentation: segmentationReport
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
