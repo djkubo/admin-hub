@@ -189,40 +189,42 @@ export function InvoicesPage() {
   }), [dateFilteredInvoices]);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      {/* Header - Responsive */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-            <FileText className="h-8 w-8 text-blue-500" />
-            Facturas Pendientes
+          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+            <FileText className="h-6 w-6 md:h-8 md:w-8 text-blue-500" />
+            Facturas
           </h1>
-          <p className="text-muted-foreground mt-1">
-            Gestiona y cobra facturas pendientes de Stripe
+          <p className="text-xs md:text-sm text-muted-foreground mt-1">
+            Gestiona facturas pendientes
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <p className="text-2xl font-bold text-foreground">${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-            <p className="text-sm text-muted-foreground">Total pendiente</p>
+        <div className="flex items-center gap-3 justify-between sm:justify-end">
+          <div className="text-left sm:text-right">
+            <p className="text-xl md:text-2xl font-bold text-foreground">${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-xs text-muted-foreground">Total pendiente</p>
           </div>
           <Button
             onClick={() => syncInvoices.mutate()}
             disabled={syncInvoices.isPending}
             variant="outline"
+            size="sm"
+            className="touch-feedback"
           >
-            {syncInvoices.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            Sincronizar
+            {syncInvoices.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            <span className="hidden sm:inline ml-2">Sync</span>
           </Button>
         </div>
       </div>
 
       {/* Charge All Progress */}
       {chargeProgress && (
-        <div className="rounded-xl border border-border/50 bg-card p-4">
+        <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium">Cobrando facturas...</span>
-            <span className="text-sm text-muted-foreground">
+            <span className="text-xs md:text-sm font-medium">Cobrando facturas...</span>
+            <span className="text-xs text-muted-foreground">
               {chargeProgress.current}/{chargeProgress.total}
             </span>
           </div>
@@ -233,158 +235,225 @@ export function InvoicesPage() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="rounded-xl border border-border/50 bg-card p-4">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-4 flex-wrap">
+      {/* Filters - Stack on mobile */}
+      <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
+        <div className="flex flex-col gap-3">
+          {/* Tabs - Scroll on mobile */}
+          <div className="overflow-x-auto -mx-3 px-3">
             <Tabs value={filter} onValueChange={(v) => setFilter(v as InvoiceFilter)}>
-              <TabsList className="bg-muted/50">
-                <TabsTrigger value="all">Todas ({filterCounts.all})</TabsTrigger>
-                <TabsTrigger value="open">Abiertas ({filterCounts.open})</TabsTrigger>
-                <TabsTrigger value="draft">Borrador ({filterCounts.draft})</TabsTrigger>
-                <TabsTrigger value="scheduled">Programadas ({filterCounts.scheduled})</TabsTrigger>
-                <TabsTrigger value="unscheduled">Sin programar ({filterCounts.unscheduled})</TabsTrigger>
+              <TabsList className="bg-muted/50 h-8 min-w-max">
+                <TabsTrigger value="all" className="text-xs px-2 md:px-3">Todas ({filterCounts.all})</TabsTrigger>
+                <TabsTrigger value="open" className="text-xs px-2 md:px-3">Abiertas ({filterCounts.open})</TabsTrigger>
+                <TabsTrigger value="draft" className="text-xs px-2 md:px-3">Borrador ({filterCounts.draft})</TabsTrigger>
+                <TabsTrigger value="scheduled" className="text-xs px-2 md:px-3">Prog ({filterCounts.scheduled})</TabsTrigger>
               </TabsList>
             </Tabs>
+          </div>
 
+          {/* Date filter and actions */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-muted-foreground" />
               <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
-                <SelectTrigger className="w-32 bg-muted/50 border-border/50">
+                <SelectTrigger className="w-24 md:w-32 bg-muted/50 border-border/50 text-xs md:text-sm h-8">
                   <SelectValue placeholder="Período" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="bg-popover border-border">
                   <SelectItem value="all">Todas</SelectItem>
                   <SelectItem value="1d">1 día</SelectItem>
                   <SelectItem value="7d">7 días</SelectItem>
                   <SelectItem value="15d">15 días</SelectItem>
                   <SelectItem value="30d">30 días</SelectItem>
-                  <SelectItem value="60d">60 días</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-muted-foreground">
-              ${(totalFiltered / 100).toFixed(2)} en {filteredInvoices.length} facturas
-            </Badge>
-            <Button
-              onClick={handleChargeAll}
-              disabled={isChargingAll || filteredInvoices.filter(i => i.status === 'open').length === 0}
-              className="gap-2 bg-emerald-600 hover:bg-emerald-700"
-              title={`Cobrar ${filteredInvoices.filter(i => i.status === 'open').length} facturas abiertas${dateRange !== 'all' ? ` en próximos ${dateRange}` : ''}`}
-            >
-              {isChargingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <DollarSign className="h-4 w-4" />}
-              Cobrar {dateRange !== 'all' ? `(${dateRange})` : 'Todas'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-muted-foreground text-xs hidden sm:flex">
+                ${(totalFiltered / 100).toFixed(2)}
+              </Badge>
+              <Button
+                onClick={handleChargeAll}
+                disabled={isChargingAll || filteredInvoices.filter(i => i.status === 'open').length === 0}
+                size="sm"
+                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs touch-feedback"
+              >
+                {isChargingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DollarSign className="h-3.5 w-3.5" />}
+                Cobrar
+              </Button>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Table */}
+      {/* Content */}
       {isLoading ? (
-        <div className="rounded-xl border border-border/50 bg-card p-12 text-center">
+        <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
-          <p className="text-muted-foreground">Cargando facturas...</p>
+          <p className="text-sm text-muted-foreground">Cargando facturas...</p>
         </div>
       ) : filteredInvoices.length === 0 ? (
-        <div className="rounded-xl border border-border/50 bg-card p-12 text-center">
-          <CheckCircle className="h-12 w-12 mx-auto mb-3 text-emerald-500/50" />
-          <p className="text-muted-foreground mb-1">¡Sin facturas pendientes!</p>
-          <p className="text-xs text-muted-foreground">Las facturas por cobrar aparecerán aquí</p>
+        <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
+          <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
+          <p className="text-sm text-muted-foreground mb-1">¡Sin facturas pendientes!</p>
         </div>
       ) : (
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-border/50 hover:bg-transparent">
-                <TableHead className="text-muted-foreground">Cliente</TableHead>
-                <TableHead className="text-muted-foreground">Monto</TableHead>
-                <TableHead className="text-muted-foreground">Estado</TableHead>
-                <TableHead className="text-muted-foreground">Próximo intento</TableHead>
-                <TableHead className="text-muted-foreground">Período</TableHead>
-                <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredInvoices.map((invoice) => (
-                <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
-                  <TableCell>
-                    <p className="font-medium text-foreground">{invoice.customer_email || 'Sin email'}</p>
-                    <p className="text-xs text-muted-foreground truncate max-w-[200px]">
-                      {invoice.stripe_invoice_id}
-                    </p>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-lg font-semibold text-foreground">
-                      ${(invoice.amount_due / 100).toFixed(2)}
+        <>
+          {/* Mobile Cards */}
+          <div className="md:hidden space-y-3">
+            {filteredInvoices.map((invoice) => (
+              <div key={invoice.id} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-foreground text-sm truncate">{invoice.customer_email || 'Sin email'}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{invoice.stripe_invoice_id}</p>
+                  </div>
+                  <span className="text-lg font-bold text-foreground ml-2">
+                    ${(invoice.amount_due / 100).toFixed(2)}
+                  </span>
+                </div>
+                
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                  <Badge variant="outline" className={`text-xs ${
+                    invoice.status === 'open' 
+                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                      : invoice.status === 'draft'
+                      ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
+                      : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                  }`}>
+                    {invoice.status}
+                  </Badge>
+                  {invoice.next_payment_attempt && (
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
                     </span>
-                    <span className="text-xs text-muted-foreground ml-1 uppercase">
-                      {invoice.currency}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={
-                      invoice.status === 'open' 
-                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                        : invoice.status === 'draft'
-                        ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
-                        : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                    }>
-                      {invoice.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {invoice.next_payment_attempt ? (
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-muted-foreground" />
-                        <span className="text-sm">
-                          {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
-                        </span>
-                      </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => handleChargeInvoice(invoice)}
+                    disabled={chargingInvoice === invoice.id || invoice.status !== 'open'}
+                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs h-8 flex-1 touch-feedback"
+                  >
+                    {chargingInvoice === invoice.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <span className="text-xs text-muted-foreground">Sin programar</span>
+                      <DollarSign className="h-3.5 w-3.5" />
                     )}
-                  </TableCell>
-                  <TableCell>
-                    {invoice.period_end ? (
-                      <span className="text-sm text-muted-foreground">
-                        {format(new Date(invoice.period_end), 'dd MMM yyyy', { locale: es })}
-                      </span>
-                    ) : '-'}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => handleChargeInvoice(invoice)}
-                        disabled={chargingInvoice === invoice.id || invoice.status !== 'open'}
-                        className="gap-2 bg-emerald-600 hover:bg-emerald-700"
-                      >
-                        {chargingInvoice === invoice.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                    Cobrar
+                  </Button>
+                  {invoice.hosted_invoice_url && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
+                      className="h-8 touch-feedback"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop Table */}
+          <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-border/50 hover:bg-transparent">
+                    <TableHead className="text-muted-foreground">Cliente</TableHead>
+                    <TableHead className="text-muted-foreground">Monto</TableHead>
+                    <TableHead className="text-muted-foreground">Estado</TableHead>
+                    <TableHead className="text-muted-foreground">Próximo intento</TableHead>
+                    <TableHead className="text-muted-foreground">Período</TableHead>
+                    <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredInvoices.map((invoice) => (
+                    <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
+                      <TableCell>
+                        <p className="font-medium text-foreground">{invoice.customer_email || 'Sin email'}</p>
+                        <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          {invoice.stripe_invoice_id}
+                        </p>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-lg font-semibold text-foreground">
+                          ${(invoice.amount_due / 100).toFixed(2)}
+                        </span>
+                        <span className="text-xs text-muted-foreground ml-1 uppercase">
+                          {invoice.currency}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={
+                          invoice.status === 'open' 
+                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                            : invoice.status === 'draft'
+                            ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
+                            : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                        }>
+                          {invoice.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.next_payment_attempt ? (
+                          <div className="flex items-center gap-2">
+                            <Clock className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">
+                              {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
+                            </span>
+                          </div>
                         ) : (
-                          <DollarSign className="h-4 w-4" />
+                          <span className="text-xs text-muted-foreground">Sin programar</span>
                         )}
-                        Cobrar
-                      </Button>
-                      {invoice.hosted_invoice_url && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.period_end ? (
+                          <span className="text-sm text-muted-foreground">
+                            {format(new Date(invoice.period_end), 'dd MMM yyyy', { locale: es })}
+                          </span>
+                        ) : '-'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => handleChargeInvoice(invoice)}
+                            disabled={chargingInvoice === invoice.id || invoice.status !== 'open'}
+                            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+                          >
+                            {chargingInvoice === invoice.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <DollarSign className="h-4 w-4" />
+                            )}
+                            Cobrar
+                          </Button>
+                          {invoice.hosted_invoice_url && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
