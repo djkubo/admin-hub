@@ -315,15 +315,28 @@ export function useSmartRecovery() {
     setProgress({ batch: 0, message: "Iniciando Smart Recovery en segundo plano..." });
 
     try {
-      const { data, error } = await supabase.functions.invoke("recover-revenue", {
-        body: { hours_lookback, background: true },
-      });
-      
-      if (error) {
-        throw new Error(error.message || "Error calling recover-revenue");
+      // Use fetch directly with longer timeout for background mode
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({ hours_lookback, background: true }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
+      const data = await response.json();
       const syncRunId = data?.sync_run_id;
+      
       if (!syncRunId) {
         throw new Error("No sync_run_id received from background process");
       }
