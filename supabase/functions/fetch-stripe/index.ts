@@ -212,12 +212,14 @@ Deno.serve(async (req) => {
           failedCount++;
         }
 
+        // NORMALIZED: payment_key = payment_intent_id for perfect dedup
         transactions.push({
           stripe_payment_intent_id: pi.id,
+          payment_key: pi.id, // CANONICAL dedup key
           stripe_customer_id: typeof pi.customer === 'string' ? pi.customer : (pi.customer as StripeCustomer)?.id || null,
           customer_email: email,
-          amount: pi.amount,
-          currency: pi.currency,
+          amount: pi.amount, // Already in cents from Stripe
+          currency: pi.currency.toLowerCase(), // Normalize to lowercase
           status: mappedStatus,
           failure_code: pi.last_payment_error?.code || (mappedStatus === "failed" ? pi.status : null),
           failure_message: pi.last_payment_error?.message || null,
@@ -244,9 +246,10 @@ Deno.serve(async (req) => {
       }
 
       if (transactions.length > 0) {
+        // Use new UNIQUE constraint: (source, payment_key)
         const { error: txError, data: txData } = await supabase
           .from("transactions")
-          .upsert(transactions, { onConflict: "stripe_payment_intent_id", ignoreDuplicates: false })
+          .upsert(transactions, { onConflict: "source,payment_key", ignoreDuplicates: false })
           .select("id");
 
         if (txError) {

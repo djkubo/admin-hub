@@ -226,11 +226,12 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Upsert transaction
+      // NORMALIZED: payment_key = payment_intent_id for perfect dedup
       const transactionData = {
         stripe_payment_intent_id: paymentIntentId,
+        payment_key: paymentIntentId, // CANONICAL dedup key
         amount,
-        currency: (obj.currency as string)?.toUpperCase() || 'USD',
+        currency: ((obj.currency as string) || 'usd').toLowerCase(), // Normalize to lowercase
         status,
         customer_email: email,
         stripe_customer_id: customerId,
@@ -241,9 +242,10 @@ Deno.serve(async (req) => {
         metadata: obj.metadata || null,
       };
 
+      // Use new UNIQUE constraint: (source, payment_key)
       const { error: txError } = await supabase
         .from('transactions')
-        .upsert(transactionData, { onConflict: 'stripe_payment_intent_id' });
+        .upsert(transactionData, { onConflict: 'source,payment_key' });
 
       if (txError) {
         console.error('Error upserting transaction:', txError);

@@ -138,12 +138,17 @@ Deno.serve(async (req) => {
     const currency = extractCurrency(resource);
     const fullName = extractName(resource);
     
-    // Get transaction ID
+    // Get transaction ID - use clean ID for payment_key
     let transactionId = resource.id as string;
+    let paymentKey = transactionId; // Clean ID for dedup
+    let fullTransactionId: string;
+    
     if (!transactionId) {
-      transactionId = `paypal_${event.id}`;
+      transactionId = event.id;
+      paymentKey = event.id;
+      fullTransactionId = `paypal_${event.id}`;
     } else {
-      transactionId = `paypal_${transactionId}`;
+      fullTransactionId = `paypal_${transactionId}`;
     }
 
     const createdAt = resource.create_time 
@@ -201,10 +206,13 @@ Deno.serve(async (req) => {
         failureMessage = (statusDetail?.reason as string) || `Payment ${event.event_type}`;
       }
 
+      // NORMALIZED: payment_key = clean transaction ID for perfect dedup
       const transactionData = {
-        stripe_payment_intent_id: transactionId,
+        stripe_payment_intent_id: fullTransactionId, // Backwards compat with prefix
+        payment_key: paymentKey, // CANONICAL dedup key (NO prefix)
+        external_transaction_id: paymentKey, // Clean ID for reference
         amount,
-        currency: currency.toUpperCase(),
+        currency: currency.toLowerCase(), // Normalize to lowercase
         status,
         customer_email: email,
         stripe_created_at: createdAt,
@@ -214,9 +222,10 @@ Deno.serve(async (req) => {
         metadata: { event_type: event.event_type, paypal_id: resource.id },
       };
 
+      // Use new UNIQUE constraint: (source, payment_key)
       const { error: txError } = await supabase
         .from('transactions')
-        .upsert(transactionData, { onConflict: 'stripe_payment_intent_id' });
+        .upsert(transactionData, { onConflict: 'source,payment_key' });
 
       if (txError) {
         console.error('Error upserting transaction:', txError);
@@ -244,14 +253,15 @@ Deno.serve(async (req) => {
         if (clientError) console.error('Error upserting client:', clientError);
       }
 
-      console.log(`✅ PayPal ${event.event_type}: ${transactionId} - ${status} - $${amount} - ${email}`);
+      console.log(`✅ PayPal ${event.event_type}: ${fullTransactionId} - ${status} - ${amount}¢ - ${email}`);
 
       return new Response(
         JSON.stringify({ 
           received: true, 
           processed: true,
           type: event.event_type,
-          transaction_id: transactionId,
+          transaction_id: fullTransactionId,
+          payment_key: paymentKey,
           status,
           amount,
           email
