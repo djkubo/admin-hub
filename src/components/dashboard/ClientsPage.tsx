@@ -140,10 +140,93 @@ export function ClientsPage() {
         </Button>
       </div>
 
-      {/* Filters */}
+      {/* Quick Filter Buttons */}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant={statusFilter === 'all' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('all')}
+          className="gap-2"
+        >
+          <Users className="h-4 w-4" />
+          Todos
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.all}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'customer' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('customer')}
+          className="gap-2 border-emerald-500/30 hover:bg-emerald-500/10"
+        >
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          Clientes
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.customer}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'lead' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('lead')}
+          className="gap-2 border-gray-500/30 hover:bg-gray-500/10"
+        >
+          <span className="h-2 w-2 rounded-full bg-gray-400" />
+          Leads
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.lead}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'trial' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('trial')}
+          className="gap-2 border-purple-500/30 hover:bg-purple-500/10"
+        >
+          <span className="h-2 w-2 rounded-full bg-purple-500" />
+          Trial
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.trial}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'past_due' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('past_due')}
+          className="gap-2 border-orange-500/30 hover:bg-orange-500/10"
+        >
+          <AlertTriangle className="h-4 w-4 text-orange-500" />
+          Morosos
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.past_due}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'churn' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('churn')}
+          className="gap-2 border-red-500/30 hover:bg-red-500/10"
+        >
+          <LogOut className="h-4 w-4 text-red-500" />
+          Cancelados
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.churn}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'vip' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('vip')}
+          className="gap-2 border-yellow-500/30 hover:bg-yellow-500/10"
+        >
+          <Crown className="h-4 w-4 text-yellow-500" />
+          VIP
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.vip}</Badge>
+        </Button>
+        <Button
+          variant={statusFilter === 'no_phone' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setStatusFilter('no_phone')}
+          className="gap-2"
+        >
+          <Phone className="h-4 w-4 text-muted-foreground" />
+          Sin teléfono
+          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.no_phone}</Badge>
+        </Button>
+      </div>
+
+      {/* Search */}
       <div className="rounded-xl border border-border/50 bg-card p-4">
         <div className="flex items-center gap-4 flex-wrap">
-          {/* Search */}
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -153,44 +236,6 @@ export function ClientsPage() {
               className="pl-9"
             />
           </div>
-
-          {/* Status Filter */}
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as ClientFilter)}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="Filtrar por estado" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos ({filterCounts.all})</SelectItem>
-              <SelectItem value="customer">
-                <span className="text-emerald-400">● Clientes ({filterCounts.customer})</span>
-              </SelectItem>
-              <SelectItem value="lead">
-                <span className="text-gray-400">● Leads ({filterCounts.lead})</span>
-              </SelectItem>
-              <SelectItem value="trial">
-                <span className="text-purple-400">● Trial ({filterCounts.trial})</span>
-              </SelectItem>
-              <SelectItem value="past_due">
-                <span className="text-orange-400">● Morosos ({filterCounts.past_due})</span>
-              </SelectItem>
-              <SelectItem value="churn">
-                <span className="text-red-400">● Cancelados ({filterCounts.churn})</span>
-              </SelectItem>
-              <SelectItem value="vip">
-                <div className="flex items-center gap-2">
-                  <Crown className="h-3 w-3 text-yellow-500" />
-                  VIP ({filterCounts.vip})
-                </div>
-              </SelectItem>
-              <SelectItem value="no_phone">
-                <div className="flex items-center gap-2">
-                  <Phone className="h-3 w-3 text-muted-foreground" />
-                  Sin teléfono ({filterCounts.no_phone})
-                </div>
-              </SelectItem>
-            </SelectContent>
-          </Select>
-
           <Badge variant="outline" className="text-muted-foreground">
             {filteredClients.length} resultados
           </Badge>
