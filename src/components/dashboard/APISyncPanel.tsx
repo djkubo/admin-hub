@@ -32,26 +32,24 @@ export function APISyncPanel() {
   const [paypalResult, setPaypalResult] = useState<SyncResult | null>(null);
   const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
   const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
-  const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; label: string } | null>(null);
+  const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number } | null>(null);
+  const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number } | null>(null);
 
-  // Helper to sync in chunks to avoid timeouts
+  // Helper to sync in chunks to avoid timeouts - now with per-service progress
   const syncInChunks = async (
     service: 'stripe' | 'paypal',
     years: number,
-    setResult: (r: SyncResult) => void
+    setResult: (r: SyncResult) => void,
+    setProgress: (p: { current: number; total: number } | null) => void
   ) => {
     const now = new Date();
     let allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
     
     // Sync in 30-day chunks to avoid API limits and timeouts
-    const totalChunks = years * 12; // Monthly chunks
+    const totalChunks = Math.ceil(years * 12); // Monthly chunks
     
     for (let i = 0; i < totalChunks; i++) {
-      setSyncProgress({ 
-        current: i + 1, 
-        total: totalChunks, 
-        label: `${service === 'stripe' ? 'Stripe' : 'PayPal'}: Mes ${i + 1}/${totalChunks}` 
-      });
+      setProgress({ current: i + 1, total: totalChunks });
       
       const endDate = new Date(now.getTime() - (i * 31 * 24 * 60 * 60 * 1000));
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
@@ -78,7 +76,7 @@ export function APISyncPanel() {
       }
     }
     
-    setSyncProgress(null);
+    setProgress(null);
     setResult({ 
       success: true, 
       ...allResults,
@@ -124,11 +122,11 @@ export function APISyncPanel() {
           toast.success(`Stripe (31 días): ${data.synced_transactions} transacciones sincronizadas`);
         }
       } else if (mode === 'all6months') {
-        const results = await syncInChunks('stripe', 0.5, setStripeResult);
+        const results = await syncInChunks('stripe', 0.5, setStripeResult, setStripeProgress);
         toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
       } else if (mode === 'allHistory') {
         // Sync last 3 years - this covers most business histories
-        const results = await syncInChunks('stripe', 3, setStripeResult);
+        const results = await syncInChunks('stripe', 3, setStripeResult, setStripeProgress);
         toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
       }
       
@@ -143,7 +141,7 @@ export function APISyncPanel() {
       toast.error(`Error sincronizando Stripe: ${errorMessage}`);
     } finally {
       setStripeSyncing(false);
-      setSyncProgress(null);
+      setStripeProgress(null);
     }
   };
 
@@ -183,11 +181,11 @@ export function APISyncPanel() {
           toast.success(`PayPal (31 días): ${data.synced_transactions} transacciones sincronizadas`);
         }
       } else if (mode === 'all6months') {
-        const results = await syncInChunks('paypal', 0.5, setPaypalResult);
+        const results = await syncInChunks('paypal', 0.5, setPaypalResult, setPaypalProgress);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
       } else if (mode === 'allHistory') {
         // PayPal API only allows 3 years max - use 2.5 to be safe
-        const results = await syncInChunks('paypal', 2.5, setPaypalResult);
+        const results = await syncInChunks('paypal', 2.5, setPaypalResult, setPaypalProgress);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
       }
       
@@ -202,7 +200,7 @@ export function APISyncPanel() {
       toast.error(`Error sincronizando PayPal: ${errorMessage}`);
     } finally {
       setPaypalSyncing(false);
-      setSyncProgress(null);
+      setPaypalProgress(null);
     }
   };
 
@@ -289,19 +287,36 @@ export function APISyncPanel() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Progress indicator */}
-        {syncProgress && (
-          <div className="p-3 bg-primary/10 rounded-lg border border-primary/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-primary">
+        {/* Stripe Progress indicator */}
+        {stripeProgress && (
+          <div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-purple-400">
               <Loader2 className="h-4 w-4 animate-spin" />
-              <span>{syncProgress.label}</span>
+              <span>Stripe: Mes {stripeProgress.current}/{stripeProgress.total}</span>
             </div>
             <Progress 
-              value={(syncProgress.current / syncProgress.total) * 100} 
+              value={(stripeProgress.current / stripeProgress.total) * 100} 
               className="h-2"
             />
             <p className="text-xs text-gray-400">
-              Procesando... {syncProgress.current} de {syncProgress.total} períodos
+              Procesando... {stripeProgress.current} de {stripeProgress.total} períodos
+            </p>
+          </div>
+        )}
+
+        {/* PayPal Progress indicator */}
+        {paypalProgress && (
+          <div className="p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-yellow-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>PayPal: Mes {paypalProgress.current}/{paypalProgress.total}</span>
+            </div>
+            <Progress 
+              value={(paypalProgress.current / paypalProgress.total) * 100} 
+              className="h-2"
+            />
+            <p className="text-xs text-gray-400">
+              Procesando... {paypalProgress.current} de {paypalProgress.total} períodos
             </p>
           </div>
         )}
