@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle } from 'lucide-react';
+import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -27,9 +27,11 @@ export function APISyncPanel() {
   const [stripeSyncing, setStripeSyncing] = useState(false);
   const [paypalSyncing, setPaypalSyncing] = useState(false);
   const [manychatSyncing, setManychatSyncing] = useState(false);
+  const [ghlSyncing, setGhlSyncing] = useState(false);
   const [stripeResult, setStripeResult] = useState<SyncResult | null>(null);
   const [paypalResult, setPaypalResult] = useState<SyncResult | null>(null);
   const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
+  const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; label: string } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts
@@ -256,13 +258,46 @@ export function APISyncPanel() {
     }
   };
 
+  const syncGHL = async () => {
+    setGhlSyncing(true);
+    setGhlResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-ghl', {
+        body: { dry_run: false }
+      });
+
+      if (error) throw error;
+      
+      setGhlResult({
+        success: true,
+        total_fetched: data.stats?.total_fetched || 0,
+        total_inserted: data.stats?.total_inserted || 0,
+        total_updated: data.stats?.total_updated || 0,
+        total_conflicts: data.stats?.total_conflicts || 0
+      });
+      
+      toast.success(`GoHighLevel: ${data.stats?.total_fetched || 0} contactos sincronizados (${data.stats?.total_inserted || 0} nuevos, ${data.stats?.total_updated || 0} actualizados)`);
+      
+      // Refresh clients data
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      setGhlResult({ success: false, error: errorMessage });
+      toast.error(`Error sincronizando GoHighLevel: ${errorMessage}`);
+    } finally {
+      setGhlSyncing(false);
+    }
+  };
+
   const syncAllHistory = async () => {
     // Run sequentially to avoid rate limits
     await syncStripe('allHistory');
     await syncPayPal('allHistory');
   };
 
-  const isSyncing = stripeSyncing || paypalSyncing || manychatSyncing;
+  const isSyncing = stripeSyncing || paypalSyncing || manychatSyncing || ghlSyncing;
 
   return (
     <Card className="bg-[#1a1f36] border-border/50">
@@ -487,6 +522,57 @@ export function APISyncPanel() {
           
           <p className="text-xs text-gray-500">
             📱 Importa suscriptores de Instagram, Messenger y WhatsApp. Unifica por email/phone.
+          </p>
+        </div>
+
+        {/* GoHighLevel Sync */}
+        <div className="p-4 bg-[#0f1225] rounded-lg border border-green-500/30 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
+                <Users className="h-5 w-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-white">GoHighLevel</h4>
+                <p className="text-xs text-gray-400">
+                  {ghlResult?.success 
+                    ? `${ghlResult.total_fetched} contactos (${ghlResult.total_inserted} nuevos, ${ghlResult.total_updated} actualizados)`
+                    : 'Sincroniza todos tus contactos de GHL'
+                  }
+                </p>
+              </div>
+            </div>
+            {ghlResult && (
+              <Badge variant={ghlResult.success ? 'default' : 'destructive'} className="gap-1">
+                {ghlResult.success ? (
+                  <><CheckCircle className="h-3 w-3" /> OK</>
+                ) : (
+                  <><AlertCircle className="h-3 w-3" /> Error</>
+                )}
+              </Badge>
+            )}
+          </div>
+          
+          <Button
+            onClick={syncGHL}
+            disabled={isSyncing}
+            className="w-full gap-2 bg-green-600 hover:bg-green-700"
+          >
+            {ghlSyncing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Sincronizando contactos...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4" />
+                Importar Todos los Contactos
+              </>
+            )}
+          </Button>
+          
+          <p className="text-xs text-gray-500">
+            📋 Importa contactos de tu CRM GoHighLevel. Unifica por email/phone.
           </p>
         </div>
 
