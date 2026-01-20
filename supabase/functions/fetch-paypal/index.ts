@@ -175,6 +175,19 @@ Deno.serve(async (req) => {
 
     console.log(`🔄 PayPal Sync - from ${startDate} to ${endDate}, fetchAll: ${fetchAll}`);
 
+    // Create sync_run record
+    const { data: syncRun } = await supabase
+      .from('sync_runs')
+      .insert({
+        source: 'paypal',
+        status: 'running',
+        metadata: { fetchAll, startDate, endDate }
+      })
+      .select('id')
+      .single();
+    
+    const syncRunId = syncRun?.id;
+
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
     console.log("✅ Got PayPal access token");
 
@@ -373,6 +386,21 @@ Deno.serve(async (req) => {
 
     console.log(`✅ Synced ${syncedCount} transactions, ${clientsSynced} clients`);
 
+    // Update sync_run record
+    if (syncRunId) {
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          total_fetched: allTransactions.length,
+          total_inserted: syncedCount,
+          total_skipped: skippedNoEmail + skippedDuplicate,
+          metadata: { fetchAll, startDate, endDate, paidCount, failedCount }
+        })
+        .eq('id', syncRunId);
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -384,6 +412,7 @@ Deno.serve(async (req) => {
         skipped_no_email: skippedNoEmail,
         total_fetched: allTransactions.length,
         date_range: { start: startDate, end: endDate },
+        sync_run_id: syncRunId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
