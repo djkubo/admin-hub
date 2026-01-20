@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { 
   DollarSign, AlertTriangle, Clock, UserX, MessageCircle, 
   Smartphone, Facebook, ExternalLink, Send, CheckCircle, 
-  XCircle, Filter, RefreshCw, TrendingUp, Users, Zap
+  XCircle, Filter, RefreshCw, TrendingUp, Users, Zap, Phone
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -22,7 +22,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import {
   Tabs,
@@ -39,7 +38,8 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
-import { openWhatsApp } from './RecoveryTable';
+import { openWhatsApp, openNativeSms } from './RecoveryTable';
+import { supportsNativeSms } from '@/lib/nativeSms';
 
 interface PipelineClient {
   id: string;
@@ -69,6 +69,7 @@ interface CampaignMetrics {
 const pipelineConfig = {
   recovery: { 
     label: 'Recuperación', 
+    shortLabel: 'Recovery',
     icon: AlertTriangle, 
     color: 'text-red-400',
     bgColor: 'bg-red-500/10',
@@ -76,6 +77,7 @@ const pipelineConfig = {
   },
   trial_expiring: { 
     label: 'Trials por Vencer', 
+    shortLabel: 'Trials',
     icon: Clock, 
     color: 'text-amber-400',
     bgColor: 'bg-amber-500/10',
@@ -83,6 +85,7 @@ const pipelineConfig = {
   },
   winback: { 
     label: 'Winback', 
+    shortLabel: 'Winback',
     icon: UserX, 
     color: 'text-purple-400',
     bgColor: 'bg-purple-500/10',
@@ -101,12 +104,12 @@ const messageTemplates = {
 
 type DateRange = '1d' | '7d' | '30d' | '90d' | 'all';
 
-const dateRangeConfig: Record<DateRange, { label: string; days: number | null }> = {
-  '1d': { label: '1 día', days: 1 },
-  '7d': { label: '7 días', days: 7 },
-  '30d': { label: '30 días', days: 30 },
-  '90d': { label: '90 días', days: 90 },
-  'all': { label: 'Todo', days: null },
+const dateRangeConfig: Record<DateRange, { label: string; shortLabel: string; days: number | null }> = {
+  '1d': { label: '1 día', shortLabel: '1d', days: 1 },
+  '7d': { label: '7 días', shortLabel: '7d', days: 7 },
+  '30d': { label: '30 días', shortLabel: '30d', days: 30 },
+  '90d': { label: '90 días', shortLabel: '90d', days: 90 },
+  'all': { label: 'Todo', shortLabel: 'All', days: null },
 };
 
 export function RevenueOpsPipeline() {
@@ -119,6 +122,7 @@ export function RevenueOpsPipeline() {
   });
   const [loading, setLoading] = useState(true);
   const [showOnlyWithPhone, setShowOnlyWithPhone] = useState(false);
+
   const getDateFilter = () => {
     const days = dateRangeConfig[dateRange].days;
     if (days === null) return null;
@@ -310,6 +314,12 @@ export function RevenueOpsPipeline() {
     toast.success('WhatsApp abierto');
   };
 
+  const handleNativeSms = (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
+    if (!client.phone) return;
+    const message = messageTemplates[template](client.full_name || '', client.revenue_at_risk);
+    openNativeSms(client.phone, message);
+  };
+
   const handleSMS = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
     if (!client.phone) return;
     toast.loading('Enviando SMS...', { id: 'sms' });
@@ -396,306 +406,452 @@ export function RevenueOpsPipeline() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-            <Zap className="h-8 w-8 text-amber-500" />
-            Revenue Ops Pipeline
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Centro de operaciones multicanal para maximizar ingresos
-          </p>
+    <div className="space-y-4 md:space-y-6">
+      {/* Header - Responsive */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <Zap className="h-6 w-6 md:h-8 md:w-8 text-amber-500 shrink-0" />
+          <div>
+            <h1 className="text-lg md:text-2xl font-bold text-white">Revenue Ops</h1>
+            <p className="text-[10px] md:text-sm text-muted-foreground hidden sm:block">
+              Centro de operaciones multicanal
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {/* Date Range Selector */}
-          <div className="flex items-center bg-muted/50 rounded-lg p-1">
+        
+        {/* Date Range + Refresh - Compact on mobile */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-muted/50 rounded-lg p-0.5 overflow-x-auto">
             {(Object.entries(dateRangeConfig) as [DateRange, typeof dateRangeConfig['1d']][]).map(([key, config]) => (
               <Button
                 key={key}
                 variant={dateRange === key ? 'secondary' : 'ghost'}
                 size="sm"
                 onClick={() => setDateRange(key)}
-                className={`text-xs px-3 ${dateRange === key ? 'bg-primary text-primary-foreground' : ''}`}
+                className={`text-[10px] md:text-xs px-2 md:px-3 h-7 ${dateRange === key ? 'bg-primary text-primary-foreground' : ''}`}
               >
-                {config.label}
+                <span className="md:hidden">{config.shortLabel}</span>
+                <span className="hidden md:inline">{config.label}</span>
               </Button>
             ))}
           </div>
-          <Button onClick={loadData} variant="outline" className="gap-2">
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Actualizar
+          <Button onClick={loadData} variant="outline" size="sm" className="h-7 w-7 p-0 md:w-auto md:px-3 md:gap-2">
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span className="hidden md:inline">Actualizar</span>
           </Button>
         </div>
       </div>
 
-      {/* Metrics Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* Metrics Cards - 2x2 on mobile */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
         <Card className="bg-card border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground flex items-center gap-2">
-              <Send className="h-4 w-4" />
-              Campañas Enviadas
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-white">{metrics.total_sent}</p>
-            <p className="text-xs text-muted-foreground">{dateRangeConfig[dateRange].label}</p>
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Send className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Enviados</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-white">{metrics.total_sent}</p>
           </CardContent>
         </Card>
 
         <Card className="bg-card border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-emerald-400" />
-              Conversiones
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-emerald-400">{metrics.total_converted}</p>
-            <p className="text-xs text-muted-foreground">{metrics.recovery_rate.toFixed(1)}% tasa recovery</p>
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-emerald-400 mb-1">
+              <CheckCircle className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Conversiones</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-emerald-400">{metrics.total_converted}</p>
           </CardContent>
         </Card>
 
         <Card className="bg-card border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-blue-400" />
-              Trial → Paid
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-blue-400">{metrics.trial_conversion_rate.toFixed(1)}%</p>
-            <p className="text-xs text-muted-foreground">Tasa de conversión</p>
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-blue-400 mb-1">
+              <TrendingUp className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Trial→Paid</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-blue-400">{metrics.trial_conversion_rate.toFixed(0)}%</p>
           </CardContent>
         </Card>
 
         <Card className="bg-card border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground flex items-center gap-2">
-              <DollarSign className="h-4 w-4 text-green-400" />
-              Recuperado
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-green-400">
-              ${metrics.revenue_recovered.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-green-400 mb-1">
+              <DollarSign className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Recuperado</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-green-400">
+              ${metrics.revenue_recovered.toFixed(0)}
             </p>
-            <p className="text-xs text-muted-foreground">{dateRangeConfig[dateRange].label}</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Pipeline Tabs */}
+      {/* Pipeline Tabs - Horizontal scroll on mobile */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
-        <div className="flex items-center justify-between">
-          <TabsList className="bg-muted/50">
-            {(Object.entries(pipelineConfig) as [keyof typeof pipelineConfig, typeof pipelineConfig.recovery][]).map(([key, config]) => {
-              const Icon = config.icon;
-              return (
-                <TabsTrigger key={key} value={key} className="gap-2">
-                  <Icon className={`h-4 w-4 ${config.color}`} />
-                  {config.label}
-                  <Badge variant="secondary" className="ml-1">{pipelineCounts[key]}</Badge>
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
+            <TabsList className="bg-muted/50 w-max">
+              {(Object.entries(pipelineConfig) as [keyof typeof pipelineConfig, typeof pipelineConfig.recovery][]).map(([key, config]) => {
+                const Icon = config.icon;
+                return (
+                  <TabsTrigger key={key} value={key} className="gap-1.5 px-2 md:px-3 text-xs md:text-sm whitespace-nowrap">
+                    <Icon className={`h-3 w-3 md:h-4 md:w-4 ${config.color}`} />
+                    <span className="hidden sm:inline">{config.label}</span>
+                    <span className="sm:hidden">{config.shortLabel}</span>
+                    <Badge variant="secondary" className="ml-0.5 text-[10px] h-4 px-1">{pipelineCounts[key]}</Badge>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Switch
-                id="phone-filter"
+                id="phone-filter-pipeline"
                 checked={showOnlyWithPhone}
                 onCheckedChange={setShowOnlyWithPhone}
+                className="scale-90"
               />
-              <Label htmlFor="phone-filter" className="text-sm cursor-pointer">
-                Solo con teléfono
+              <Label htmlFor="phone-filter-pipeline" className="text-[10px] md:text-xs cursor-pointer whitespace-nowrap">
+                Con tel
               </Label>
             </div>
             <div className="text-right">
-              <p className="text-lg font-bold text-red-400">
-                ${totalRevenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              <p className="text-sm md:text-lg font-bold text-red-400">
+                ${totalRevenueAtRisk.toFixed(0)}
               </p>
-              <p className="text-xs text-muted-foreground">En riesgo</p>
+              <p className="text-[10px] text-muted-foreground">En riesgo</p>
             </div>
           </div>
         </div>
 
-        <TabsContent value={activeTab} className="mt-4">
+        <TabsContent value={activeTab} className="mt-3 md:mt-4">
           {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+            <div className="flex items-center justify-center h-40 md:h-64">
+              <RefreshCw className="h-6 w-6 md:h-8 md:w-8 animate-spin text-muted-foreground" />
             </div>
           ) : filteredClients.length === 0 ? (
-            <div className="rounded-xl border border-border/50 bg-card p-12 text-center">
-              <CheckCircle className="h-12 w-12 mx-auto mb-3 text-emerald-500/50" />
-              <p className="text-muted-foreground mb-1">¡Pipeline vacío!</p>
-              <p className="text-xs text-muted-foreground">No hay clientes pendientes en esta categoría</p>
+            <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
+              <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
+              <p className="text-sm text-muted-foreground mb-1">¡Pipeline vacío!</p>
+              <p className="text-xs text-muted-foreground">No hay clientes pendientes</p>
             </div>
           ) : (
-            <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border/50 hover:bg-transparent">
-                    <TableHead className="text-muted-foreground">Cliente</TableHead>
-                    <TableHead className="text-muted-foreground">Revenue Score</TableHead>
-                    <TableHead className="text-muted-foreground">En Riesgo</TableHead>
-                    <TableHead className="text-muted-foreground">Estado</TableHead>
-                    <TableHead className="text-muted-foreground">Campañas</TableHead>
-                    <TableHead className="text-right text-muted-foreground">Acciones 1-Click</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredClients.map((client) => (
-                    <TableRow key={`${client.id}-${client.pipeline_type}`} className="border-border/50 hover:bg-muted/20">
-                      <TableCell>
-                        <div>
-                          <p className="font-medium text-foreground">
-                            {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
-                          </p>
-                          <p className="text-xs text-muted-foreground">{client.email}</p>
-                          {client.phone && (
-                            <p className="text-xs text-muted-foreground/70">{client.phone}</p>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Progress value={Math.min(client.revenue_score * 10, 100)} className="w-16 h-2" />
-                          <span className="text-sm font-medium">{client.revenue_score}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-red-400 font-semibold text-lg">
-                          ${client.revenue_at_risk.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </span>
+            <>
+              {/* Mobile Cards View */}
+              <div className="md:hidden space-y-2">
+                {filteredClients.map((client) => (
+                  <div key={`${client.id}-${client.pipeline_type}`} className="rounded-lg border border-border/50 bg-card p-3">
+                    {/* Row 1: Name + Amount */}
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate text-foreground">
+                          {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground truncate">{client.email}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-sm font-bold text-red-400">${client.revenue_at_risk.toFixed(0)}</span>
                         {activeTab === 'trial_expiring' && (
-                          <p className="text-xs text-amber-400">{client.days_until_action}d restantes</p>
+                          <p className="text-[10px] text-amber-400">{client.days_until_action}d</p>
                         )}
-                      </TableCell>
-                      <TableCell>
-                        {client.last_campaign_status ? (
-                          <Badge 
-                            variant="outline" 
-                            className={
-                              client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
-                              client.last_campaign_status === 'sent' ? 'text-blue-400 border-blue-500/30' :
-                              'text-muted-foreground'
-                            }
-                          >
-                            {client.last_campaign_status}
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-muted-foreground">Sin contactar</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-sm text-muted-foreground">{client.campaign_count}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1 flex-wrap">
-                          {/* WhatsApp */}
-                          {client.phone && (
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button size="icon" className="h-8 w-8 bg-[#25D366] hover:bg-[#1da851]">
-                                  <MessageCircle className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
-                                  😊 Amigable
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
-                                  ⚠️ Urgente
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
-                                  🚨 Final
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          )}
+                      </div>
+                    </div>
+                    
+                    {/* Row 2: Score + Status */}
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <Progress value={Math.min(client.revenue_score * 10, 100)} className="w-12 h-1.5" />
+                        <span className="text-[10px] text-muted-foreground">{client.revenue_score}</span>
+                      </div>
+                      {client.last_campaign_status ? (
+                        <Badge 
+                          variant="outline" 
+                          className={`text-[10px] h-4 px-1 ${
+                            client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
+                            client.last_campaign_status === 'sent' ? 'text-blue-400 border-blue-500/30' :
+                            'text-muted-foreground'
+                          }`}
+                        >
+                          {client.last_campaign_status}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] h-4 px-1 text-muted-foreground">Nuevo</Badge>
+                      )}
+                      {client.phone && (
+                        <span className="text-[10px] text-muted-foreground/70 truncate max-w-[80px]">{client.phone}</span>
+                      )}
+                    </div>
 
-                          {/* SMS */}
-                          {client.phone && (
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button size="icon" variant="outline" className="h-8 w-8 border-blue-500/30 text-blue-400">
-                                  <Smartphone className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
-                                  😊 Amigable
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
-                                  ⚠️ Urgente
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
-                                  🚨 Final
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          )}
+                    {/* Row 3: Action Buttons - Horizontal */}
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                      {/* WhatsApp */}
+                      {client.phone && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="sm" className="h-7 px-2 shrink-0 bg-[#25D366] hover:bg-[#1da851] text-white text-[10px] gap-1">
+                              <MessageCircle className="h-3 w-3" />
+                              WA
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="bg-popover border-border">
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Final</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
 
-                          {/* ManyChat */}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button size="icon" variant="outline" className="h-8 w-8 border-[#0084FF]/30 text-[#0084FF]">
-                                <Facebook className="h-4 w-4" />
+                      {/* Native SMS (iOS) */}
+                      {client.phone && supportsNativeSms() && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="sm" className="h-7 px-2 shrink-0 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[10px] gap-1">
+                              <Smartphone className="h-3 w-3" />
+                              SMS
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="bg-popover border-border">
+                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'final')}>🚨 Final</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+
+                      {/* SMS API */}
+                      {client.phone && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="sm" className="h-7 px-2 shrink-0 bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 text-[10px] gap-1">
+                              <Phone className="h-3 w-3" />
+                              API
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="bg-popover border-border">
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Final</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+
+                      {/* ManyChat */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="sm" className="h-7 px-2 shrink-0 bg-[#0084FF]/15 hover:bg-[#0084FF]/25 text-[#0084FF] text-[10px] gap-1">
+                            <Facebook className="h-3 w-3" />
+                            FB
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="center" className="bg-popover border-border">
+                          <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>🚨 Final</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+
+                      {/* GHL */}
+                      <Button 
+                        size="sm"
+                        onClick={() => handleGHL(client)}
+                        className="h-7 px-2 shrink-0 bg-orange-500/15 hover:bg-orange-500/25 text-orange-400 text-[10px] gap-1"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        GHL
+                      </Button>
+
+                      {/* Stripe Portal */}
+                      <Button 
+                        size="sm"
+                        onClick={() => handleStripePortal(client)}
+                        className="h-7 px-2 shrink-0 bg-purple-500/15 hover:bg-purple-500/25 text-purple-400 text-[10px] gap-1"
+                      >
+                        <DollarSign className="h-3 w-3" />
+                        $
+                      </Button>
+
+                      {/* Mark Converted */}
+                      <Button 
+                        size="sm"
+                        onClick={() => markAsConverted(client)}
+                        className="h-7 px-2 shrink-0 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 text-[10px] gap-1"
+                      >
+                        <CheckCircle className="h-3 w-3" />
+                        ✓
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border/50 hover:bg-transparent">
+                        <TableHead className="text-muted-foreground">Cliente</TableHead>
+                        <TableHead className="text-muted-foreground">Score</TableHead>
+                        <TableHead className="text-muted-foreground">En Riesgo</TableHead>
+                        <TableHead className="text-muted-foreground">Estado</TableHead>
+                        <TableHead className="text-muted-foreground">#</TableHead>
+                        <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredClients.map((client) => (
+                        <TableRow key={`${client.id}-${client.pipeline_type}`} className="border-border/50 hover:bg-muted/20">
+                          <TableCell>
+                            <div>
+                              <p className="font-medium text-foreground">
+                                {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
+                              </p>
+                              <p className="text-xs text-muted-foreground">{client.email}</p>
+                              {client.phone && (
+                                <p className="text-xs text-muted-foreground/70">{client.phone}</p>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Progress value={Math.min(client.revenue_score * 10, 100)} className="w-16 h-2" />
+                              <span className="text-sm font-medium">{client.revenue_score}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-red-400 font-semibold text-lg">
+                              ${client.revenue_at_risk.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                            </span>
+                            {activeTab === 'trial_expiring' && (
+                              <p className="text-xs text-amber-400">{client.days_until_action}d restantes</p>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {client.last_campaign_status ? (
+                              <Badge 
+                                variant="outline" 
+                                className={
+                                  client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
+                                  client.last_campaign_status === 'sent' ? 'text-blue-400 border-blue-500/30' :
+                                  'text-muted-foreground'
+                                }
+                              >
+                                {client.last_campaign_status}
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-muted-foreground">Sin contactar</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm text-muted-foreground">{client.campaign_count}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-1 flex-wrap">
+                              {/* WhatsApp */}
+                              {client.phone && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="icon" className="h-8 w-8 bg-[#25D366] hover:bg-[#1da851]">
+                                      <MessageCircle className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
+                                      😊 Amigable
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
+                                      ⚠️ Urgente
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
+                                      🚨 Final
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
+
+                              {/* SMS */}
+                              {client.phone && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="icon" variant="outline" className="h-8 w-8 border-blue-500/30 text-blue-400">
+                                      <Smartphone className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
+                                      😊 Amigable
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
+                                      ⚠️ Urgente
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
+                                      🚨 Final
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
+
+                              {/* ManyChat */}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button size="icon" variant="outline" className="h-8 w-8 border-[#0084FF]/30 text-[#0084FF]">
+                                    <Facebook className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
+                                    😊 Amigable
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
+                                    ⚠️ Urgente
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>
+                                    🚨 Final
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+
+                              {/* GHL */}
+                              <Button 
+                                size="icon" 
+                                variant="outline" 
+                                className="h-8 w-8 border-orange-500/30 text-orange-400"
+                                onClick={() => handleGHL(client)}
+                              >
+                                <ExternalLink className="h-4 w-4" />
                               </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
-                                😊 Amigable
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
-                                ⚠️ Urgente
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>
-                                🚨 Final
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
 
-                          {/* GHL */}
-                          <Button 
-                            size="icon" 
-                            variant="outline" 
-                            className="h-8 w-8 border-orange-500/30 text-orange-400"
-                            onClick={() => handleGHL(client)}
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
+                              {/* Stripe Portal */}
+                              <Button 
+                                size="icon" 
+                                variant="outline" 
+                                className="h-8 w-8 border-purple-500/30 text-purple-400"
+                                onClick={() => handleStripePortal(client)}
+                              >
+                                <DollarSign className="h-4 w-4" />
+                              </Button>
 
-                          {/* Stripe Portal */}
-                          <Button 
-                            size="icon" 
-                            variant="outline" 
-                            className="h-8 w-8 border-purple-500/30 text-purple-400"
-                            onClick={() => handleStripePortal(client)}
-                          >
-                            <DollarSign className="h-4 w-4" />
-                          </Button>
-
-                          {/* Mark Converted */}
-                          <Button 
-                            size="icon" 
-                            variant="outline" 
-                            className="h-8 w-8 border-emerald-500/30 text-emerald-400"
-                            onClick={() => markAsConverted(client)}
-                          >
-                            <CheckCircle className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                              {/* Mark Converted */}
+                              <Button 
+                                size="icon" 
+                                variant="outline" 
+                                className="h-8 w-8 border-emerald-500/30 text-emerald-400"
+                                onClick={() => markAsConverted(client)}
+                              >
+                                <CheckCircle className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </>
           )}
         </TabsContent>
       </Tabs>
