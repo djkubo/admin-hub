@@ -8,7 +8,8 @@ import {
   Upload,
   BarChart3, 
   Settings,
-  LogOut
+  LogOut,
+  Send
 } from "lucide-react";
 
 interface SidebarProps {
@@ -18,7 +19,8 @@ interface SidebarProps {
 
 const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "recovery", label: "Recuperación", icon: AlertTriangle },
+  { id: "recovery", label: "Revenue Ops", icon: AlertTriangle },
+  { id: "campaigns", label: "Campañas", icon: Send },
   { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "subscriptions", label: "Suscripciones", icon: CreditCard },

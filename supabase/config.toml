@@ -47,3 +47,6 @@ verify_jwt = false
 
 [functions.execute-campaign]
 verify_jwt = false
+
+[functions.send-campaign]
+verify_jwt = false

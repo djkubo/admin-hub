@@ -128,6 +128,63 @@ export type Database = {
           },
         ]
       }
+      campaign_recipients: {
+        Row: {
+          campaign_id: string | null
+          client_id: string | null
+          converted_at: string | null
+          created_at: string | null
+          delivered_at: string | null
+          exclusion_reason: string | null
+          external_message_id: string | null
+          id: string
+          replied_at: string | null
+          sent_at: string | null
+          status: string
+        }
+        Insert: {
+          campaign_id?: string | null
+          client_id?: string | null
+          converted_at?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          exclusion_reason?: string | null
+          external_message_id?: string | null
+          id?: string
+          replied_at?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Update: {
+          campaign_id?: string | null
+          client_id?: string | null
+          converted_at?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          exclusion_reason?: string | null
+          external_message_id?: string | null
+          id?: string
+          replied_at?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_recipients_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_recipients_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       campaign_rules: {
         Row: {
           channel_priority: string[] | null
@@ -169,6 +226,99 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      campaigns: {
+        Row: {
+          channel: string
+          converted_count: number | null
+          created_at: string | null
+          dedupe_hours: number | null
+          delivered_count: number | null
+          dry_run: boolean | null
+          failed_count: number | null
+          id: string
+          name: string
+          quiet_hours_end: string | null
+          quiet_hours_start: string | null
+          rate_limit_per_minute: number | null
+          replied_count: number | null
+          respect_opt_out: boolean | null
+          respect_quiet_hours: boolean | null
+          scheduled_at: string | null
+          segment_id: string | null
+          sent_at: string | null
+          sent_count: number | null
+          status: string
+          template_id: string | null
+          total_recipients: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          channel: string
+          converted_count?: number | null
+          created_at?: string | null
+          dedupe_hours?: number | null
+          delivered_count?: number | null
+          dry_run?: boolean | null
+          failed_count?: number | null
+          id?: string
+          name: string
+          quiet_hours_end?: string | null
+          quiet_hours_start?: string | null
+          rate_limit_per_minute?: number | null
+          replied_count?: number | null
+          respect_opt_out?: boolean | null
+          respect_quiet_hours?: boolean | null
+          scheduled_at?: string | null
+          segment_id?: string | null
+          sent_at?: string | null
+          sent_count?: number | null
+          status?: string
+          template_id?: string | null
+          total_recipients?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          channel?: string
+          converted_count?: number | null
+          created_at?: string | null
+          dedupe_hours?: number | null
+          delivered_count?: number | null
+          dry_run?: boolean | null
+          failed_count?: number | null
+          id?: string
+          name?: string
+          quiet_hours_end?: string | null
+          quiet_hours_start?: string | null
+          rate_limit_per_minute?: number | null
+          replied_count?: number | null
+          respect_opt_out?: boolean | null
+          respect_quiet_hours?: boolean | null
+          scheduled_at?: string | null
+          segment_id?: string | null
+          sent_at?: string | null
+          sent_count?: number | null
+          status?: string
+          template_id?: string | null
+          total_recipients?: number | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaigns_segment_id_fkey"
+            columns: ["segment_id"]
+            isOneToOne: false
+            referencedRelation: "segments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaigns_template_id_fkey"
+            columns: ["template_id"]
+            isOneToOne: false
+            referencedRelation: "message_templates"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       client_events: {
         Row: {
@@ -307,6 +457,45 @@ export type Database = {
         }
         Relationships: []
       }
+      message_templates: {
+        Row: {
+          channel: string
+          content: string
+          created_at: string | null
+          id: string
+          is_active: boolean | null
+          name: string
+          subject: string | null
+          updated_at: string | null
+          variables: string[] | null
+          version: number | null
+        }
+        Insert: {
+          channel: string
+          content: string
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          name: string
+          subject?: string | null
+          updated_at?: string | null
+          variables?: string[] | null
+          version?: number | null
+        }
+        Update: {
+          channel?: string
+          content?: string
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          name?: string
+          subject?: string | null
+          updated_at?: string | null
+          variables?: string[] | null
+          version?: number | null
+        }
+        Relationships: []
+      }
       opt_outs: {
         Row: {
           channel: string
@@ -338,6 +527,45 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      segments: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          exclude_no_phone: boolean | null
+          exclude_refunds: boolean | null
+          filter_criteria: Json | null
+          filter_type: string
+          id: string
+          is_active: boolean | null
+          name: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          exclude_no_phone?: boolean | null
+          exclude_refunds?: boolean | null
+          filter_criteria?: Json | null
+          filter_type: string
+          id?: string
+          is_active?: boolean | null
+          name: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          exclude_no_phone?: boolean | null
+          exclude_refunds?: boolean | null
+          filter_criteria?: Json | null
+          filter_type?: string
+          id?: string
+          is_active?: boolean | null
+          name?: string
+          updated_at?: string | null
+        }
+        Relationships: []
       }
       subscriptions: {
         Row: {
@@ -428,6 +656,44 @@ export type Database = {
           value?: string | null
         }
         Relationships: []
+      }
+      template_versions: {
+        Row: {
+          content: string
+          created_at: string | null
+          created_by: string | null
+          id: string
+          subject: string | null
+          template_id: string | null
+          version: number
+        }
+        Insert: {
+          content: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          subject?: string | null
+          template_id?: string | null
+          version: number
+        }
+        Update: {
+          content?: string
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          subject?: string | null
+          template_id?: string | null
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "template_versions_template_id_fkey"
+            columns: ["template_id"]
+            isOneToOne: false
+            referencedRelation: "message_templates"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       transactions: {
         Row: {
