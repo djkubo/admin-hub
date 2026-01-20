@@ -3,7 +3,8 @@ import {
   Users, 
   LayoutDashboard, 
   BarChart3, 
-  LogOut
+  LogOut,
+  Settings
 } from "lucide-react";
 
 interface SidebarProps {
@@ -15,6 +16,7 @@ const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "settings", label: "Configuración", icon: Settings },
 ];
 
 export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps) {

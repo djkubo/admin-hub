@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.recover-revenue]
 verify_jwt = false
+
+[functions.notify-ghl]
+verify_jwt = false

@@ -396,6 +396,36 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...txBatchResult.allErrors);
   }
 
+  // 🔔 TRIGGER: Notify GHL for failed PayPal payments
+  const failedPayments = parsedRows.filter(row => row.status === 'failed');
+  
+  if (failedPayments.length > 0) {
+    console.log(`[GHL] Sending ${failedPayments.length} failed PayPal payments to CRM...`);
+    
+    for (const payment of failedPayments.slice(0, 20)) { // Limit to 20 per batch
+      try {
+        const client = clientMap.get(payment.email);
+        await supabase.functions.invoke('notify-ghl', {
+          body: {
+            email: payment.email,
+            phone: client?.phone || null,
+            name: client?.full_name || null,
+            tag: 'payment_failed',
+            message_data: {
+              amount_cents: payment.amount,
+              currency: payment.currency,
+              transaction_id: payment.transactionId,
+              source: 'paypal_csv'
+            }
+          }
+        });
+      } catch (ghlError) {
+        console.warn(`[GHL] Failed to notify for ${payment.email}:`, ghlError);
+      }
+    }
+    console.log(`[GHL] Failed payment notifications sent`);
+  }
+
   return result;
 }
 
@@ -520,6 +550,35 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
       return { success: batch.length, errors: [] };
     });
     result.errors.push(...batchResult.allErrors);
+  }
+
+  // 🔔 TRIGGER: Notify GHL for new leads (users without payments)
+  const newLeads = Array.from(emailDataMap.values())
+    .filter(row => !clientMap.has(row.email)); // Only new users
+
+  if (newLeads.length > 0) {
+    console.log(`[GHL] Sending ${newLeads.length} new leads to CRM...`);
+    
+    // Send notifications in background (non-blocking)
+    for (const lead of newLeads.slice(0, 50)) { // Limit to 50 per batch
+      try {
+        await supabase.functions.invoke('notify-ghl', {
+          body: {
+            email: lead.email,
+            phone: lead.phone,
+            name: lead.fullName,
+            tag: 'new_lead',
+            message_data: {
+              source: 'csv_import',
+              imported_at: new Date().toISOString()
+            }
+          }
+        });
+      } catch (ghlError) {
+        console.warn(`[GHL] Failed to notify for ${lead.email}:`, ghlError);
+      }
+    }
+    console.log(`[GHL] New lead notifications sent`);
   }
 
   return result;

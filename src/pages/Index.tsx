@@ -16,12 +16,13 @@ import { CommandCenter } from "@/components/dashboard/CommandCenter";
 import { CustomerDrawer } from "@/components/dashboard/CustomerDrawer";
 import { RecoveryPipeline } from "@/components/dashboard/RecoveryPipeline";
 import { DataHealthPanel } from "@/components/dashboard/DataHealthPanel";
+import { GHLSettingsPanel } from "@/components/dashboard/GHLSettingsPanel";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
 import { useInvoices } from "@/hooks/useInvoices";
 import { useAuth } from "@/hooks/useAuth";
-import { Users, UserCheck, UserX, Clock, LogOut, BarChart3 } from "lucide-react";
+import { Users, UserCheck, UserX, Clock, LogOut, BarChart3, Settings } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -318,6 +319,33 @@ const Index = () => {
     </div>
   );
 
+  // Render Settings view
+  const renderSettingsView = () => (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white flex items-center gap-3">
+            <Settings className="h-8 w-8 text-primary" />
+            Configuración
+          </h1>
+          <p className="text-muted-foreground mt-1">
+            Integraciones y ajustes del sistema
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-muted-foreground">{user?.email}</span>
+          <Button variant="outline" size="sm" onClick={handleLogout} className="gap-2">
+            <LogOut className="h-4 w-4" />
+            Salir
+          </Button>
+        </div>
+      </div>
+
+      {/* GHL Integration Settings */}
+      <GHLSettingsPanel />
+    </div>
+  );
+
   // Main render based on active menu item
   const renderContent = () => {
     switch (activeMenuItem) {
@@ -325,6 +353,8 @@ const Index = () => {
         return renderAnalyticsView();
       case "clients":
         return renderClientsView();
+      case "settings":
+        return renderSettingsView();
       case "dashboard":
       default:
         return renderDashboardView();

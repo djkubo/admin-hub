@@ -292,6 +292,41 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
+      // 🔔 TRIGGER: Notify GHL for failed payments
+      if (status === 'failed' && email) {
+        console.log(`🔔 Triggering GHL notification for failed payment: ${email}`);
+        try {
+          const { data: client } = await supabase
+            .from('clients')
+            .select('full_name, phone')
+            .eq('email', email)
+            .single();
+
+          await fetch(`${supabaseUrl}/functions/v1/notify-ghl`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseServiceKey}`
+            },
+            body: JSON.stringify({
+              email,
+              phone: client?.phone || null,
+              name: client?.full_name || null,
+              tag: 'payment_failed',
+              message_data: {
+                amount_cents: amount,
+                failure_code: failureCode,
+                failure_message: failureMessage,
+                payment_id: paymentIntentId
+              }
+            })
+          });
+          console.log(`✅ GHL notification sent for failed payment: ${email}`);
+        } catch (ghlError) {
+          console.error('⚠️ GHL notification failed (non-blocking):', ghlError);
+        }
+      }
+
       // Update client
       if (status === 'paid' && amount > 0) {
         const { data: existingClient } = await supabase

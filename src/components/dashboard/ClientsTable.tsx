@@ -3,11 +3,12 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
-import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check } from "lucide-react";
+import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
@@ -77,6 +78,7 @@ export function ClientsTable({
   const [timelineClient, setTimelineClient] = useState<{ id: string; name: string } | null>(null);
   const [loadingPortal, setLoadingPortal] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sendingToCRM, setSendingToCRM] = useState<string | null>(null);
   const { toast } = useToast();
   
   const handleWhatsAppClick = (client: Client) => {
@@ -131,6 +133,41 @@ export function ClientsTable({
       });
     } finally {
       setLoadingPortal(null);
+    }
+  };
+
+  const handleSendToCRM = async (client: Client) => {
+    setSendingToCRM(client.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("notify-ghl", {
+        body: {
+          email: client.email,
+          phone: client.phone,
+          name: client.full_name,
+          tag: 'manual_push',
+          message_data: {
+            total_spend_cents: client.total_spend,
+            lifecycle_stage: client.lifecycle_stage,
+            is_vip: (client.total_spend || 0) >= VIP_THRESHOLD
+          }
+        },
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: "Enviado a CRM",
+        description: `${client.full_name || client.email} fue enviado a GoHighLevel.`,
+      });
+    } catch (error) {
+      console.error("Error sending to CRM:", error);
+      toast({
+        title: "Error",
+        description: "No se pudo enviar al CRM. Verifica que la URL del webhook esté configurada.",
+        variant: "destructive",
+      });
+    } finally {
+      setSendingToCRM(null);
     }
   };
   
@@ -379,6 +416,18 @@ export function ClientsTable({
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <DropdownMenuItem 
+                              onClick={() => handleSendToCRM(client)}
+                              disabled={!client.email || sendingToCRM === client.id}
+                            >
+                              {sendingToCRM === client.id ? (
+                                <div className="h-4 w-4 mr-2 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                              ) : (
+                                <Send className="h-4 w-4 mr-2" />
+                              )}
+                              Enviar a CRM
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => onEdit?.(client)}>
                               Editar
                             </DropdownMenuItem>
