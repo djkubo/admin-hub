@@ -2,17 +2,16 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const ALLOWED_ORIGINS = [
-  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
-  "https://lovable.dev",
-  "http://localhost:5173",
-  "http://localhost:3000",
+const ALLOWED_ORIGIN_PATTERNS = [
+  /^https:\/\/.*\.lovable\.app$/,
+  /^https:\/\/.*\.lovableproject\.com$/,
+  /^https:\/\/lovable\.dev$/,
+  /^http:\/\/localhost:\d+$/,
 ];
 
 function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
-    ? origin 
-    : ALLOWED_ORIGINS[0];
+  const isAllowed = origin && ALLOWED_ORIGIN_PATTERNS.some(pattern => pattern.test(origin));
+  const allowedOrigin = isAllowed ? origin : "https://lovable.dev";
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
