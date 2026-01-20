@@ -1519,3 +1519,399 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     recoveryList
   };
 }
+
+// ============= GoHighLevel CSV Processing =============
+
+export interface GHLProcessingResult {
+  clientsCreated: number;
+  clientsUpdated: number;
+  totalContacts: number;
+  withEmail: number;
+  withPhone: number;
+  withTags: number;
+  errors: string[];
+}
+
+/**
+ * Normalizes a phone number to E.164 format for consistency.
+ * Handles Mexican numbers (+52), US numbers (+1), and others.
+ */
+function normalizePhone(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  
+  // Remove all non-digit characters
+  let digits = raw.replace(/\D/g, '');
+  
+  if (!digits || digits.length < 10) return null;
+  
+  // Handle Mexican numbers
+  if (digits.startsWith('52') && digits.length >= 12) {
+    return '+' + digits;
+  }
+  if (digits.length === 10) {
+    // Assume Mexican mobile (most common case)
+    return '+52' + digits;
+  }
+  if (digits.startsWith('1') && digits.length === 11) {
+    // US/Canada number
+    return '+' + digits;
+  }
+  
+  // Default: prepend + if it looks international
+  if (digits.length > 10) {
+    return '+' + digits;
+  }
+  
+  return '+52' + digits; // Default to Mexico
+}
+
+/**
+ * Processes GoHighLevel CSV export.
+ * 
+ * GHL exports typically include columns like:
+ * - id, contact id, contactId
+ * - email, Email Address
+ * - phone, Phone, Mobile
+ * - firstName, lastName, name, Full Name
+ * - tags, Tags
+ * - source, Source
+ * - dateCreated, Date Created, createdAt
+ * - customField.xxx
+ * - dndSettings
+ * - etc.
+ */
+export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcessingResult> {
+  const result: GHLProcessingResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    totalContacts: 0,
+    withEmail: 0,
+    withPhone: 0,
+    withTags: 0,
+    errors: []
+  };
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim().toLowerCase(),
+    transform: (value) => value?.trim() || ''
+  });
+
+  if (!parsed.data || parsed.data.length === 0) {
+    result.errors.push('No data found in CSV');
+    return result;
+  }
+
+  console.log(`[GHL CSV] Parsing ${parsed.data.length} rows`);
+  console.log(`[GHL CSV] Headers: ${Object.keys(parsed.data[0] || {}).slice(0, 10).join(', ')}...`);
+
+  interface GHLContact {
+    ghlContactId: string;
+    email: string | null;
+    phone: string | null;
+    fullName: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    tags: string[];
+    source: string | null;
+    dateCreated: string | null;
+    dndEmail: boolean;
+    dndSms: boolean;
+    dndWhatsApp: boolean;
+    customFields: Record<string, string>;
+  }
+
+  const contacts: GHLContact[] = [];
+
+  for (const rawRow of parsed.data as Record<string, string>[]) {
+    // GHL exports have various column name formats
+    const ghlContactId = rawRow['id'] || rawRow['contact id'] || rawRow['contactid'] || '';
+    
+    if (!ghlContactId) continue;
+    
+    // Email - multiple possible column names
+    let email = rawRow['email'] || rawRow['email address'] || rawRow['emailaddress'] || '';
+    if (email) {
+      email = email.toLowerCase().trim();
+      // Validate email format
+      if (!email.includes('@')) {
+        email = '';
+      }
+    }
+    
+    // Phone - multiple possible column names
+    const rawPhone = rawRow['phone'] || rawRow['mobile'] || rawRow['phonenumber'] || rawRow['phone number'] || '';
+    const phone = normalizePhone(rawPhone);
+    
+    // Skip if no email AND no phone (can't match/create)
+    if (!email && !phone) {
+      result.errors.push(`Contact ${ghlContactId}: No email or phone`);
+      continue;
+    }
+    
+    // Name
+    const firstName = rawRow['firstname'] || rawRow['first name'] || rawRow['first_name'] || '';
+    const lastName = rawRow['lastname'] || rawRow['last name'] || rawRow['last_name'] || '';
+    let fullName = rawRow['name'] || rawRow['full name'] || rawRow['fullname'] || '';
+    
+    if (!fullName && (firstName || lastName)) {
+      fullName = `${firstName} ${lastName}`.trim();
+    }
+    
+    // Tags - can be comma-separated or JSON array
+    let tags: string[] = [];
+    const rawTags = rawRow['tags'] || rawRow['tag'] || '';
+    if (rawTags) {
+      try {
+        // Try JSON array first
+        if (rawTags.startsWith('[')) {
+          tags = JSON.parse(rawTags);
+        } else {
+          // Comma-separated
+          tags = rawTags.split(',').map(t => t.trim()).filter(t => t);
+        }
+      } catch {
+        tags = rawTags.split(',').map(t => t.trim()).filter(t => t);
+      }
+    }
+    
+    // Source
+    const source = rawRow['source'] || rawRow['lead source'] || rawRow['leadsource'] || '';
+    
+    // Date created
+    const dateCreated = rawRow['datecreated'] || rawRow['date created'] || rawRow['createdat'] || rawRow['created at'] || '';
+    
+    // DND settings
+    const dndRaw = rawRow['dndsettings'] || rawRow['dnd'] || '';
+    let dndEmail = false, dndSms = false, dndWhatsApp = false;
+    if (dndRaw) {
+      try {
+        const dnd = typeof dndRaw === 'string' && dndRaw.startsWith('{') ? JSON.parse(dndRaw) : {};
+        dndEmail = dnd.Email?.status === 'active' || dnd.email === true;
+        dndSms = dnd.SMS?.status === 'active' || dnd.sms === true;
+        dndWhatsApp = dnd.WhatsApp?.status === 'active' || dnd.whatsapp === true;
+      } catch {
+        // Ignore DND parsing errors
+      }
+    }
+    
+    // Custom fields - collect any column starting with "customfield" or has a dot
+    const customFields: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawRow)) {
+      if ((key.startsWith('customfield') || key.includes('.')) && value) {
+        customFields[key] = value;
+      }
+    }
+    
+    contacts.push({
+      ghlContactId,
+      email: email || null,
+      phone,
+      fullName: fullName || null,
+      firstName: firstName || null,
+      lastName: lastName || null,
+      tags,
+      source: source || null,
+      dateCreated: dateCreated || null,
+      dndEmail,
+      dndSms,
+      dndWhatsApp,
+      customFields
+    });
+    
+    result.totalContacts++;
+    if (email) result.withEmail++;
+    if (phone) result.withPhone++;
+    if (tags.length > 0) result.withTags++;
+  }
+
+  console.log(`[GHL CSV] Valid contacts: ${contacts.length}`);
+  console.log(`[GHL CSV] With email: ${result.withEmail}, With phone: ${result.withPhone}`);
+
+  // Group contacts by email for matching
+  const emailContacts = contacts.filter(c => c.email);
+  const phoneOnlyContacts = contacts.filter(c => !c.email && c.phone);
+
+  // Load existing clients by email
+  const uniqueEmails = [...new Set(emailContacts.map(c => c.email!))];
+  const existingByEmail = new Map<string, any>();
+  
+  for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
+    const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
+    const { data } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', batch);
+    
+    data?.forEach(c => existingByEmail.set(c.email, c));
+  }
+
+  // Load existing clients by phone for phone-only contacts
+  const uniquePhones = [...new Set(phoneOnlyContacts.map(c => c.phone!))];
+  const existingByPhone = new Map<string, any>();
+  
+  for (let i = 0; i < uniquePhones.length; i += BATCH_SIZE) {
+    const batch = uniquePhones.slice(i, i + BATCH_SIZE);
+    const { data } = await supabase
+      .from('clients')
+      .select('*')
+      .in('phone', batch);
+    
+    data?.forEach(c => {
+      if (c.phone) existingByPhone.set(c.phone, c);
+    });
+  }
+
+  console.log(`[GHL CSV] Found ${existingByEmail.size} existing by email, ${existingByPhone.size} by phone`);
+
+  // Prepare upsert records
+  interface ClientUpsert {
+    email?: string;
+    phone?: string;
+    full_name?: string;
+    ghl_contact_id: string;
+    tags?: string[];
+    acquisition_source?: string;
+    first_seen_at?: string;
+    email_opt_in?: boolean;
+    sms_opt_in?: boolean;
+    wa_opt_in?: boolean;
+    customer_metadata?: Record<string, any>;
+    lifecycle_stage?: string;
+    last_sync?: string;
+  }
+
+  const toUpsert: ClientUpsert[] = [];
+  const toInsertPhoneOnly: ClientUpsert[] = [];
+
+  for (const contact of emailContacts) {
+    const existing = existingByEmail.get(contact.email!);
+    
+    const record: ClientUpsert = {
+      email: contact.email!,
+      ghl_contact_id: contact.ghlContactId,
+      last_sync: new Date().toISOString()
+    };
+    
+    // Only update fields if not already set (don't overwrite payment data)
+    if (!existing?.full_name && contact.fullName) {
+      record.full_name = contact.fullName;
+    }
+    if (!existing?.phone && contact.phone) {
+      record.phone = contact.phone;
+    }
+    if (contact.tags.length > 0) {
+      // Merge tags
+      const existingTags = existing?.tags || [];
+      record.tags = [...new Set([...existingTags, ...contact.tags])];
+    }
+    if (!existing?.acquisition_source && contact.source) {
+      record.acquisition_source = 'ghl';
+    }
+    if (!existing?.first_seen_at && contact.dateCreated) {
+      try {
+        record.first_seen_at = new Date(contact.dateCreated).toISOString();
+      } catch {
+        // Invalid date
+      }
+    }
+    
+    // Opt-in: default true unless DND is active
+    record.email_opt_in = !contact.dndEmail;
+    record.sms_opt_in = !contact.dndSms;
+    record.wa_opt_in = !contact.dndWhatsApp;
+    
+    // Store custom fields in metadata
+    if (Object.keys(contact.customFields).length > 0) {
+      record.customer_metadata = {
+        ...(existing?.customer_metadata || {}),
+        ghl_custom_fields: contact.customFields
+      };
+    }
+    
+    // Keep existing lifecycle stage if set
+    if (!existing?.lifecycle_stage || existing.lifecycle_stage === 'LEAD') {
+      record.lifecycle_stage = 'LEAD';
+    }
+    
+    toUpsert.push(record);
+    
+    if (existing) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  // Handle phone-only contacts
+  for (const contact of phoneOnlyContacts) {
+    const existing = existingByPhone.get(contact.phone!);
+    
+    if (existing) {
+      // Update existing phone-matched record
+      const record: ClientUpsert = {
+        email: existing.email, // Use existing email for upsert key
+        ghl_contact_id: contact.ghlContactId,
+        last_sync: new Date().toISOString()
+      };
+      
+      if (!existing.full_name && contact.fullName) {
+        record.full_name = contact.fullName;
+      }
+      if (contact.tags.length > 0) {
+        record.tags = [...new Set([...(existing.tags || []), ...contact.tags])];
+      }
+      
+      if (existing.email) {
+        toUpsert.push(record);
+      }
+      result.clientsUpdated++;
+    } else {
+      // Create new phone-only record (no email)
+      toInsertPhoneOnly.push({
+        phone: contact.phone!,
+        full_name: contact.fullName || undefined,
+        ghl_contact_id: contact.ghlContactId,
+        tags: contact.tags.length > 0 ? contact.tags : undefined,
+        acquisition_source: 'ghl',
+        first_seen_at: contact.dateCreated ? new Date(contact.dateCreated).toISOString() : undefined,
+        sms_opt_in: !contact.dndSms,
+        wa_opt_in: !contact.dndWhatsApp,
+        lifecycle_stage: 'LEAD',
+        last_sync: new Date().toISOString()
+      });
+      result.clientsCreated++;
+    }
+  }
+
+  // Execute upserts in batches (email-based)
+  for (let i = 0; i < toUpsert.length; i += BATCH_SIZE) {
+    const batch = toUpsert.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase
+      .from('clients')
+      .upsert(batch, { onConflict: 'email' });
+    
+    if (error) {
+      console.error(`[GHL CSV] Upsert batch error:`, error);
+      result.errors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    }
+  }
+
+  // Insert phone-only records
+  for (let i = 0; i < toInsertPhoneOnly.length; i += BATCH_SIZE) {
+    const batch = toInsertPhoneOnly.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase
+      .from('clients')
+      .insert(batch);
+    
+    if (error) {
+      console.error(`[GHL CSV] Insert phone-only batch error:`, error);
+      result.errors.push(`Phone-only batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    }
+  }
+
+  console.log(`[GHL CSV] Complete: ${result.clientsCreated} created, ${result.clientsUpdated} updated`);
+  
+  return result;
+}

@@ -8,19 +8,22 @@ import {
   processPaymentCSV,
   processSubscriptionsCSV,
   processStripeCustomersCSV,
+  processGoHighLevelCSV,
   ProcessingResult,
-  StripeCustomerResult
+  StripeCustomerResult,
+  GHLProcessingResult
 } from '@/lib/csvProcessor';
 import { toast } from 'sonner';
 
 interface CSVFile {
   name: string;
-  type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers';
+  type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl';
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
-  result?: ProcessingResult | StripeCustomerResult;
+  result?: ProcessingResult | StripeCustomerResult | GHLProcessingResult;
   subscriptionCount?: number;
   duplicatesResolved?: number;
+  ghlStats?: { withEmail: number; withPhone: number; withTags: number };
 }
 
 interface CSVUploaderProps {
@@ -32,7 +35,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers'> => {
+  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl'> => {
     const lowerName = file.name.toLowerCase();
     
     // Read content for column-based detection (more reliable)
@@ -84,6 +87,20 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         return 'subscriptions';
       }
       
+      // GoHighLevel detection: has contactId, firstName/lastName patterns, or dndSettings
+      if (firstLine.includes('contactid') ||
+          firstLine.includes('contact id') ||
+          firstLine.includes('dndsettings') ||
+          firstLine.includes('dnd settings') ||
+          (firstLine.includes('firstname') && firstLine.includes('lastname')) ||
+          (firstLine.includes('first name') && firstLine.includes('last name')) ||
+          firstLine.includes('ghl') ||
+          firstLine.includes('gohighlevel') ||
+          firstLine.includes('locationid')) {
+        console.log(`[CSV Detection] Detected as: GoHighLevel`);
+        return 'ghl';
+      }
+      
       // Web users detection: has typical user columns (email + name/phone but no payment columns)
       if ((firstLine.includes('email') || firstLine.includes('correo')) && 
           (firstLine.includes('nombre') || firstLine.includes('name') || 
@@ -94,6 +111,10 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       }
       
       // Fallback to filename patterns
+      if (lowerName.includes('ghl') || lowerName.includes('gohighlevel') || lowerName.includes('highlevel')) {
+        console.log(`[CSV Detection] Filename fallback: GoHighLevel`);
+        return 'ghl';
+      }
       if (lowerName.includes('unified_customer') || lowerName.includes('customers')) {
         console.log(`[CSV Detection] Filename fallback: Stripe Customers`);
         return 'stripe_customers';
@@ -143,7 +164,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
   };
 
-  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers') => {
+  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl') => {
     setFiles(prev => prev.map((f, i) => i === index ? { ...f, type } : f));
   };
 
@@ -156,9 +177,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     
     setIsProcessing(true);
     
-    // Process in order: Web (for phones) -> Stripe Customers (LTV) -> Subscriptions -> Payments
+    // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Subscriptions -> Payments
     const sortedFiles = [...files].sort((a, b) => {
-      const priority = { web: 0, stripe_customers: 1, subscriptions: 2, stripe: 3, paypal: 4 };
+      const priority = { ghl: 0, web: 1, stripe_customers: 2, subscriptions: 3, stripe: 4, paypal: 5 };
       return priority[a.type] - priority[b.type];
     });
 
@@ -212,6 +233,29 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (subsResult.errors.length > 0) {
             toast.warning(`${file.name}: ${subsResult.errors.length} errores`);
           }
+        } else if (file.type === 'ghl') {
+          // Process GoHighLevel CSV
+          const ghlResult = await processGoHighLevelCSV(text);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done', 
+              result: ghlResult,
+              ghlStats: {
+                withEmail: ghlResult.withEmail,
+                withPhone: ghlResult.withPhone,
+                withTags: ghlResult.withTags
+              }
+            } : f
+          ));
+          toast.success(
+            `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
+            `Total: ${ghlResult.totalContacts} contactos GHL`
+          );
+          
+          if (ghlResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
+          }
         } else {
           let result: ProcessingResult;
 
@@ -252,6 +296,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'stripe_customers': return 'bg-amber-500/20 text-amber-400 border-amber-500/30';
       case 'paypal': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
       case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+      case 'ghl': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
       default: return 'bg-muted text-muted-foreground';
     }
   };
@@ -263,6 +308,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'stripe_customers': return 'Clientes LTV';
       case 'paypal': return 'PayPal';
       case 'subscriptions': return 'Suscripciones';
+      case 'ghl': return 'GoHighLevel';
       default: return type;
     }
   };
@@ -280,8 +326,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     if (f.result) {
       acc.clientsCreated += f.result.clientsCreated;
       acc.clientsUpdated += f.result.clientsUpdated;
-      acc.transactionsCreated += f.result.transactionsCreated;
-      acc.transactionsSkipped += f.result.transactionsSkipped;
+      // Only add transactions if they exist on the result type
+      if ('transactionsCreated' in f.result) {
+        acc.transactionsCreated += f.result.transactionsCreated;
+      }
+      if ('transactionsSkipped' in f.result) {
+        acc.transactionsSkipped += f.result.transactionsSkipped;
+      }
       // Total unique clients = new + updated
       acc.uniqueClients += f.result.clientsCreated + f.result.clientsUpdated;
     }
@@ -291,8 +342,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     if (f.duplicatesResolved) {
       acc.duplicatesResolved += f.duplicatesResolved;
     }
+    if (f.ghlStats) {
+      acc.ghlContacts += f.result?.clientsCreated || 0;
+      acc.ghlContacts += f.result?.clientsUpdated || 0;
+    }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0, ghlContacts: 0 });
 
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
@@ -323,7 +378,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           Arrastra archivos o haz clic para seleccionar
         </p>
         <p className="text-xs text-gray-500">
-          Detecta: unified_customers.csv (LTV), Download-X.csv (PayPal), subscriptions.csv
+          Detecta: GoHighLevel, unified_customers.csv (LTV), Download-X.csv (PayPal), subscriptions.csv
         </p>
       </div>
 
@@ -338,10 +393,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               <div className="flex items-center gap-2">
                 <select
                   value={file.type}
-                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers')}
+                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl')}
                   disabled={file.status !== 'pending'}
                   className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
                 >
+                  <option value="ghl">GoHighLevel</option>
                   <option value="web">Usuarios Web</option>
                   <option value="paypal">PayPal</option>
                   <option value="stripe">Stripe Pagos</option>
