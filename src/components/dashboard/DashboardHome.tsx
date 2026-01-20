@@ -41,6 +41,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const { invoices, invoicesNext72h } = useInvoices();
   const { subscriptions } = useSubscriptions();
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string>('');
   const [syncStatus, setSyncStatus] = useState<'ok' | 'warning' | null>(null);
   const queryClient = useQueryClient();
 
@@ -53,29 +54,68 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const handleSyncAll = async () => {
     setIsSyncing(true);
     setSyncStatus(null);
+    setSyncProgress('');
+    
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
+
     try {
-      const now = new Date();
-      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      
-      const [stripeResult, paypalResult, subsResult, invoicesResult] = await Promise.allSettled([
-        invokeWithAdminKey('fetch-stripe', { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }),
-        invokeWithAdminKey('fetch-paypal', { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }),
-        invokeWithAdminKey('fetch-subscriptions', {}),
-        invokeWithAdminKey('fetch-invoices', {}),
-      ]);
+      // 1. Stripe
+      setSyncProgress('Stripe...');
+      try {
+        const stripeData = await invokeWithAdminKey('fetch-stripe', { 
+          fetchAll: true, 
+          startDate: yesterday.toISOString(), 
+          endDate: now.toISOString() 
+        });
+        results.stripe = stripeData?.synced_transactions || 0;
+      } catch (e) {
+        console.error('Stripe sync error:', e);
+        results.errors++;
+      }
 
-      const hasErrors = stripeResult.status === 'rejected' || paypalResult.status === 'rejected';
-      setSyncStatus(hasErrors ? 'warning' : 'ok');
+      // 2. PayPal
+      setSyncProgress('PayPal...');
+      try {
+        const paypalData = await invokeWithAdminKey('fetch-paypal', { 
+          fetchAll: true, 
+          startDate: yesterday.toISOString(), 
+          endDate: now.toISOString() 
+        });
+        results.paypal = paypalData?.synced_transactions || 0;
+      } catch (e) {
+        console.error('PayPal sync error:', e);
+        results.errors++;
+      }
 
-      const stripeData = stripeResult.status === 'fulfilled' ? stripeResult.value : null;
-      const paypalData = paypalResult.status === 'fulfilled' ? paypalResult.value : null;
-      const subsData = subsResult.status === 'fulfilled' ? subsResult.value : null;
-      const invoicesData = invoicesResult.status === 'fulfilled' ? invoicesResult.value : null;
+      // 3. Subscriptions
+      setSyncProgress('Suscripciones...');
+      try {
+        const subsData = await invokeWithAdminKey('fetch-subscriptions', {});
+        results.subs = subsData?.synced || subsData?.upserted || 0;
+      } catch (e) {
+        console.error('Subscriptions sync error:', e);
+        results.errors++;
+      }
 
-      const totalTx = (stripeData?.synced_transactions || 0) + (paypalData?.synced_transactions || 0);
+      // 4. Invoices
+      setSyncProgress('Facturas...');
+      try {
+        const invoicesData = await invokeWithAdminKey('fetch-invoices', {});
+        results.invoices = invoicesData?.synced || 0;
+      } catch (e) {
+        console.error('Invoices sync error:', e);
+        results.errors++;
+      }
+
+      setSyncStatus(results.errors > 0 ? 'warning' : 'ok');
+      setSyncProgress('');
+
+      const totalTx = results.stripe + results.paypal;
+      toast.success(`Sync completo: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
       
-      toast.success(`Sync completo: ${totalTx} transacciones, ${subsData?.synced || subsData?.upserted || 0} suscripciones, ${invoicesData?.synced || 0} facturas`);
-      
+      // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
@@ -87,6 +127,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     } catch (error) {
       console.error('Sync error:', error);
       setSyncStatus('warning');
+      setSyncProgress('');
       toast.error('Error en sincronización');
     } finally {
       setIsSyncing(false);
@@ -230,14 +271,19 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           <Button
             onClick={handleSyncAll}
             disabled={isSyncing}
-            className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"
+            className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 min-w-[120px]"
           >
             {isSyncing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {syncProgress || 'Syncing...'}
+              </>
             ) : (
-              <RefreshCw className="h-4 w-4" />
+              <>
+                <RefreshCw className="h-4 w-4" />
+                Sync All
+              </>
             )}
-            Sync All
           </Button>
         </div>
       </div>
