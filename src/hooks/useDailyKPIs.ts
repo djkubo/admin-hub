@@ -82,6 +82,15 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         .gte('stripe_created_at', startISO)
         .lte('stripe_created_at', endISO);
 
+      // Fetch ALL historical transactions to determine first payments
+      // This is critical for correctly classifying new vs renewal
+      const { data: allHistoricalTx } = await supabase
+        .from('transactions')
+        .select('id, customer_email, subscription_id, stripe_payment_intent_id, stripe_created_at, status')
+        .in('status', ['paid', 'succeeded'])
+        .order('stripe_created_at', { ascending: true })
+        .limit(10000);
+
       // Fetch subscriptions for trial info
       const { data: subscriptions } = await supabase
         .from('subscriptions')
@@ -119,23 +128,24 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         subMap.set(sub.stripe_subscription_id, sub);
       }
 
-      // Track first payment per subscription
+      // Track first payment per customer email (more reliable than subscription ID)
+      const firstPaymentPerEmail = new Map<string, string>();
       const firstPaymentPerSub = new Map<string, string>();
-      const allTransactions = transactions || [];
       
-      // Sort by date to find first payments
-      const sortedTx = [...allTransactions].sort(
-        (a, b) => new Date(a.stripe_created_at || 0).getTime() - new Date(b.stripe_created_at || 0).getTime()
-      );
-
-      for (const tx of sortedTx) {
-        if (tx.status !== 'paid' && tx.status !== 'succeeded') continue;
-        
+      // Use ALL historical transactions to find first payments
+      for (const tx of allHistoricalTx || []) {
+        // Track by email
+        if (tx.customer_email && !firstPaymentPerEmail.has(tx.customer_email)) {
+          firstPaymentPerEmail.set(tx.customer_email, tx.id);
+        }
+        // Track by subscription
         const subId = tx.subscription_id || tx.stripe_payment_intent_id;
-        if (!firstPaymentPerSub.has(subId)) {
+        if (subId && !firstPaymentPerSub.has(subId)) {
           firstPaymentPerSub.set(subId, tx.id);
         }
       }
+
+      const allTransactions = transactions || [];
 
       // Now classify each transaction in the date range
       for (const tx of allTransactions) {
@@ -154,7 +164,11 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
         const subId = tx.subscription_id || tx.stripe_payment_intent_id;
         const sub = subMap.get(tx.subscription_id || '');
-        const isFirstPayment = firstPaymentPerSub.get(subId) === tx.id;
+        
+        // Check if this is first payment - by subscription OR by email
+        const isFirstPaymentBySub = firstPaymentPerSub.get(subId) === tx.id;
+        const isFirstPaymentByEmail = tx.customer_email && firstPaymentPerEmail.get(tx.customer_email) === tx.id;
+        const isFirstPayment = isFirstPaymentBySub || isFirstPaymentByEmail;
 
         // Check if this is a trial conversion
         const hasTrialEnded = sub?.trial_end && new Date(sub.trial_end) <= new Date(tx.stripe_created_at || '');
