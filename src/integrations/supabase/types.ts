@@ -354,11 +354,16 @@ export type Database = {
       }
       clients: {
         Row: {
+          acquisition_campaign: string | null
+          acquisition_content: string | null
+          acquisition_medium: string | null
+          acquisition_source: string | null
           converted_at: string | null
           created_at: string | null
           customer_metadata: Json | null
           email: string | null
           email_opt_in: boolean | null
+          first_seen_at: string | null
           full_name: string | null
           ghl_contact_id: string | null
           id: string
@@ -381,11 +386,16 @@ export type Database = {
           wa_opt_in: boolean | null
         }
         Insert: {
+          acquisition_campaign?: string | null
+          acquisition_content?: string | null
+          acquisition_medium?: string | null
+          acquisition_source?: string | null
           converted_at?: string | null
           created_at?: string | null
           customer_metadata?: Json | null
           email?: string | null
           email_opt_in?: boolean | null
+          first_seen_at?: string | null
           full_name?: string | null
           ghl_contact_id?: string | null
           id?: string
@@ -408,11 +418,16 @@ export type Database = {
           wa_opt_in?: boolean | null
         }
         Update: {
+          acquisition_campaign?: string | null
+          acquisition_content?: string | null
+          acquisition_medium?: string | null
+          acquisition_source?: string | null
           converted_at?: string | null
           created_at?: string | null
           customer_metadata?: Json | null
           email?: string | null
           email_opt_in?: boolean | null
+          first_seen_at?: string | null
           full_name?: string | null
           ghl_contact_id?: string | null
           id?: string
@@ -548,6 +563,44 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      lead_events: {
+        Row: {
+          client_id: string | null
+          event_id: string
+          event_type: string
+          id: string
+          payload: Json | null
+          processed_at: string
+          source: string
+        }
+        Insert: {
+          client_id?: string | null
+          event_id: string
+          event_type: string
+          id?: string
+          payload?: Json | null
+          processed_at?: string
+          source: string
+        }
+        Update: {
+          client_id?: string | null
+          event_id?: string
+          event_type?: string
+          id?: string
+          payload?: Json | null
+          processed_at?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lead_events_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       manychat_contacts_raw: {
         Row: {
