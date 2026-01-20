@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
-import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send, ChevronLeft, ChevronRight } from "lucide-react";
+import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send, ChevronLeft, ChevronRight, Smartphone } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,7 +20,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { openWhatsApp, getGreetingMessage, getRecoveryMessage } from "./RecoveryTable";
+import { openWhatsApp, openNativeSms, getGreetingMessage, getRecoveryMessage } from "./RecoveryTable";
+import { supportsNativeSms } from "@/lib/nativeSms";
 import { ClientEventsTimeline } from "./ClientEventsTimeline";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeWithAdminKey } from "@/lib/adminApi";
@@ -125,6 +126,19 @@ export function ClientsTable({
       : getGreetingMessage(client.full_name || '');
     
     openWhatsApp(client.phone, client.full_name || '', message);
+  };
+
+  const handleNativeSmsClick = (client: Client) => {
+    if (!client.phone) return;
+    
+    const isInRecovery = client.email && recoveryEmails.has(client.email);
+    const debtAmount = client.email ? recoveryAmounts[client.email] || 0 : 0;
+    
+    const message = isInRecovery && debtAmount > 0
+      ? getRecoveryMessage(client.full_name || '', debtAmount)
+      : getGreetingMessage(client.full_name || '');
+    
+    openNativeSms(client.phone, message);
   };
 
   const handlePortalLink = async (client: Client) => {
@@ -299,6 +313,16 @@ export function ClientsTable({
                       ${totalSpendUSD.toLocaleString()}
                     </span>
                     <div className="flex items-center gap-1">
+                      {client.phone && supportsNativeSms() && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-blue-400"
+                          onClick={() => handleNativeSmsClick(client)}
+                        >
+                          <Smartphone className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                       {client.phone && (
                         <Button
                           variant="ghost"
@@ -522,6 +546,24 @@ export function ClientsTable({
                           <TooltipContent>Ver historial</TooltipContent>
                         </Tooltip>
 
+                        {client.phone && supportsNativeSms() && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-blue-400 hover:text-blue-400 hover:bg-blue-400/10"
+                                onClick={() => handleNativeSmsClick(client)}
+                              >
+                                <Smartphone className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              SMS Nativo
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+
                         {client.phone ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -535,7 +577,7 @@ export function ClientsTable({
                               </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              {isInRecovery ? "Mensaje cobro" : "Saludo"}
+                              {isInRecovery ? "WhatsApp cobro" : "WhatsApp saludo"}
                             </TooltipContent>
                           </Tooltip>
                         ) : (

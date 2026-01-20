@@ -1,4 +1,4 @@
-import { MessageCircle, Phone, AlertTriangle, ExternalLink } from 'lucide-react';
+import { MessageCircle, Phone, AlertTriangle, ExternalLink, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -10,6 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { RecoveryClient } from '@/lib/csvProcessor';
+import { supportsNativeSms } from '@/lib/nativeSms';
 
 interface RecoveryTableProps {
   clients: RecoveryClient[];
@@ -26,6 +27,20 @@ export const openWhatsApp = (phone: string, _name: string, message: string) => {
   const encodedMessage = encodeURIComponent(message);
   // Using wa.me format for Safari/iOS compatibility
   window.open(`https://wa.me/${cleanPhone}?text=${encodedMessage}`, '_blank');
+};
+
+// Utility function to open native SMS app (iPhone Messages, Android SMS)
+export const openNativeSms = (phone: string, message: string) => {
+  const cleanPhone = cleanPhoneNumber(phone);
+  const encodedMessage = encodeURIComponent(message);
+  
+  // iOS uses &body=, Android uses ?body=
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const smsUrl = isIOS 
+    ? `sms:${cleanPhone}&body=${encodedMessage}`
+    : `sms:${cleanPhone}?body=${encodedMessage}`;
+  
+  window.location.href = smsUrl;
 };
 
 // Pre-built message for recovery/debt collection
@@ -125,19 +140,36 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
                 </TableCell>
                 <TableCell className="text-right">
                   {client.phone ? (
-                    <Button
-                      size="sm"
-                      className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white border-0"
-                      onClick={() => openWhatsApp(
-                        client.phone!, 
-                        client.full_name || '', 
-                        getRecoveryMessage(client.full_name || '', client.amount)
+                    <div className="flex items-center justify-end gap-2">
+                      {/* Native SMS Button - shows on mobile */}
+                      {supportsNativeSms() && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5 border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                          onClick={() => openNativeSms(
+                            client.phone!, 
+                            getRecoveryMessage(client.full_name || '', client.amount)
+                          )}
+                        >
+                          <Smartphone className="h-4 w-4" />
+                          <span className="hidden sm:inline">SMS</span>
+                        </Button>
                       )}
-                    >
-                      <MessageCircle className="h-4 w-4" />
-                      WhatsApp
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
+                      {/* WhatsApp Button */}
+                      <Button
+                        size="sm"
+                        className="gap-1.5 bg-[#25D366] hover:bg-[#1da851] text-white border-0"
+                        onClick={() => openWhatsApp(
+                          client.phone!, 
+                          client.full_name || '', 
+                          getRecoveryMessage(client.full_name || '', client.amount)
+                        )}
+                      >
+                        <MessageCircle className="h-4 w-4" />
+                        <span className="hidden sm:inline">WhatsApp</span>
+                      </Button>
+                    </div>
                   ) : (
                     <div className="flex items-center gap-2 text-gray-500 text-sm">
                       <Phone className="h-4 w-4" />
