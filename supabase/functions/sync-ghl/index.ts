@@ -69,7 +69,7 @@ serve(async (req) => {
       pageCount++;
       console.log(`[sync-ghl] Fetching page ${pageCount}, cursor=${cursor || 'initial'}`);
 
-      // Fetch contacts from GHL
+      // Fetch contacts from GHL API v2
       const ghlUrl = new URL(`https://services.leadconnectorhq.com/contacts/`);
       ghlUrl.searchParams.set('locationId', ghlLocationId);
       ghlUrl.searchParams.set('limit', batchSize.toString());
@@ -77,18 +77,24 @@ serve(async (req) => {
         ghlUrl.searchParams.set('startAfterId', cursor);
       }
 
+      console.log(`[sync-ghl] Calling GHL API: ${ghlUrl.toString()}`);
+      console.log(`[sync-ghl] Location ID: ${ghlLocationId}`);
+      console.log(`[sync-ghl] API Key prefix: ${ghlApiKey?.substring(0, 10)}...`);
+
       const ghlResponse = await fetch(ghlUrl.toString(), {
         headers: {
           'Authorization': `Bearer ${ghlApiKey}`,
           'Version': '2021-07-28',
-          'Content-Type': 'application/json'
+          'Accept': 'application/json'
         }
       });
 
       if (!ghlResponse.ok) {
         const errorText = await ghlResponse.text();
-        console.error(`[sync-ghl] GHL API error: ${ghlResponse.status} ${errorText}`);
-        throw new Error(`GHL API error: ${ghlResponse.status}`);
+        console.error(`[sync-ghl] GHL API error: ${ghlResponse.status}`);
+        console.error(`[sync-ghl] Error response: ${errorText}`);
+        console.error(`[sync-ghl] Check that Private Integration has 'contacts.readonly' scope enabled`);
+        throw new Error(`GHL API error: ${ghlResponse.status} - ${errorText}`);
       }
 
       const ghlData = await ghlResponse.json();
