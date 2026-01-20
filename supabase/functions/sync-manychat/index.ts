@@ -8,8 +8,6 @@ const corsHeaders = {
 
 interface SyncRequest {
   dry_run?: boolean;
-  search_type?: 'email' | 'phone' | 'tag';
-  search_value?: string;
 }
 
 serve(async (req) => {
@@ -46,7 +44,7 @@ serve(async (req) => {
         source: 'manychat',
         status: 'running',
         dry_run: dryRun,
-        metadata: { method: 'subscriber_search' }
+        metadata: { method: 'subscriber_search_get' }
       })
       .select()
       .single();
@@ -63,50 +61,46 @@ serve(async (req) => {
     let totalSkipped = 0;
     let totalConflicts = 0;
 
-    // Strategy: Get subscribers from existing clients who have manychat IDs
-    // AND sync any new subscribers by searching for emails we already know
-    
-    // First, get all clients with emails that might be in ManyChat
+    // Get all clients with emails that might be in ManyChat
     const { data: existingClients, error: clientsError } = await supabase
       .from('clients')
       .select('email, phone, manychat_subscriber_id')
       .not('email', 'is', null)
-      .limit(500);
+      .is('manychat_subscriber_id', null)
+      .limit(200);
 
     if (clientsError) {
       console.error('[sync-manychat] Error fetching clients:', clientsError);
     }
 
-    const emailsToSearch = existingClients?.filter(c => c.email && !c.manychat_subscriber_id).map(c => c.email) || [];
+    const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
     
-    console.log(`[sync-manychat] Found ${emailsToSearch.length} clients without ManyChat ID to search`);
+    console.log(`[sync-manychat] Found ${emailsToSearch.length} clients to search in ManyChat`);
 
-    // Search ManyChat for each email (batched to avoid rate limits)
-    for (const email of emailsToSearch.slice(0, 100)) { // Limit to 100 per run
+    // Search ManyChat for each email using GET with query params
+    for (const email of emailsToSearch.slice(0, 100)) {
       try {
-        // Use findBySystemField endpoint to search by email
+        // Use GET request with query parameters - correct ManyChat API format
+        const encodedEmail = encodeURIComponent(email);
         const searchResponse = await fetch(
-          'https://api.manychat.com/fb/subscriber/findBySystemField',
+          `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
           {
-            method: 'POST',
+            method: 'GET',
             headers: {
               'Authorization': `Bearer ${manychatApiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              field_name: 'email',
-              field_value: email
-            })
+              'Accept': 'application/json'
+            }
           }
         );
 
         if (!searchResponse.ok) {
-          if (searchResponse.status === 404) {
-            // Not found in ManyChat, skip
+          const status = searchResponse.status;
+          if (status === 404 || status === 400) {
+            // Not found in ManyChat or invalid email
             totalSkipped++;
             continue;
           }
-          console.error(`[sync-manychat] Search error for ${email}: ${searchResponse.status}`);
+          console.error(`[sync-manychat] Search error for ${email}: ${status}`);
           totalSkipped++;
           continue;
         }
@@ -120,6 +114,7 @@ serve(async (req) => {
 
         const subscriber = searchData.data;
         totalFetched++;
+        console.log(`[sync-manychat] Found subscriber ${subscriber.id} for ${email}`);
 
         // Store raw data for audit
         if (!dryRun) {
@@ -170,11 +165,11 @@ serve(async (req) => {
         else if (action === 'conflict') totalConflicts++;
         else totalSkipped++;
 
-        // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Rate limit: ManyChat allows ~10 requests/second
+        await new Promise(resolve => setTimeout(resolve, 150));
 
       } catch (subError) {
-        console.error(`[sync-manychat] Error searching for ${email}:`, subError);
+        console.error(`[sync-manychat] Error for ${email}:`, subError);
         totalSkipped++;
       }
     }
@@ -191,13 +186,13 @@ serve(async (req) => {
         total_skipped: totalSkipped,
         total_conflicts: totalConflicts,
         metadata: { 
-          method: 'subscriber_search',
-          emails_searched: emailsToSearch.length
+          method: 'subscriber_search_get',
+          emails_searched: Math.min(emailsToSearch.length, 100)
         }
       })
       .eq('id', syncRunId);
 
-    console.log(`[sync-manychat] Completed: ${totalFetched} found, ${totalInserted} inserted, ${totalUpdated} updated, ${totalConflicts} conflicts`);
+    console.log(`[sync-manychat] Completed: ${totalFetched} found, ${totalInserted} inserted, ${totalUpdated} updated`);
 
     return new Response(
       JSON.stringify({
@@ -212,7 +207,9 @@ serve(async (req) => {
           total_skipped: totalSkipped,
           total_conflicts: totalConflicts
         },
-        note: 'ManyChat API requires searching by email/phone. Synced clients that exist in both systems.'
+        note: totalFetched === 0 
+          ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients, or use the receive-lead webhook for real-time sync.'
+          : `Found ${totalFetched} subscribers matching your client emails.`
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
@@ -223,7 +220,7 @@ serve(async (req) => {
       JSON.stringify({ 
         success: false,
         error: error.message || 'Unknown error',
-        help: 'ManyChat API does not support listing all subscribers. Use webhook integration instead for real-time sync.'
+        help: 'For real-time sync, configure ManyChat to send webhooks to your receive-lead endpoint.'
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
