@@ -270,7 +270,8 @@ export function APISyncPanel() {
     await syncPayPal('allHistory');
   };
 
-  const isSyncing = stripeSyncing || paypalSyncing || manychatSyncing || ghlSyncing;
+  // Each sync can run independently - no global blocking
+  const anySyncing = stripeSyncing || paypalSyncing || manychatSyncing || ghlSyncing;
 
   return (
     <Card className="bg-[#1a1f36] border-border/50">
@@ -338,7 +339,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncStripe('last24h')}
-              disabled={isSyncing}
+              disabled={stripeSyncing}
               className="gap-2 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
@@ -348,7 +349,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncStripe('last31d')}
-              disabled={isSyncing}
+              disabled={stripeSyncing}
               className="gap-2"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -358,7 +359,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncStripe('all6months')}
-              disabled={isSyncing}
+              disabled={stripeSyncing}
               className="gap-2"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -367,7 +368,7 @@ export function APISyncPanel() {
             <Button
               size="sm"
               onClick={() => syncStripe('allHistory')}
-              disabled={isSyncing}
+              disabled={stripeSyncing}
               className="gap-2 bg-purple-600 hover:bg-purple-700"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
@@ -409,7 +410,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncPayPal('last24h')}
-              disabled={isSyncing}
+              disabled={paypalSyncing}
               className="gap-2 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
@@ -419,7 +420,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncPayPal('last31d')}
-              disabled={isSyncing}
+              disabled={paypalSyncing}
               className="gap-2"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -429,7 +430,7 @@ export function APISyncPanel() {
               variant="outline"
               size="sm"
               onClick={() => syncPayPal('all6months')}
-              disabled={isSyncing}
+              disabled={paypalSyncing}
               className="gap-2"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -438,7 +439,7 @@ export function APISyncPanel() {
             <Button
               size="sm"
               onClick={() => syncPayPal('allHistory')}
-              disabled={isSyncing}
+              disabled={paypalSyncing}
               className="gap-2 bg-yellow-600 hover:bg-yellow-700"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
@@ -477,7 +478,7 @@ export function APISyncPanel() {
           
           <Button
             onClick={syncManyChat}
-            disabled={isSyncing}
+            disabled={manychatSyncing}
             className="w-full gap-2 bg-blue-600 hover:bg-blue-700"
           >
             {manychatSyncing ? (
@@ -528,7 +529,7 @@ export function APISyncPanel() {
           
           <Button
             onClick={syncGHL}
-            disabled={isSyncing}
+            disabled={ghlSyncing}
             className="w-full gap-2 bg-green-600 hover:bg-green-700"
           >
             {ghlSyncing ? (
@@ -552,10 +553,10 @@ export function APISyncPanel() {
         {/* Sync All Button */}
         <Button 
           onClick={syncAllHistory}
-          disabled={isSyncing}
+          disabled={stripeSyncing || paypalSyncing}
           className="w-full bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"
         >
-          {isSyncing ? (
+          {(stripeSyncing || paypalSyncing) ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Sincronizando...
