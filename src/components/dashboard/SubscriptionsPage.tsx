@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, TrendingDown, RefreshCw, Loader2 } from 'lucide-react';
+import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, TrendingDown, RefreshCw, Loader2, CloudCog } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -15,7 +15,7 @@ import { formatDistanceToNow, addDays, format, isAfter, isBefore } from 'date-fn
 import { es } from 'date-fns/locale';
 
 export function SubscriptionsPage() {
-  const { subscriptions, isLoading, syncSubscriptions, revenueByPlan, totalActiveRevenue, totalActiveCount } = useSubscriptions();
+  const { subscriptions, isLoading, syncSubscriptions, revenueByPlan, totalActiveRevenue, totalActiveCount, isSyncing, syncProgress } = useSubscriptions();
 
   const now = new Date();
   const in3Days = addDays(now, 3);
@@ -86,14 +86,32 @@ export function SubscriptionsPage() {
           </div>
           <Button
             onClick={() => syncSubscriptions.mutate()}
-            disabled={syncSubscriptions.isPending}
+            disabled={isSyncing}
             variant="outline"
           >
-            {syncSubscriptions.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+            {isSyncing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
             Sincronizar
           </Button>
         </div>
       </div>
+
+      {/* Sync Progress Banner */}
+      {isSyncing && syncProgress && (
+        <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 flex items-center gap-4">
+          <CloudCog className="h-6 w-6 text-purple-400 animate-pulse" />
+          <div className="flex-1">
+            <p className="font-medium text-foreground">Sincronizando en segundo plano...</p>
+            <p className="text-sm text-muted-foreground">
+              {syncProgress.fetched > 0 && `${syncProgress.fetched} obtenidas`}
+              {syncProgress.inserted > 0 && ` • ${syncProgress.inserted} guardadas`}
+              {' • Puedes recargar la página sin perder el progreso'}
+            </p>
+          </div>
+          <Badge variant="outline" className="border-purple-500/30 text-purple-400">
+            {syncProgress.status === 'running' ? 'En progreso' : syncProgress.status}
+          </Badge>
+        </div>
+      )}
 
       {/* Funnel Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

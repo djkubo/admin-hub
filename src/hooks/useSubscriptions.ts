@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
@@ -33,9 +34,83 @@ export interface PlanRevenue {
   cumulative: number;
 }
 
+interface SyncRun {
+  id: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  total_fetched: number | null;
+  total_inserted: number | null;
+  error_message: string | null;
+}
+
 export function useSubscriptions() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const [activeSyncId, setActiveSyncId] = useState<string | null>(null);
+
+  // Check for active sync on mount
+  useEffect(() => {
+    const checkActiveSync = async () => {
+      const { data } = await supabase
+        .from("sync_runs")
+        .select("*")
+        .eq("source", "subscriptions")
+        .eq("status", "running")
+        .order("started_at", { ascending: false })
+        .limit(1);
+      
+      if (data && data.length > 0) {
+        const sync = data[0];
+        const startedAt = new Date(sync.started_at);
+        const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
+        
+        // Only show if started less than 10 minutes ago
+        if (minutesAgo < 10) {
+          setActiveSyncId(sync.id);
+        }
+      }
+    };
+    checkActiveSync();
+  }, []);
+
+  // Poll sync status when active
+  const { data: syncStatus } = useQuery({
+    queryKey: ["sync-status", activeSyncId],
+    queryFn: async () => {
+      if (!activeSyncId) return null;
+      
+      const { data, error } = await supabase
+        .from("sync_runs")
+        .select("*")
+        .eq("id", activeSyncId)
+        .single();
+      
+      if (error) throw error;
+      return data as SyncRun;
+    },
+    enabled: !!activeSyncId,
+    refetchInterval: activeSyncId ? 2000 : false, // Poll every 2 seconds
+  });
+
+  // Handle sync completion
+  useEffect(() => {
+    if (syncStatus?.status === "completed") {
+      queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+      toast({
+        title: "Sincronización completada",
+        description: `${syncStatus.total_inserted || 0} suscripciones actualizadas`,
+      });
+      setActiveSyncId(null);
+    } else if (syncStatus?.status === "failed") {
+      toast({
+        title: "Error de sincronización",
+        description: syncStatus.error_message || "Error desconocido",
+        variant: "destructive",
+      });
+      setActiveSyncId(null);
+    }
+  }, [syncStatus?.status, syncStatus?.total_inserted, syncStatus?.error_message, queryClient, toast]);
 
   const { data: subscriptions = [], isLoading, error } = useQuery({
     queryKey: ["subscriptions"],
@@ -90,14 +165,23 @@ export function useSubscriptions() {
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
-      return await invokeWithAdminKey("fetch-subscriptions", {});
+      const result = await invokeWithAdminKey("fetch-subscriptions", {});
+      return result;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
-      toast({
-        title: "Suscripciones sincronizadas",
-        description: `${data.upserted} suscripciones actualizadas desde Stripe`,
-      });
+      if (data.status === "running" && data.syncRunId) {
+        setActiveSyncId(data.syncRunId);
+        toast({
+          title: "Sincronización iniciada",
+          description: "El proceso continúa en segundo plano. Puedes recargar la página.",
+        });
+      } else if (data.status === "completed") {
+        queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+        toast({
+          title: "Suscripciones sincronizadas",
+          description: `Sincronización completada`,
+        });
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -108,6 +192,14 @@ export function useSubscriptions() {
     },
   });
 
+  // Check if sync is in progress
+  const isSyncing = !!activeSyncId || syncSubscriptions.isPending;
+  const syncProgress = syncStatus ? {
+    fetched: syncStatus.total_fetched || 0,
+    inserted: syncStatus.total_inserted || 0,
+    status: syncStatus.status,
+  } : null;
+
   return {
     subscriptions,
     isLoading,
@@ -116,5 +208,7 @@ export function useSubscriptions() {
     revenueByPlan,
     totalActiveRevenue,
     totalActiveCount,
+    isSyncing,
+    syncProgress,
   };
 }
