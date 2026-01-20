@@ -167,13 +167,26 @@ export function InvoicesPage() {
     toast.success(`Cobro masivo completado: $${(recovered / 100).toFixed(2)} recuperados, ${failed} fallidos`);
   };
 
-  const filterCounts = {
-    all: invoices.length,
-    open: invoices.filter((i: Invoice) => i.status === 'open').length,
-    draft: invoices.filter((i: Invoice) => i.status === 'draft').length,
-    scheduled: invoices.filter((i: Invoice) => i.next_payment_attempt).length,
-    unscheduled: invoices.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft').length,
-  };
+  // Filter invoices by date range first, then calculate counts
+  const dateFilteredInvoices = useMemo(() => {
+    const cutoff = getDateCutoff(dateRange);
+    if (!cutoff) return invoices;
+    
+    const now = new Date();
+    return invoices.filter((i: Invoice) => {
+      if (!i.next_payment_attempt) return true; // Include drafts/unscheduled
+      const dateToCheck = new Date(i.next_payment_attempt);
+      return isAfter(dateToCheck, now) && isBefore(dateToCheck, cutoff);
+    });
+  }, [invoices, dateRange]);
+
+  const filterCounts = useMemo(() => ({
+    all: dateFilteredInvoices.length,
+    open: dateFilteredInvoices.filter((i: Invoice) => i.status === 'open').length,
+    draft: dateFilteredInvoices.filter((i: Invoice) => i.status === 'draft').length,
+    scheduled: dateFilteredInvoices.filter((i: Invoice) => i.next_payment_attempt).length,
+    unscheduled: dateFilteredInvoices.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft').length,
+  }), [dateFilteredInvoices]);
 
   return (
     <div className="space-y-6">
