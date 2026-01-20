@@ -19,6 +19,24 @@ export interface Client {
   converted_at: string | null;
   last_sync: string | null;
   created_at: string | null;
+  // Attribution fields
+  acquisition_source: string | null;
+  acquisition_campaign: string | null;
+  acquisition_medium: string | null;
+  acquisition_content: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
+  first_seen_at: string | null;
+  last_lead_at: string | null;
+  lead_status: string | null;
+  // External IDs
+  manychat_subscriber_id: string | null;
+  ghl_contact_id: string | null;
+  // Tags
+  tags: string[] | null;
 }
 
 const PAGE_SIZE = 50;

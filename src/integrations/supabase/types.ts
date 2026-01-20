@@ -368,7 +368,9 @@ export type Database = {
           ghl_contact_id: string | null
           id: string
           is_delinquent: boolean | null
+          last_lead_at: string | null
           last_sync: string | null
+          lead_status: string | null
           lifecycle_stage: string | null
           manychat_subscriber_id: string | null
           needs_review: boolean | null
@@ -383,6 +385,11 @@ export type Database = {
           total_paid: number | null
           total_spend: number | null
           trial_started_at: string | null
+          utm_campaign: string | null
+          utm_content: string | null
+          utm_medium: string | null
+          utm_source: string | null
+          utm_term: string | null
           wa_opt_in: boolean | null
         }
         Insert: {
@@ -400,7 +407,9 @@ export type Database = {
           ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
+          last_lead_at?: string | null
           last_sync?: string | null
+          lead_status?: string | null
           lifecycle_stage?: string | null
           manychat_subscriber_id?: string | null
           needs_review?: boolean | null
@@ -415,6 +424,11 @@ export type Database = {
           total_paid?: number | null
           total_spend?: number | null
           trial_started_at?: string | null
+          utm_campaign?: string | null
+          utm_content?: string | null
+          utm_medium?: string | null
+          utm_source?: string | null
+          utm_term?: string | null
           wa_opt_in?: boolean | null
         }
         Update: {
@@ -432,7 +446,9 @@ export type Database = {
           ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
+          last_lead_at?: string | null
           last_sync?: string | null
+          lead_status?: string | null
           lifecycle_stage?: string | null
           manychat_subscriber_id?: string | null
           needs_review?: boolean | null
@@ -447,6 +463,11 @@ export type Database = {
           total_paid?: number | null
           total_spend?: number | null
           trial_started_at?: string | null
+          utm_campaign?: string | null
+          utm_content?: string | null
+          utm_medium?: string | null
+          utm_source?: string | null
+          utm_term?: string | null
           wa_opt_in?: boolean | null
         }
         Relationships: []
@@ -567,28 +588,37 @@ export type Database = {
       lead_events: {
         Row: {
           client_id: string | null
+          email: string | null
           event_id: string
           event_type: string
+          full_name: string | null
           id: string
           payload: Json | null
+          phone: string | null
           processed_at: string
           source: string
         }
         Insert: {
           client_id?: string | null
+          email?: string | null
           event_id: string
           event_type: string
+          full_name?: string | null
           id?: string
           payload?: Json | null
+          phone?: string | null
           processed_at?: string
           source: string
         }
         Update: {
           client_id?: string | null
+          email?: string | null
           event_id?: string
           event_type?: string
+          full_name?: string | null
           id?: string
           payload?: Json | null
+          phone?: string | null
           processed_at?: string
           source?: string
         }

@@ -62,7 +62,8 @@ const CHECK_LABELS: Record<string, string> = {
   'clients_without_phone': 'Clientes sin Teléfono',
   'duplicate_phones': 'Teléfonos Duplicados',
   'non_normalized_emails': 'Emails No Normalizados',
-  'mixed_currencies': 'Monedas Mezcladas'
+  'mixed_currencies': 'Monedas Mezcladas',
+  'clients_without_source': 'Clientes sin Fuente',
 };
 
 export default function DiagnosticsPanel() {

@@ -85,6 +85,23 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
     enabled: open && !!client?.id,
   });
 
+  // Fetch lead events for attribution timeline
+  const { data: leadEvents } = useQuery({
+    queryKey: ['lead-events', client?.id],
+    queryFn: async () => {
+      if (!client?.id) return [];
+      const { data, error } = await supabase
+        .from('lead_events')
+        .select('*')
+        .eq('client_id', client.id)
+        .order('processed_at', { ascending: false })
+        .limit(10);
+      if (error) throw error;
+      return data;
+    },
+    enabled: open && !!client?.id,
+  });
+
   // Fetch client transactions
   const { data: transactions } = useQuery({
     queryKey: ['client-transactions', client?.email],
@@ -169,6 +186,14 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
       icon: Calendar,
       color: 'text-blue-400',
     },
+    // First seen (lead)
+    client.first_seen_at && client.first_seen_at !== client.created_at && {
+      type: 'lead',
+      date: client.first_seen_at,
+      label: `Lead desde ${client.acquisition_source || 'desconocido'}`,
+      icon: Play,
+      color: 'text-cyan-400',
+    },
     // Trial started
     client.trial_started_at && {
       type: 'trial',
@@ -185,6 +210,14 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
       icon: ArrowUpCircle,
       color: 'text-emerald-400',
     },
+    // Lead events
+    ...(leadEvents?.map((e) => ({
+      type: 'lead_event',
+      date: e.processed_at,
+      label: `${e.event_type} (${e.source})`,
+      icon: Play,
+      color: 'text-cyan-400',
+    })) || []),
     // Events
     ...(events?.map((e) => ({
       type: 'event',
@@ -251,6 +284,47 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
               )}
             </div>
           </div>
+
+          {/* Attribution Info */}
+          {(client.acquisition_source || client.utm_source || client.utm_campaign) && (
+            <div className="space-y-3 mb-6">
+              <h3 className="text-sm font-medium text-muted-foreground">Atribución</h3>
+              <div className="space-y-2 rounded-lg border border-border/50 bg-background/50 p-3">
+                {client.acquisition_source && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Fuente:</span>
+                    <Badge variant="outline">{client.acquisition_source}</Badge>
+                  </div>
+                )}
+                {client.utm_source && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">UTM Source:</span>
+                    <span className="text-foreground">{client.utm_source}</span>
+                  </div>
+                )}
+                {client.utm_campaign && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Campaign:</span>
+                    <span className="text-foreground">{client.utm_campaign}</span>
+                  </div>
+                )}
+                {client.utm_medium && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Medium:</span>
+                    <span className="text-foreground">{client.utm_medium}</span>
+                  </div>
+                )}
+                {client.first_seen_at && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Primera vez:</span>
+                    <span className="text-foreground">
+                      {format(new Date(client.first_seen_at), 'd MMM yyyy', { locale: es })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Stats */}
           <div className="grid grid-cols-2 gap-3 mb-6">
@@ -335,9 +409,9 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
                           {format(new Date(item.date), 'd MMM HH:mm', { locale: es })}
                         </span>
                       </div>
-                      {'amount' in item && item.amount && (
+                      {'amount' in item && typeof item.amount === 'number' && (
                         <p className="text-xs text-muted-foreground mt-1">
-                          ${item.amount.toFixed(2)} {item.currency?.toUpperCase()}
+                          ${item.amount.toFixed(2)} {('currency' in item && item.currency) ? String(item.currency).toUpperCase() : ''}
                         </p>
                       )}
                     </div>

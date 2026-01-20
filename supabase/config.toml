@@ -1,12 +1,9 @@
 project_id = "qskmzaxzhkrlchycbria"
 
+# ============================================
+# WEBHOOK DE LEADS (requiere X-ADMIN-KEY header)
+# ============================================
 [functions.receive-lead]
-verify_jwt = false
-
-[functions.receive-lead-manychat]
-verify_jwt = false
-
-[functions.receive-lead-ghl]
 verify_jwt = false
 
 # ============================================

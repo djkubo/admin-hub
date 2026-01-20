@@ -6,25 +6,37 @@ const corsHeaders = {
 };
 
 interface LeadPayload {
-  // Common fields
+  // Idempotency
+  event_id?: string;
+  
+  // Source identification
+  source?: string; // e.g., 'manychat_instagram', 'ghl_whatsapp', 'tiktok_ads', 'facebook_ads'
+  
+  // Contact info
   email?: string;
   phone?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
   
-  // Attribution
-  source?: string;
-  campaign?: string;
-  medium?: string;
-  content?: string;
+  // UTM Attribution
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_content?: string;
+  utm_term?: string;
   
-  // Source-specific IDs
+  // Legacy attribution field (mapped to utm_campaign)
+  campaign?: string;
+  
+  // External IDs
+  external_manychat_id?: string;
+  external_ghl_id?: string;
   manychat_subscriber_id?: string;
   ghl_contact_id?: string;
   
-  // Event info for idempotency
-  event_id?: string;
+  // Timestamp for recency comparison
+  timestamp?: string;
   
   // Tags
   tags?: string[];
@@ -44,50 +56,85 @@ Deno.serve(async (req) => {
   console.log(`[${requestId}] receive-lead: Start`);
 
   try {
-    // Security: Validate X-ADMIN-KEY header
+    // ============ SECURITY: Validate X-ADMIN-KEY ============
     const adminKey = Deno.env.get('ADMIN_API_KEY');
     const providedKey = req.headers.get('x-admin-key');
     
     if (!adminKey) {
       console.error(`[${requestId}] ADMIN_API_KEY not configured`);
       return new Response(
-        JSON.stringify({ error: 'Service not configured', code: 'MISSING_SECRET' }),
+        JSON.stringify({ 
+          error: 'Service not configured', 
+          code: 'MISSING_SECRET',
+          message: 'ADMIN_API_KEY secret is not set. Please configure it in Supabase secrets.'
+        }),
         { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
     
-    if (!providedKey || providedKey !== adminKey) {
-      console.warn(`[${requestId}] Unauthorized request - invalid X-ADMIN-KEY`);
+    if (!providedKey) {
+      console.warn(`[${requestId}] Missing X-ADMIN-KEY header`);
       return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
+        JSON.stringify({ error: 'Unauthorized', message: 'Missing X-ADMIN-KEY header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    if (providedKey !== adminKey) {
+      console.warn(`[${requestId}] Invalid X-ADMIN-KEY`);
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized', message: 'Invalid X-ADMIN-KEY' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Parse source from header or body
+    // ============ PARSE & VALIDATE ============
     const sourceHeader = req.headers.get('x-source') || 'api';
     const body: LeadPayload = await req.json();
     const source = body.source || sourceHeader;
     
     console.log(`[${requestId}] Source: ${source}, Email: ${body.email || 'N/A'}, Phone: ${body.phone || 'N/A'}`);
 
-    // Validate required fields - need at least email or phone
+    // Validate: need at least email or phone
     if (!body.email && !body.phone) {
       return new Response(
-        JSON.stringify({ error: 'Either email or phone is required' }),
+        JSON.stringify({ error: 'Validation failed', message: 'Either email or phone is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Generate event_id if not provided
-    const eventId = body.event_id || `${source}_${body.email || body.phone}_${Date.now()}`;
+    // ============ NORMALIZE ============
+    const emailNormalized = body.email ? body.email.toLowerCase().trim() : null;
+    const phoneNormalized = normalizePhone(body.phone);
+    const fullName = body.full_name || 
+      (body.first_name && body.last_name ? `${body.first_name} ${body.last_name}` : 
+       body.first_name || body.last_name || null);
 
-    // Create Supabase client with service role
+    // Generate event_id for idempotency if not provided
+    const eventId = body.event_id || 
+      body.external_manychat_id || 
+      body.manychat_subscriber_id ||
+      body.external_ghl_id ||
+      body.ghl_contact_id ||
+      `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
+
+    // External IDs (support both naming conventions)
+    const manychatId = body.external_manychat_id || body.manychat_subscriber_id || null;
+    const ghlId = body.external_ghl_id || body.ghl_contact_id || null;
+
+    // UTM fields (campaign is legacy alias for utm_campaign)
+    const utmSource = body.utm_source || null;
+    const utmMedium = body.utm_medium || null;
+    const utmCampaign = body.utm_campaign || body.campaign || null;
+    const utmContent = body.utm_content || null;
+    const utmTerm = body.utm_term || null;
+
+    // ============ SUPABASE CLIENT ============
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Idempotency check
+    // ============ IDEMPOTENCY CHECK ============
     const { data: existingEvent } = await supabase
       .from('lead_events')
       .select('id')
@@ -98,23 +145,20 @@ Deno.serve(async (req) => {
     if (existingEvent) {
       console.log(`[${requestId}] Duplicate event - already processed: ${eventId}`);
       return new Response(
-        JSON.stringify({ success: true, action: 'skipped', reason: 'duplicate_event' }),
+        JSON.stringify({ 
+          success: true, 
+          action: 'skipped', 
+          reason: 'duplicate_event',
+          event_id: eventId 
+        }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Normalize email and phone
-    const emailNormalized = body.email?.toLowerCase().trim();
-    const phoneNormalized = normalizePhone(body.phone);
-
-    // Build full name
-    const fullName = body.full_name || 
-      (body.first_name && body.last_name ? `${body.first_name} ${body.last_name}` : 
-       body.first_name || body.last_name || null);
-
-    // Look for existing client by email or phone
+    // ============ FIND EXISTING CLIENT ============
     let existingClient = null;
     
+    // Priority 1: Find by email (most reliable)
     if (emailNormalized) {
       const { data } = await supabase
         .from('clients')
@@ -124,6 +168,7 @@ Deno.serve(async (req) => {
       existingClient = data;
     }
     
+    // Priority 2: Find by phone if no email match
     if (!existingClient && phoneNormalized) {
       const { data } = await supabase
         .from('clients')
@@ -133,40 +178,67 @@ Deno.serve(async (req) => {
       existingClient = data;
     }
 
+    // Priority 3: Find by external ID
+    if (!existingClient && manychatId) {
+      const { data } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('manychat_subscriber_id', manychatId)
+        .maybeSingle();
+      existingClient = data;
+    }
+    
+    if (!existingClient && ghlId) {
+      const { data } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('ghl_contact_id', ghlId)
+        .maybeSingle();
+      existingClient = data;
+    }
+
     let clientId: string;
     let action: 'created' | 'updated';
+    const eventTimestamp = body.timestamp ? new Date(body.timestamp) : new Date();
 
     if (existingClient) {
-      // Update existing client - only fill nulls, don't overwrite
+      // ============ UPDATE EXISTING CLIENT ============
+      // Rule: Only fill nulls or update if incoming data is more recent
       const updates: Record<string, unknown> = {};
       
+      // Fill empty contact info
       if (!existingClient.email && emailNormalized) updates.email = emailNormalized;
       if (!existingClient.phone && phoneNormalized) updates.phone = phoneNormalized;
       if (!existingClient.full_name && fullName) updates.full_name = fullName;
       
-      // Attribution - only set if not already set
-      if (!existingClient.acquisition_source && body.campaign) updates.acquisition_source = source;
-      if (!existingClient.acquisition_campaign && body.campaign) updates.acquisition_campaign = body.campaign;
-      if (!existingClient.acquisition_medium && body.medium) updates.acquisition_medium = body.medium;
-      if (!existingClient.acquisition_content && body.content) updates.acquisition_content = body.content;
+      // Fill empty external IDs
+      if (!existingClient.manychat_subscriber_id && manychatId) {
+        updates.manychat_subscriber_id = manychatId;
+      }
+      if (!existingClient.ghl_contact_id && ghlId) {
+        updates.ghl_contact_id = ghlId;
+      }
       
-      // Source IDs
-      if (!existingClient.manychat_subscriber_id && body.manychat_subscriber_id) {
-        updates.manychat_subscriber_id = body.manychat_subscriber_id;
-      }
-      if (!existingClient.ghl_contact_id && body.ghl_contact_id) {
-        updates.ghl_contact_id = body.ghl_contact_id;
-      }
+      // Attribution - ONLY set if not already set (first touch wins)
+      if (!existingClient.acquisition_source && source) updates.acquisition_source = source;
+      if (!existingClient.utm_source && utmSource) updates.utm_source = utmSource;
+      if (!existingClient.utm_medium && utmMedium) updates.utm_medium = utmMedium;
+      if (!existingClient.utm_campaign && utmCampaign) updates.utm_campaign = utmCampaign;
+      if (!existingClient.utm_content && utmContent) updates.utm_content = utmContent;
+      if (!existingClient.utm_term && utmTerm) updates.utm_term = utmTerm;
       
       // Merge tags
       if (body.tags && body.tags.length > 0) {
         const existingTags = existingClient.tags || [];
-        const newTags = [...new Set([...existingTags, ...body.tags])];
-        updates.tags = newTags;
+        const mergedTags = [...new Set([...existingTags, ...body.tags])];
+        updates.tags = mergedTags;
       }
 
+      // Always update last_lead_at
+      updates.last_lead_at = new Date().toISOString();
+      updates.last_sync = new Date().toISOString();
+
       if (Object.keys(updates).length > 0) {
-        updates.last_sync = new Date().toISOString();
         await supabase
           .from('clients')
           .update(updates)
@@ -176,21 +248,26 @@ Deno.serve(async (req) => {
       clientId = existingClient.id;
       action = 'updated';
       console.log(`[${requestId}] Updated existing client: ${clientId}`);
+      
     } else {
-      // Create new client as Lead
+      // ============ CREATE NEW CLIENT ============
       const newClient = {
         email: emailNormalized,
         phone: phoneNormalized,
         full_name: fullName,
         lifecycle_stage: 'LEAD',
+        lead_status: 'lead',
         status: 'active',
         acquisition_source: source,
-        acquisition_campaign: body.campaign || null,
-        acquisition_medium: body.medium || null,
-        acquisition_content: body.content || null,
+        utm_source: utmSource,
+        utm_medium: utmMedium,
+        utm_campaign: utmCampaign,
+        utm_content: utmContent,
+        utm_term: utmTerm,
         first_seen_at: new Date().toISOString(),
-        manychat_subscriber_id: body.manychat_subscriber_id || null,
-        ghl_contact_id: body.ghl_contact_id || null,
+        last_lead_at: new Date().toISOString(),
+        manychat_subscriber_id: manychatId,
+        ghl_contact_id: ghlId,
         tags: body.tags || [],
         customer_metadata: body.metadata || {},
       };
@@ -211,12 +288,15 @@ Deno.serve(async (req) => {
       console.log(`[${requestId}] Created new lead: ${clientId}`);
     }
 
-    // Record event for idempotency
+    // ============ RECORD LEAD EVENT (idempotency) ============
     await supabase.from('lead_events').insert({
       source,
       event_id: eventId,
       event_type: action === 'created' ? 'lead_created' : 'lead_updated',
       client_id: clientId,
+      email: emailNormalized,
+      phone: phoneNormalized,
+      full_name: fullName,
       payload: body,
     });
 
@@ -247,20 +327,36 @@ Deno.serve(async (req) => {
 function normalizePhone(phone?: string): string | null {
   if (!phone) return null;
   
-  // Remove all non-digit characters
-  let digits = phone.replace(/\D/g, '');
+  // Remove all non-digit characters except leading +
+  let cleaned = phone.replace(/[^\d+]/g, '');
   
-  // Handle Mexican numbers
-  if (digits.length === 10) {
-    digits = '52' + digits;
-  } else if (digits.startsWith('1') && digits.length === 11) {
-    // US number
-  } else if (!digits.startsWith('52') && !digits.startsWith('1')) {
-    // Assume Mexican if 10+ digits without country code
-    if (digits.length >= 10) {
-      digits = '52' + digits.slice(-10);
-    }
+  // If starts with +, keep it
+  if (cleaned.startsWith('+')) {
+    return cleaned;
   }
   
-  return '+' + digits;
+  // Remove leading zeros
+  cleaned = cleaned.replace(/^0+/, '');
+  
+  // Handle Mexican numbers (10 digits)
+  if (cleaned.length === 10) {
+    return '+52' + cleaned;
+  }
+  
+  // Handle US numbers (10 digits starting with area code, or 11 starting with 1)
+  if (cleaned.length === 11 && cleaned.startsWith('1')) {
+    return '+' + cleaned;
+  }
+  
+  // If already has country code (12+ digits for Mexico, 11 for US)
+  if (cleaned.length >= 11) {
+    return '+' + cleaned;
+  }
+  
+  // Return with + prefix if valid length
+  if (cleaned.length >= 10) {
+    return '+' + cleaned;
+  }
+  
+  return null; // Invalid phone
 }
