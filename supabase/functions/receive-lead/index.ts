@@ -1,4 +1,9 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// Declare EdgeRuntime for Deno
+declare const EdgeRuntime: {
+  waitUntil: (promise: Promise<unknown>) => void;
+};
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -6,136 +11,98 @@ const corsHeaders = {
 };
 
 interface LeadPayload {
-  // Idempotency
   event_id?: string;
-  
-  // Source identification
-  source?: string; // e.g., 'manychat_instagram', 'ghl_whatsapp', 'tiktok_ads', 'facebook_ads'
-  
-  // Contact info
+  source?: string;
   email?: string;
   phone?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
-  
-  // UTM Attribution
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
   utm_content?: string;
   utm_term?: string;
-  
-  // Legacy attribution field (mapped to utm_campaign)
   campaign?: string;
-  
-  // External IDs (multiple naming conventions supported)
   external_manychat_id?: string;
   external_ghl_id?: string;
   manychat_subscriber_id?: string;
-  subscriber_id?: string; // Alias for manychat_subscriber_id
+  subscriber_id?: string;
   ghl_contact_id?: string;
-  
-  // Timestamp for recency comparison
   timestamp?: string;
-  
-  // Tags
   tags?: string[];
-  
-  // Extra metadata
   metadata?: Record<string, unknown>;
 }
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+interface ClientRecord {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  full_name: string | null;
+  manychat_subscriber_id: string | null;
+  ghl_contact_id: string | null;
+  acquisition_source: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
+  tags: string[] | null;
+  [key: string]: unknown;
+}
+
+// ============ PHONE NORMALIZATION ============
+function normalizePhone(phone?: string): string | null {
+  if (!phone) return null;
+  let cleaned = phone.replace(/[^\d+]/g, '');
+  if (cleaned.startsWith('+')) return cleaned;
+  cleaned = cleaned.replace(/^0+/, '');
+  if (cleaned.length === 10) return '+52' + cleaned;
+  if (cleaned.length === 11 && cleaned.startsWith('1')) return '+' + cleaned;
+  if (cleaned.length >= 11) return '+' + cleaned;
+  if (cleaned.length >= 10) return '+' + cleaned;
+  return null;
+}
+
+// ============ PROCESS SINGLE LEAD ============
+async function processLead(
+  supabase: SupabaseClient,
+  body: LeadPayload,
+  sourceHeader: string,
+  requestId: string
+): Promise<{ success: boolean; action: string; client_id?: string; error?: string; event_id?: string }> {
+  
+  const source = body.source || sourceHeader;
+  
+  if (!body.email && !body.phone) {
+    return { success: false, action: 'error', error: 'Either email or phone is required' };
   }
 
-  const startTime = Date.now();
-  const requestId = crypto.randomUUID().slice(0, 8);
-  
-  console.log(`[${requestId}] receive-lead: Start`);
+  const emailNormalized = body.email ? body.email.toLowerCase().trim() : null;
+  const phoneNormalized = normalizePhone(body.phone);
+  const fullName = body.full_name || 
+    (body.first_name && body.last_name ? `${body.first_name} ${body.last_name}` : 
+     body.first_name || body.last_name || null);
+
+  const eventId = body.event_id || 
+    body.external_manychat_id || 
+    body.manychat_subscriber_id ||
+    body.subscriber_id ||
+    body.external_ghl_id ||
+    body.ghl_contact_id ||
+    `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
+
+  const manychatId = body.external_manychat_id || body.manychat_subscriber_id || body.subscriber_id || null;
+  const ghlId = body.external_ghl_id || body.ghl_contact_id || null;
+
+  const utmSource = body.utm_source || null;
+  const utmMedium = body.utm_medium || null;
+  const utmCampaign = body.utm_campaign || body.campaign || null;
+  const utmContent = body.utm_content || null;
+  const utmTerm = body.utm_term || null;
 
   try {
-    // ============ SECURITY: Validate X-ADMIN-KEY ============
-    const adminKey = Deno.env.get('ADMIN_API_KEY');
-    const providedKey = req.headers.get('x-admin-key');
-    
-    if (!adminKey) {
-      console.error(`[${requestId}] ADMIN_API_KEY not configured`);
-      return new Response(
-        JSON.stringify({ 
-          error: 'Service not configured', 
-          code: 'MISSING_SECRET',
-          message: 'ADMIN_API_KEY secret is not set. Please configure it in Supabase secrets.'
-        }),
-        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    
-    if (!providedKey) {
-      console.warn(`[${requestId}] Missing X-ADMIN-KEY header`);
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized', message: 'Missing X-ADMIN-KEY header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    
-    if (providedKey !== adminKey) {
-      console.warn(`[${requestId}] Invalid X-ADMIN-KEY`);
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized', message: 'Invalid X-ADMIN-KEY' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // ============ PARSE & VALIDATE ============
-    const sourceHeader = req.headers.get('x-source') || 'api';
-    const body: LeadPayload = await req.json();
-    const source = body.source || sourceHeader;
-    
-    console.log(`[${requestId}] Source: ${source}, Email: ${body.email || 'N/A'}, Phone: ${body.phone || 'N/A'}`);
-
-    // Validate: need at least email or phone
-    if (!body.email && !body.phone) {
-      return new Response(
-        JSON.stringify({ error: 'Validation failed', message: 'Either email or phone is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // ============ NORMALIZE ============
-    const emailNormalized = body.email ? body.email.toLowerCase().trim() : null;
-    const phoneNormalized = normalizePhone(body.phone);
-    const fullName = body.full_name || 
-      (body.first_name && body.last_name ? `${body.first_name} ${body.last_name}` : 
-       body.first_name || body.last_name || null);
-
-    // Generate event_id for idempotency if not provided
-    const eventId = body.event_id || 
-      body.external_manychat_id || 
-      body.manychat_subscriber_id ||
-      body.external_ghl_id ||
-      body.ghl_contact_id ||
-      `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
-
-    // External IDs (support multiple naming conventions)
-    const manychatId = body.external_manychat_id || body.manychat_subscriber_id || body.subscriber_id || null;
-    const ghlId = body.external_ghl_id || body.ghl_contact_id || null;
-
-    // UTM fields (campaign is legacy alias for utm_campaign)
-    const utmSource = body.utm_source || null;
-    const utmMedium = body.utm_medium || null;
-    const utmCampaign = body.utm_campaign || body.campaign || null;
-    const utmContent = body.utm_content || null;
-    const utmTerm = body.utm_term || null;
-
-    // ============ SUPABASE CLIENT ============
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // ============ IDEMPOTENCY CHECK ============
+    // Idempotency check
     const { data: existingEvent } = await supabase
       .from('lead_events')
       .select('id')
@@ -144,49 +111,38 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existingEvent) {
-      console.log(`[${requestId}] Duplicate event - already processed: ${eventId}`);
-      return new Response(
-        JSON.stringify({ 
-          success: true, 
-          action: 'skipped', 
-          reason: 'duplicate_event',
-          event_id: eventId 
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return { success: true, action: 'skipped', event_id: eventId };
     }
 
-    // ============ FIND EXISTING CLIENT ============
-    let existingClient = null;
+    // Find existing client
+    let existingClient: ClientRecord | null = null;
     
-    // Priority 1: Find by email (most reliable)
+    // Priority search: email first, then phone, then external IDs
     if (emailNormalized) {
       const { data } = await supabase
         .from('clients')
         .select('*')
         .ilike('email', emailNormalized)
         .maybeSingle();
-      existingClient = data;
+      existingClient = data as ClientRecord | null;
     }
     
-    // Priority 2: Find by phone if no email match
     if (!existingClient && phoneNormalized) {
       const { data } = await supabase
         .from('clients')
         .select('*')
         .eq('phone', phoneNormalized)
         .maybeSingle();
-      existingClient = data;
+      existingClient = data as ClientRecord | null;
     }
 
-    // Priority 3: Find by external ID
     if (!existingClient && manychatId) {
       const { data } = await supabase
         .from('clients')
         .select('*')
         .eq('manychat_subscriber_id', manychatId)
         .maybeSingle();
-      existingClient = data;
+      existingClient = data as ClientRecord | null;
     }
     
     if (!existingClient && ghlId) {
@@ -195,32 +151,20 @@ Deno.serve(async (req) => {
         .select('*')
         .eq('ghl_contact_id', ghlId)
         .maybeSingle();
-      existingClient = data;
+      existingClient = data as ClientRecord | null;
     }
 
     let clientId: string;
     let action: 'created' | 'updated';
-    const eventTimestamp = body.timestamp ? new Date(body.timestamp) : new Date();
 
     if (existingClient) {
-      // ============ UPDATE EXISTING CLIENT ============
-      // Rule: Only fill nulls or update if incoming data is more recent
       const updates: Record<string, unknown> = {};
       
-      // Fill empty contact info
       if (!existingClient.email && emailNormalized) updates.email = emailNormalized;
       if (!existingClient.phone && phoneNormalized) updates.phone = phoneNormalized;
       if (!existingClient.full_name && fullName) updates.full_name = fullName;
-      
-      // Fill empty external IDs
-      if (!existingClient.manychat_subscriber_id && manychatId) {
-        updates.manychat_subscriber_id = manychatId;
-      }
-      if (!existingClient.ghl_contact_id && ghlId) {
-        updates.ghl_contact_id = ghlId;
-      }
-      
-      // Attribution - ONLY set if not already set (first touch wins)
+      if (!existingClient.manychat_subscriber_id && manychatId) updates.manychat_subscriber_id = manychatId;
+      if (!existingClient.ghl_contact_id && ghlId) updates.ghl_contact_id = ghlId;
       if (!existingClient.acquisition_source && source) updates.acquisition_source = source;
       if (!existingClient.utm_source && utmSource) updates.utm_source = utmSource;
       if (!existingClient.utm_medium && utmMedium) updates.utm_medium = utmMedium;
@@ -228,68 +172,53 @@ Deno.serve(async (req) => {
       if (!existingClient.utm_content && utmContent) updates.utm_content = utmContent;
       if (!existingClient.utm_term && utmTerm) updates.utm_term = utmTerm;
       
-      // Merge tags
       if (body.tags && body.tags.length > 0) {
         const existingTags = existingClient.tags || [];
-        const mergedTags = [...new Set([...existingTags, ...body.tags])];
-        updates.tags = mergedTags;
+        updates.tags = [...new Set([...existingTags, ...body.tags])];
       }
 
-      // Always update last_lead_at
       updates.last_lead_at = new Date().toISOString();
       updates.last_sync = new Date().toISOString();
 
       if (Object.keys(updates).length > 0) {
-        await supabase
-          .from('clients')
-          .update(updates)
-          .eq('id', existingClient.id);
+        await supabase.from('clients').update(updates).eq('id', existingClient.id);
       }
 
       clientId = existingClient.id;
       action = 'updated';
-      console.log(`[${requestId}] Updated existing client: ${clientId}`);
       
     } else {
-      // ============ CREATE NEW CLIENT ============
-      const newClient = {
-        email: emailNormalized,
-        phone: phoneNormalized,
-        full_name: fullName,
-        lifecycle_stage: 'LEAD',
-        lead_status: 'lead',
-        status: 'active',
-        acquisition_source: source,
-        utm_source: utmSource,
-        utm_medium: utmMedium,
-        utm_campaign: utmCampaign,
-        utm_content: utmContent,
-        utm_term: utmTerm,
-        first_seen_at: new Date().toISOString(),
-        last_lead_at: new Date().toISOString(),
-        manychat_subscriber_id: manychatId,
-        ghl_contact_id: ghlId,
-        tags: body.tags || [],
-        customer_metadata: body.metadata || {},
-      };
-
       const { data: created, error } = await supabase
         .from('clients')
-        .insert(newClient)
+        .insert({
+          email: emailNormalized,
+          phone: phoneNormalized,
+          full_name: fullName,
+          lifecycle_stage: 'LEAD',
+          lead_status: 'lead',
+          status: 'active',
+          acquisition_source: source,
+          utm_source: utmSource,
+          utm_medium: utmMedium,
+          utm_campaign: utmCampaign,
+          utm_content: utmContent,
+          utm_term: utmTerm,
+          first_seen_at: new Date().toISOString(),
+          last_lead_at: new Date().toISOString(),
+          manychat_subscriber_id: manychatId,
+          ghl_contact_id: ghlId,
+          tags: body.tags || [],
+          customer_metadata: body.metadata || {},
+        })
         .select('id')
         .single();
 
-      if (error) {
-        console.error(`[${requestId}] Error creating client:`, error);
-        throw error;
-      }
-
-      clientId = created.id;
+      if (error) throw error;
+      clientId = (created as { id: string }).id;
       action = 'created';
-      console.log(`[${requestId}] Created new lead: ${clientId}`);
     }
 
-    // ============ RECORD LEAD EVENT (idempotency) ============
+    // Record lead event
     await supabase.from('lead_events').insert({
       source,
       event_id: eventId,
@@ -301,18 +230,142 @@ Deno.serve(async (req) => {
       payload: body,
     });
 
+    return { success: true, action, client_id: clientId, event_id: eventId };
+    
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`[${requestId}] Lead error:`, msg);
+    return { success: false, action: 'error', error: msg, event_id: eventId };
+  }
+}
+
+// ============ BATCH PROCESSOR ============
+async function processBatch(
+  supabase: SupabaseClient,
+  leads: LeadPayload[],
+  sourceHeader: string,
+  requestId: string
+): Promise<{ processed: number; created: number; updated: number; skipped: number; errors: number }> {
+  let processed = 0;
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  // Process in parallel batches of 10
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+    const batch = leads.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(lead => processLead(supabase, lead, sourceHeader, requestId))
+    );
+    
+    for (const result of results) {
+      processed++;
+      if (!result.success) errors++;
+      else if (result.action === 'created') created++;
+      else if (result.action === 'updated') updated++;
+      else if (result.action === 'skipped') skipped++;
+    }
+    
+    if (processed % 100 === 0) {
+      console.log(`[${requestId}] Progress: ${processed}/${leads.length}`);
+    }
+  }
+
+  console.log(`[${requestId}] BATCH COMPLETE: ${processed} processed, ${created} created, ${updated} updated, ${skipped} skipped, ${errors} errors`);
+  return { processed, created, updated, skipped, errors };
+}
+
+// ============ MAIN HANDLER ============
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID().slice(0, 8);
+  
+  console.log(`[${requestId}] receive-lead: Start`);
+
+  try {
+    // Security check
+    const adminKey = Deno.env.get('ADMIN_API_KEY');
+    const providedKey = req.headers.get('x-admin-key');
+    
+    if (!adminKey) {
+      return new Response(
+        JSON.stringify({ error: 'Service not configured', code: 'MISSING_SECRET' }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    if (!providedKey || providedKey !== adminKey) {
+      console.warn(`[${requestId}] Invalid/missing X-ADMIN-KEY`);
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const sourceHeader = req.headers.get('x-source') || 'api';
+    const body = await req.json();
+
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
+    // ============ BATCH MODE ============
+    if (body.leads && Array.isArray(body.leads)) {
+      const leads: LeadPayload[] = body.leads;
+      const totalLeads = leads.length;
+      
+      console.log(`[${requestId}] BATCH MODE: Processing ${totalLeads} leads`);
+
+      // For batches > 50, use background processing
+      if (totalLeads > 50) {
+        const backgroundTask = processBatch(supabase, leads, sourceHeader, requestId);
+        EdgeRuntime.waitUntil(backgroundTask);
+        
+        return new Response(
+          JSON.stringify({ 
+            success: true, 
+            mode: 'async',
+            message: `Processing ${totalLeads} leads in background`,
+            total: totalLeads
+          }),
+          { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // For smaller batches, wait for result
+      const result = await processBatch(supabase, leads, sourceHeader, requestId);
+      const duration = Date.now() - startTime;
+      console.log(`[${requestId}] Completed in ${duration}ms`);
+
+      return new Response(
+        JSON.stringify({ success: true, mode: 'sync', ...result }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // ============ SINGLE LEAD MODE ============
+    const result = await processLead(supabase, body as LeadPayload, sourceHeader, requestId);
+    
     const duration = Date.now() - startTime;
-    console.log(`[${requestId}] Completed in ${duration}ms - Action: ${action}, ClientId: ${clientId}`);
+    console.log(`[${requestId}] Completed in ${duration}ms - Action: ${result.action}`);
 
     return new Response(
       JSON.stringify({ 
-        success: true, 
-        action, 
-        client_id: clientId,
-        source,
-        event_id: eventId 
+        success: result.success, 
+        action: result.action, 
+        client_id: result.client_id,
+        source: body.source || sourceHeader,
+        event_id: result.event_id,
+        error: result.error
       }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: result.success ? 200 : 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
@@ -324,40 +377,3 @@ Deno.serve(async (req) => {
     );
   }
 });
-
-function normalizePhone(phone?: string): string | null {
-  if (!phone) return null;
-  
-  // Remove all non-digit characters except leading +
-  let cleaned = phone.replace(/[^\d+]/g, '');
-  
-  // If starts with +, keep it
-  if (cleaned.startsWith('+')) {
-    return cleaned;
-  }
-  
-  // Remove leading zeros
-  cleaned = cleaned.replace(/^0+/, '');
-  
-  // Handle Mexican numbers (10 digits)
-  if (cleaned.length === 10) {
-    return '+52' + cleaned;
-  }
-  
-  // Handle US numbers (10 digits starting with area code, or 11 starting with 1)
-  if (cleaned.length === 11 && cleaned.startsWith('1')) {
-    return '+' + cleaned;
-  }
-  
-  // If already has country code (12+ digits for Mexico, 11 for US)
-  if (cleaned.length >= 11) {
-    return '+' + cleaned;
-  }
-  
-  // Return with + prefix if valid length
-  if (cleaned.length >= 10) {
-    return '+' + cleaned;
-  }
-  
-  return null; // Invalid phone
-}
