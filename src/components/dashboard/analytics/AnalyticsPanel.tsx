@@ -4,6 +4,7 @@ import { LTVMetrics } from "./LTVMetrics";
 import { RevenueByPlanChart } from "./RevenueByPlanChart";
 import { SourceAnalytics } from "./SourceAnalytics";
 import { AnalyzeButton } from "./AnalyzeButton";
+import { AIInsightsWidget } from "../AIInsightsWidget";
 import { Transaction } from "@/hooks/useTransactions";
 import { Client } from "@/hooks/useClients";
 import { Sparkles } from "lucide-react";
@@ -32,6 +33,9 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
         </div>
         <AnalyzeButton />
       </div>
+
+      {/* AI Insights Results - Shows the last analysis */}
+      <AIInsightsWidget />
 
       <Tabs defaultValue="source" className="space-y-4">
         <TabsList>
