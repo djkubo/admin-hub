@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Filter, Smartphone, Facebook } from 'lucide-react';
+import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Smartphone, Facebook, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -23,7 +23,8 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
-import { openWhatsApp } from './RecoveryTable';
+import { openWhatsApp, openNativeSms } from './RecoveryTable';
+import { supportsNativeSms } from '@/lib/nativeSms';
 import { useMetrics } from '@/hooks/useMetrics';
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
@@ -85,6 +86,17 @@ export function RecoveryPage() {
     
     const message = messageTemplates[template](client.full_name || '', client.amount);
     openWhatsApp(client.phone, client.full_name || '', message);
+    
+    if (getStage(client.email) === 'pending') {
+      setStage(client.email, 'contacted');
+    }
+  };
+
+  const handleNativeSms = (client: RecoveryClient, template: 'friendly' | 'urgent' | 'final') => {
+    if (!client.phone) return;
+    
+    const message = messageTemplates[template](client.full_name || '', client.amount);
+    openNativeSms(client.phone, message);
     
     if (getStage(client.email) === 'pending') {
       setStage(client.email, 'contacted');
@@ -260,24 +272,26 @@ export function RecoveryPage() {
               const StageIcon = config.icon;
 
               return (
-                <div key={index} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
-                  <div className="flex items-start justify-between mb-3">
+                <div key={index} className="rounded-xl border border-border/50 bg-card p-3 touch-feedback">
+                  {/* Header row: Name + Amount */}
+                  <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-foreground truncate">
+                      <p className="font-medium text-sm text-foreground truncate">
                         {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
                       </p>
-                      <p className="text-xs text-muted-foreground truncate">{client.email}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{client.email}</p>
                     </div>
-                    <span className="text-lg font-bold text-red-400 ml-2">
-                      ${client.amount.toFixed(2)}
+                    <span className="text-base font-bold text-red-400 shrink-0">
+                      ${client.amount.toFixed(0)}
                     </span>
                   </div>
                   
-                  <div className="flex items-center gap-2 mb-3">
+                  {/* Info row: Stage + Source */}
+                  <div className="flex items-center gap-1.5 mb-3 flex-wrap">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Badge variant="outline" className={`cursor-pointer text-xs ${config.color}`}>
-                          <StageIcon className="h-3 w-3 mr-1" />
+                        <Badge variant="outline" className={`cursor-pointer text-[10px] px-1.5 py-0 h-5 ${config.color}`}>
+                          <StageIcon className="h-2.5 w-2.5 mr-0.5" />
                           {config.label}
                         </Badge>
                       </DropdownMenuTrigger>
@@ -290,21 +304,22 @@ export function RecoveryPage() {
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
-                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-xs">
+                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] px-1.5 py-0 h-5">
                       {client.source}
                     </Badge>
-                    {client.phone && (
-                      <span className="text-xs text-muted-foreground truncate">{client.phone}</span>
-                    )}
                   </div>
 
-                  {/* Action buttons */}
-                  <div className="flex items-center gap-2 flex-wrap">
+                  {/* Action buttons - Grid layout for better mobile fit */}
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {/* ManyChat */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button size="sm" variant="outline" className="gap-1.5 text-xs border-[#0084FF]/30 text-[#0084FF] h-8 touch-feedback">
-                          <Facebook className="h-3.5 w-3.5" />
-                          FB
+                        <Button 
+                          size="sm" 
+                          className="h-9 w-full flex-col gap-0.5 bg-[#0084FF]/10 hover:bg-[#0084FF]/20 text-[#0084FF] border border-[#0084FF]/30 p-1"
+                        >
+                          <Facebook className="h-4 w-4" />
+                          <span className="text-[9px] font-medium">FB</span>
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="bg-popover border-border">
@@ -314,37 +329,73 @@ export function RecoveryPage() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    {client.phone && (
-                      <>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" variant="outline" className="gap-1.5 text-xs border-blue-500/30 text-blue-400 h-8 touch-feedback">
-                              <Smartphone className="h-3.5 w-3.5" />
-                              SMS
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="bg-popover border-border">
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                    {/* SMS API */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button 
+                          size="sm" 
+                          disabled={!client.phone}
+                          className="h-9 w-full flex-col gap-0.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 p-1 disabled:opacity-40"
+                        >
+                          <Phone className="h-4 w-4" />
+                          <span className="text-[9px] font-medium">SMS</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="bg-popover border-border">
+                        <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
 
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="gap-1.5 text-xs bg-[#25D366] hover:bg-[#1da851] text-white h-8 touch-feedback">
-                              <MessageCircle className="h-3.5 w-3.5" />
-                              WA
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="bg-popover border-border">
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </>
+                    {/* Native SMS (iPhone) */}
+                    {supportsNativeSms() ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button 
+                            size="sm" 
+                            disabled={!client.phone}
+                            className="h-9 w-full flex-col gap-0.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 p-1 disabled:opacity-40"
+                          >
+                            <Smartphone className="h-4 w-4" />
+                            <span className="text-[9px] font-medium">Nativo</span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="center" className="bg-popover border-border">
+                          <DropdownMenuItem onClick={() => handleNativeSms(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleNativeSms(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleNativeSms(client, 'final')}>🚨 Último</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : (
+                      <Button 
+                        size="sm" 
+                        disabled
+                        className="h-9 w-full flex-col gap-0.5 bg-muted/20 text-muted-foreground/40 border border-border/30 p-1"
+                      >
+                        <Smartphone className="h-4 w-4" />
+                        <span className="text-[9px] font-medium">Nativo</span>
+                      </Button>
                     )}
+
+                    {/* WhatsApp */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button 
+                          size="sm" 
+                          disabled={!client.phone}
+                          className="h-9 w-full flex-col gap-0.5 bg-[#25D366] hover:bg-[#1da851] text-white p-1 disabled:opacity-40"
+                        >
+                          <MessageCircle className="h-4 w-4" />
+                          <span className="text-[9px] font-medium">WA</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="bg-popover border-border">
+                        <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
               );
@@ -434,31 +485,50 @@ export function RecoveryPage() {
 
                             {client.phone && (
                               <>
+                                {/* SMS via API */}
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button size="sm" variant="outline" className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10">
-                                      <Smartphone className="h-4 w-4" />
+                                    <Button size="sm" variant="outline" className="gap-1.5 border-blue-500/30 text-blue-400 hover:bg-blue-500/10">
+                                      <Phone className="h-4 w-4" />
                                       SMS
                                     </Button>
                                   </DropdownMenuTrigger>
                                   <DropdownMenuContent align="end" className="bg-popover border-border">
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Mensaje Amigable</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Mensaje Urgente</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último Aviso</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último</DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
 
+                                {/* Native SMS (shows on mobile/tablet) */}
+                                {supportsNativeSms() && (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button size="sm" variant="outline" className="gap-1.5 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10">
+                                        <Smartphone className="h-4 w-4" />
+                                        Nativo
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end" className="bg-popover border-border">
+                                      <DropdownMenuItem onClick={() => handleNativeSms(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handleNativeSms(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handleNativeSms(client, 'final')}>🚨 Último</DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )}
+
+                                {/* WhatsApp */}
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button size="sm" className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white">
+                                    <Button size="sm" className="gap-1.5 bg-[#25D366] hover:bg-[#1da851] text-white">
                                       <MessageCircle className="h-4 w-4" />
-                                      WhatsApp
+                                      WA
                                     </Button>
                                   </DropdownMenuTrigger>
                                   <DropdownMenuContent align="end" className="bg-popover border-border">
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Mensaje Amigable</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Mensaje Urgente</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último Aviso</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último</DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               </>
