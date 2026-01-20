@@ -4,6 +4,7 @@ project_id = "qskmzaxzhkrlchycbria"
 # WEBHOOKS EXTERNOS (verify_jwt = false)
 # Estos endpoints reciben llamadas de Stripe/PayPal
 # La seguridad se maneja con verificación de firma
+# Responden 503 si los secrets no están configurados
 # ============================================
 [functions.stripe-webhook]
 verify_jwt = false
@@ -15,56 +16,57 @@ verify_jwt = false
 verify_jwt = false
 
 # ============================================
-# FUNCIONES INTERNAS (verify_jwt = true)
-# Requieren JWT válido + validación is_admin()
+# FUNCIONES INTERNAS
+# verify_jwt = false (validación en código con getClaims)
+# Requieren JWT válido + is_admin() en código
 # ============================================
 [functions.fetch-stripe]
-verify_jwt = true
+verify_jwt = false
 
 [functions.fetch-paypal]
-verify_jwt = true
+verify_jwt = false
 
 [functions.fetch-invoices]
-verify_jwt = true
+verify_jwt = false
 
 [functions.fetch-subscriptions]
-verify_jwt = true
+verify_jwt = false
 
 [functions.analyze-business]
-verify_jwt = true
+verify_jwt = false
 
 [functions.sync-clients]
-verify_jwt = true
+verify_jwt = false
 
 [functions.create-portal-session]
-verify_jwt = true
+verify_jwt = false
 
 [functions.force-charge-invoice]
-verify_jwt = true
+verify_jwt = false
 
 [functions.recover-revenue]
-verify_jwt = true
+verify_jwt = false
 
 [functions.notify-ghl]
-verify_jwt = true
+verify_jwt = false
 
 [functions.send-sms]
-verify_jwt = true
+verify_jwt = false
 
 [functions.send-manychat]
-verify_jwt = true
+verify_jwt = false
 
 [functions.execute-campaign]
-verify_jwt = true
+verify_jwt = false
 
 [functions.send-campaign]
-verify_jwt = true
+verify_jwt = false
 
 [functions.sync-ghl]
-verify_jwt = true
+verify_jwt = false
 
 [functions.sync-manychat]
-verify_jwt = true
+verify_jwt = false
 
 [functions.reconcile-metrics]
-verify_jwt = true
+verify_jwt = false

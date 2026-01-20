@@ -20,13 +20,11 @@ async function verifyPayPalWebhook(req: Request, body: string): Promise<{ verifi
   const clientSecret = Deno.env.get('PAYPAL_SECRET');
   
   if (!webhookId) {
-    console.warn('⚠️ PAYPAL_WEBHOOK_ID not configured - signature NOT verified (unsafe for production)');
-    return { verified: true }; // Allow if not configured (dev mode)
+    return { verified: false, error: 'PAYPAL_WEBHOOK_ID not configured' };
   }
 
   if (!clientId || !clientSecret) {
-    console.error('❌ PAYPAL_CLIENT_ID or PAYPAL_SECRET not configured');
-    return { verified: false, error: 'Missing PayPal credentials' };
+    return { verified: false, error: 'PAYPAL_CLIENT_ID or PAYPAL_SECRET not configured' };
   }
 
   const transmissionId = req.headers.get('paypal-transmission-id');
@@ -36,8 +34,7 @@ async function verifyPayPalWebhook(req: Request, body: string): Promise<{ verifi
   const authAlgo = req.headers.get('paypal-auth-algo');
 
   if (!transmissionId || !transmissionTime || !transmissionSig) {
-    console.error('❌ Missing PayPal signature headers');
-    return { verified: false, error: 'Missing signature headers' };
+    return { verified: false, error: 'Missing PayPal signature headers' };
   }
 
   try {
@@ -200,19 +197,39 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const webhookId = Deno.env.get('PAYPAL_WEBHOOK_ID');
+    const clientId = Deno.env.get('PAYPAL_CLIENT_ID');
+    const clientSecret = Deno.env.get('PAYPAL_SECRET');
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error('Missing required environment variables');
+      console.error('❌ Missing required environment variables');
+      return new Response(
+        JSON.stringify({ error: 'Server configuration error', code: 'MISSING_ENV' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // SECURITY: REQUIRE webhook configuration - reject if not configured
+    if (!webhookId || !clientId || !clientSecret) {
+      console.error('❌ PayPal webhook not fully configured - webhook disabled for security');
+      return new Response(
+        JSON.stringify({ 
+          error: 'Webhook not configured', 
+          code: 'MISSING_WEBHOOK_CONFIG',
+          message: 'PAYPAL_WEBHOOK_ID, PAYPAL_CLIENT_ID, and PAYPAL_SECRET must all be configured'
+        }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     const body = await req.text();
 
-    // SECURITY: Verify PayPal signature (REQUIRED for production)
+    // SECURITY: Verify PayPal signature (REQUIRED)
     const verification = await verifyPayPalWebhook(req, body);
     if (!verification.verified) {
       console.error('❌ PayPal signature verification failed:', verification.error);
       return new Response(
-        JSON.stringify({ error: 'Invalid signature', details: verification.error }),
+        JSON.stringify({ error: 'Invalid signature', code: 'INVALID_SIGNATURE', details: verification.error }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
