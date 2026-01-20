@@ -279,93 +279,99 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   };
 
   return (
-    <div className="space-y-6">
-      {/* A) Top Bar */}
-      <div className="flex items-center justify-between bg-card rounded-xl border border-border/50 p-4">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-primary" />
-            <h1 className="text-lg font-semibold text-foreground">Command Center</h1>
+    <div className="space-y-4 md:space-y-6">
+      {/* A) Top Bar - Responsive */}
+      <div className="bg-card rounded-xl border border-border/50 p-3 md:p-4">
+        {/* Mobile: Stack vertically */}
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          {/* Title + Filters */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+            <div className="flex items-center gap-2">
+              <Zap className="h-5 w-5 text-primary" />
+              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center</h1>
+            </div>
+            
+            {/* Time filter - scrollable on mobile */}
+            <div className="flex rounded-lg border border-border/50 overflow-x-auto">
+              {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${
+                    filter === f
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-card text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {filterLabels[f]}
+                </button>
+              ))}
+            </div>
           </div>
-          
-          {/* Time filter */}
-          <div className="flex rounded-lg border border-border/50 overflow-hidden">
-            {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
-                  filter === f
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-card text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {filterLabels[f]}
-              </button>
-            ))}
-          </div>
-        </div>
 
-        <div className="flex items-center gap-4">
-          {/* Last Sync Status */}
-          <div className="flex items-center gap-2 text-sm">
-            <Clock className="h-4 w-4 text-muted-foreground" />
-            <span className="text-muted-foreground">
-              {lastSync ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es }) : 'Sin sync'}
-            </span>
-            {syncStatus && (
-              <Badge variant="outline" className={syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}>
-                {syncStatus === 'ok' ? <CheckCircle className="h-3 w-3 mr-1" /> : <AlertTriangle className="h-3 w-3 mr-1" />}
-                {syncStatus === 'ok' ? 'OK' : 'Warnings'}
-              </Badge>
+          {/* Sync section */}
+          <div className="flex items-center justify-between sm:justify-end gap-3">
+            {/* Last Sync Status - hide time text on mobile */}
+            <div className="flex items-center gap-2 text-xs md:text-sm">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground hidden sm:inline">
+                {lastSync ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es }) : 'Sin sync'}
+              </span>
+              {syncStatus && (
+                <Badge variant="outline" className={`text-xs ${syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
+                  {syncStatus === 'ok' ? <CheckCircle className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+                </Badge>
+              )}
+            </div>
+
+            {/* Sync All Dropdown */}
+            {isSyncing ? (
+              <Button
+                disabled
+                size="sm"
+                className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
+              </Button>
+            ) : (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 text-xs md:text-sm touch-feedback"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    <span className="hidden sm:inline">Sync All</span>
+                    <ChevronDown className="h-3 w-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48 bg-popover border-border">
+                  <DropdownMenuItem onClick={() => handleSyncAll('today')} className="touch-feedback">
+                    <Clock className="h-4 w-4 mr-2" />
+                    Hoy (24h)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSyncAll('7d')} className="touch-feedback">
+                    <Clock className="h-4 w-4 mr-2" />
+                    Últimos 7 días
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSyncAll('month')} className="touch-feedback">
+                    <Clock className="h-4 w-4 mr-2" />
+                    Último mes
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSyncAll('full')} className="text-amber-400 touch-feedback">
+                    <Zap className="h-4 w-4 mr-2" />
+                    Todo (3 años)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
-
-          {/* Sync All Dropdown */}
-          {isSyncing ? (
-            <Button
-              disabled
-              className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 min-w-[140px]"
-            >
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {syncProgress || 'Syncing...'}
-            </Button>
-          ) : (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 min-w-[140px]"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Sync All
-                  <ChevronDown className="h-3 w-3 ml-1" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={() => handleSyncAll('today')}>
-                  <Clock className="h-4 w-4 mr-2" />
-                  Hoy (24h)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleSyncAll('7d')}>
-                  <Clock className="h-4 w-4 mr-2" />
-                  Últimos 7 días
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleSyncAll('month')}>
-                  <Clock className="h-4 w-4 mr-2" />
-                  Último mes
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleSyncAll('full')} className="text-amber-400">
-                  <Zap className="h-4 w-4 mr-2" />
-                  Todo el historial (3 años)
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
         </div>
       </div>
 
-      {/* B) 6 KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      {/* B) 6 KPI Cards - 2 cols on mobile, 3 on tablet, 6 on desktop */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 md:gap-4">
         {cards.map((card, index) => {
           const colors = getColorClasses(card.color);
           const Icon = card.icon;
@@ -383,51 +389,51 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           return (
             <div
               key={index}
-              className={`rounded-xl border ${colors.border} bg-card p-4 transition-all hover:shadow-lg`}
+              className={`rounded-xl border ${colors.border} bg-card p-3 md:p-4 transition-all hover:shadow-lg touch-feedback`}
             >
-              <div className={`inline-flex p-2 rounded-lg ${colors.bg} mb-2`}>
-                <Icon className={`h-4 w-4 ${colors.icon}`} />
+              <div className={`inline-flex p-1.5 md:p-2 rounded-lg ${colors.bg} mb-1.5 md:mb-2`}>
+                <Icon className={`h-3.5 w-3.5 md:h-4 md:w-4 ${colors.icon}`} />
               </div>
-              <p className="text-xs text-muted-foreground">{card.title}</p>
-              <p className={`text-2xl font-bold ${card.isNegative && typeof card.value === 'number' && card.value > 0 ? 'text-red-400' : 'text-foreground'}`}>
+              <p className="text-[10px] md:text-xs text-muted-foreground">{card.title}</p>
+              <p className={`text-lg md:text-2xl font-bold ${card.isNegative && typeof card.value === 'number' && card.value > 0 ? 'text-red-400' : 'text-foreground'}`}>
                 {card.value}
               </p>
-              <p className={`text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
+              <p className={`text-[9px] md:text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
             </div>
           );
         })}
       </div>
 
-      {/* C) 3 Short Lists with CTAs */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* C) 3 Short Lists with CTAs - Stack on mobile */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
         {/* Top 10 Failures with Phone */}
         <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-border/50">
+          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-amber-500" />
-              <h3 className="font-semibold text-foreground">Fallos con Teléfono</h3>
+              <h3 className="text-sm md:text-base font-semibold text-foreground">Fallos con Tel</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1">
-              Ver todo <ChevronRight className="h-3 w-3" />
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1 touch-feedback">
+              Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
             {top10Failures.length === 0 ? (
               <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
-                Sin fallos con teléfono
+                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin fallos
               </div>
             ) : (
               top10Failures.map((client, i) => (
-                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
-                    <p className="text-xs text-red-400">${client.amount.toFixed(2)}</p>
+                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
+                    <p className="text-[10px] md:text-xs text-red-400">${client.amount.toFixed(2)}</p>
                   </div>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="text-[#25D366] hover:bg-[#25D366]/10"
+                    className="text-[#25D366] hover:bg-[#25D366]/10 h-8 w-8 p-0"
                     onClick={() => openWhatsApp(client.phone!, client.full_name || '', getRecoveryMessage(client.full_name || '', client.amount))}
                   >
                     <MessageCircle className="h-4 w-4" />
@@ -440,35 +446,35 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
         {/* Top 10 Invoices to Collect */}
         <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-border/50">
+          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-blue-500" />
-              <h3 className="font-semibold text-foreground">Facturas por Cobrar</h3>
+              <h3 className="text-sm md:text-base font-semibold text-foreground">Por Cobrar</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1">
-              Ver todo <ChevronRight className="h-3 w-3" />
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1 touch-feedback">
+              Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
             {top10Invoices.length === 0 ? (
               <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
-                Sin facturas pendientes
+                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin pendientes
               </div>
             ) : (
               top10Invoices.map((invoice, i) => (
-                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
-                    <p className="text-xs text-muted-foreground">
-                      ${(invoice.amount_due / 100).toFixed(2)} - {invoice.status}
+                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
+                    <p className="text-[10px] md:text-xs text-muted-foreground">
+                      ${(invoice.amount_due / 100).toFixed(2)}
                     </p>
                   </div>
                   {invoice.hosted_invoice_url && (
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="text-blue-400 hover:bg-blue-500/10"
+                      className="text-blue-400 hover:bg-blue-500/10 h-8 w-8 p-0"
                       onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
                     >
                       <FileText className="h-4 w-4" />
@@ -481,33 +487,33 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         </div>
 
         {/* Top 10 Trials Expiring */}
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-border/50">
+        <div className="rounded-xl border border-border/50 bg-card overflow-hidden md:col-span-2 lg:col-span-1">
+          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
             <div className="flex items-center gap-2">
               <CreditCard className="h-4 w-4 text-purple-500" />
-              <h3 className="font-semibold text-foreground">Trials por Vencer</h3>
+              <h3 className="text-sm md:text-base font-semibold text-foreground">Trials por Vencer</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1">
-              Ver todo <ChevronRight className="h-3 w-3" />
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1 touch-feedback">
+              Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
             {top10ExpiringTrials.length === 0 ? (
               <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
-                Sin trials por vencer
+                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin trials
               </div>
             ) : (
               top10ExpiringTrials.map((sub, i) => (
-                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {sub.plan_name} - Vence {formatDistanceToNow(new Date(sub.trial_end!), { addSuffix: true, locale: es })}
+                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
+                    <p className="text-[10px] md:text-xs text-muted-foreground">
+                      {sub.plan_name}
                     </p>
                   </div>
-                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-xs">
-                    Trial
+                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] md:text-xs">
+                    {formatDistanceToNow(new Date(sub.trial_end!), { locale: es })}
                   </Badge>
                 </div>
               ))
@@ -518,16 +524,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
       {/* Failure reasons inline */}
       {kpis.failureReasons.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap p-4 bg-card rounded-xl border border-border/50">
-          <span className="text-xs text-amber-400 flex items-center gap-1">
+        <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
+          <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
             <AlertTriangle className="h-3 w-3" />
-            Razones de fallo:
+            Razones:
           </span>
-          {kpis.failureReasons.slice(0, 5).map((reason, i) => (
+          {kpis.failureReasons.slice(0, 3).map((reason, i) => (
             <Badge
               key={i}
               variant="outline"
-              className="text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
+              className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
             >
               {reason.reason}: {reason.count}
             </Badge>
