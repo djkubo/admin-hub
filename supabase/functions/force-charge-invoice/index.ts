@@ -2,19 +2,34 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 serve(async (req) => {
-  // Handle CORS preflight requests
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Verify authentication
+    // SECURITY: Verify JWT authentication
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
@@ -29,7 +44,6 @@ serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // Verify the user is authenticated
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) {
       return new Response(
@@ -60,26 +74,22 @@ serve(async (req) => {
       apiVersion: "2023-10-16",
     });
 
-    // Get invoice current status
     const invoice = await stripe.invoices.retrieve(stripe_invoice_id);
     console.log("📄 Invoice status:", invoice.status);
 
     let finalizedInvoice = invoice;
 
-    // If draft, finalize it first
     if (invoice.status === "draft") {
       console.log("📝 Finalizing draft invoice...");
       finalizedInvoice = await stripe.invoices.finalizeInvoice(stripe_invoice_id);
       console.log("✅ Invoice finalized, new status:", finalizedInvoice.status);
     }
 
-    // If open, attempt to pay
     if (finalizedInvoice.status === "open") {
       console.log("💰 Attempting to pay invoice...");
       const paidInvoice = await stripe.invoices.pay(stripe_invoice_id);
       console.log("✅ Payment attempted, status:", paidInvoice.status);
 
-      // Update local database
       const serviceClient = createClient(
         Deno.env.get("SUPABASE_URL")!,
         Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -106,7 +116,6 @@ serve(async (req) => {
       );
     }
 
-    // Already paid or in invalid state
     return new Response(
       JSON.stringify({ 
         success: false, 
@@ -117,9 +126,9 @@ serve(async (req) => {
     );
 
   } catch (error: unknown) {
+    const origin = req.headers.get("origin");
     console.error("❌ Error charging invoice:", error);
     
-    // Handle Stripe-specific errors - they have a 'type' or 'code' property
     const stripeError = error as { 
       type?: string; 
       message?: string; 
@@ -128,7 +137,6 @@ serve(async (req) => {
       raw?: { message?: string; code?: string; decline_code?: string };
     };
     
-    // Check for card/payment errors (Stripe SDK throws these for declined cards)
     const errorMsg = stripeError.message?.toLowerCase() || "";
     const isPaymentError = 
       stripeError.type === "StripeCardError" ||
@@ -156,14 +164,14 @@ serve(async (req) => {
           decline_code: stripeError.decline_code || stripeError.raw?.decline_code,
           message: `Pago rechazado: ${stripeError.message || "Error de tarjeta"}`
         }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 200, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
       );
     }
 
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return new Response(
       JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
     );
   }
 });

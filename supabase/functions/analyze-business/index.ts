@@ -1,10 +1,23 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+    ? origin 
+    : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 interface ActionableSegment {
   segment: string;
@@ -38,12 +51,42 @@ interface DailyMetrics {
 }
 
 serve(async (req) => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    // SECURITY: Verify JWT authentication
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    
+    if (claimsError || !claimsData?.user) {
+      console.error("Auth error:", claimsError);
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", claimsData.user.email);
+
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
 
@@ -55,18 +98,14 @@ serve(async (req) => {
 
     console.log('🧠 Starting comprehensive daily analysis...');
 
-    // Date ranges
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
     const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
     const last7Days = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const last30Days = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const segments: ActionableSegment[] = [];
 
-    // ============================================
-    // 1. FAILED PAYMENTS (LAST 7 DAYS) - HIGH PRIORITY
-    // ============================================
+    // 1. FAILED PAYMENTS (LAST 7 DAYS)
     const { data: failedTx } = await supabase
       .from('transactions')
       .select('customer_email, amount, currency, stripe_created_at, failure_message')
@@ -100,9 +139,7 @@ serve(async (req) => {
     segments.push(failedPaymentsSegment);
     console.log('❌ Failed payments:', failedPaymentsSegment.count);
 
-    // ============================================
-    // 2. CANCELLATIONS (LAST 7 DAYS) - HIGH PRIORITY
-    // ============================================
+    // 2. CANCELLATIONS
     const { data: cancelledClients } = await supabase
       .from('clients')
       .select('email, full_name, status, created_at')
@@ -125,9 +162,7 @@ serve(async (req) => {
     segments.push(cancellationsSegment);
     console.log('🚪 Cancellations:', cancellationsSegment.count);
 
-    // ============================================
-    // 3. NEW TRIALS (LAST 7 DAYS) - MEDIUM PRIORITY
-    // ============================================
+    // 3. NEW TRIALS
     const { data: newTrials } = await supabase
       .from('clients')
       .select('email, full_name, trial_started_at, status')
@@ -149,9 +184,7 @@ serve(async (req) => {
     segments.push(trialsSegment);
     console.log('🆓 New trials:', trialsSegment.count);
 
-    // ============================================
-    // 4. NEW CUSTOMERS/CONVERSIONS (LAST 7 DAYS) - MEDIUM PRIORITY
-    // ============================================
+    // 4. NEW CUSTOMERS
     const { data: newCustomers } = await supabase
       .from('clients')
       .select('email, full_name, converted_at, total_paid')
@@ -174,9 +207,7 @@ serve(async (req) => {
     segments.push(conversionsSegment);
     console.log('💳 New conversions:', conversionsSegment.count);
 
-    // ============================================
-    // 5. NEW LEADS/REGISTRATIONS (LAST 7 DAYS) - LOW PRIORITY
-    // ============================================
+    // 5. NEW LEADS
     const { data: newLeads } = await supabase
       .from('clients')
       .select('email, full_name, created_at')
@@ -198,10 +229,7 @@ serve(async (req) => {
     segments.push(leadsSegment);
     console.log('📥 New leads:', leadsSegment.count);
 
-    // ============================================
-    // 6. CHURN RISK (TRIALS EXPIRING SOON) - HIGH PRIORITY
-    // ============================================
-    const trialExpiryThreshold = new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    // 6. CHURN RISK
     const { data: expiringTrials } = await supabase
       .from('clients')
       .select('email, full_name, trial_started_at')
@@ -224,9 +252,7 @@ serve(async (req) => {
     segments.push(churnRiskSegment);
     console.log('⚠️ Churn risk:', churnRiskSegment.count);
 
-    // ============================================
-    // 7. HIGH VALUE CUSTOMERS (TOP SPENDERS) - MEDIUM PRIORITY
-    // ============================================
+    // 7. VIP CUSTOMERS
     const { data: topSpenders } = await supabase
       .from('clients')
       .select('email, full_name, total_paid')
@@ -249,9 +275,7 @@ serve(async (req) => {
     segments.push(vipSegment);
     console.log('👑 VIP customers:', vipSegment.count);
 
-    // ============================================
-    // CALCULATE TODAY'S SALES
-    // ============================================
+    // TODAY'S SALES
     const { data: todayTx } = await supabase
       .from('transactions')
       .select('amount, currency, status')
@@ -269,9 +293,6 @@ serve(async (req) => {
       }
     });
 
-    // ============================================
-    // BUILD DAILY METRICS
-    // ============================================
     const dailyMetrics: DailyMetrics = {
       date: today.toISOString().split('T')[0],
       summary: {
@@ -288,9 +309,6 @@ serve(async (req) => {
       segments,
     };
 
-    // ============================================
-    // CALL OPENAI FOR STRATEGIC ANALYSIS
-    // ============================================
     console.log('🤖 Calling OpenAI for strategic analysis...');
 
     const aiPrompt = `Eres un consultor de negocios SaaS experto. Analiza estos datos del día y genera un reporte ejecutivo accionable.
@@ -387,7 +405,6 @@ Responde en JSON:
       };
     }
 
-    // Save to ai_insights table
     const todayDate = today.toISOString().split('T')[0];
     
     const { data: insertedInsight, error: insertError } = await supabase
@@ -424,12 +441,13 @@ Responde en JSON:
     });
 
   } catch (error) {
+    const origin = req.headers.get("origin");
     console.error('❌ Error in analyze-business:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Unknown error' 
     }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
     });
   }
 });
