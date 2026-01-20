@@ -358,57 +358,149 @@ export type Database = {
           created_at: string | null
           customer_metadata: Json | null
           email: string | null
+          email_opt_in: boolean | null
           full_name: string | null
+          ghl_contact_id: string | null
           id: string
           is_delinquent: boolean | null
           last_sync: string | null
           lifecycle_stage: string | null
+          manychat_subscriber_id: string | null
+          needs_review: boolean | null
           payment_status: string | null
           phone: string | null
           revenue_score: number | null
+          review_reason: string | null
+          sms_opt_in: boolean | null
           status: string | null
           stripe_customer_id: string | null
+          tags: string[] | null
           total_paid: number | null
           total_spend: number | null
           trial_started_at: string | null
+          wa_opt_in: boolean | null
         }
         Insert: {
           converted_at?: string | null
           created_at?: string | null
           customer_metadata?: Json | null
           email?: string | null
+          email_opt_in?: boolean | null
           full_name?: string | null
+          ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
           last_sync?: string | null
           lifecycle_stage?: string | null
+          manychat_subscriber_id?: string | null
+          needs_review?: boolean | null
           payment_status?: string | null
           phone?: string | null
           revenue_score?: number | null
+          review_reason?: string | null
+          sms_opt_in?: boolean | null
           status?: string | null
           stripe_customer_id?: string | null
+          tags?: string[] | null
           total_paid?: number | null
           total_spend?: number | null
           trial_started_at?: string | null
+          wa_opt_in?: boolean | null
         }
         Update: {
           converted_at?: string | null
           created_at?: string | null
           customer_metadata?: Json | null
           email?: string | null
+          email_opt_in?: boolean | null
           full_name?: string | null
+          ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
           last_sync?: string | null
           lifecycle_stage?: string | null
+          manychat_subscriber_id?: string | null
+          needs_review?: boolean | null
           payment_status?: string | null
           phone?: string | null
           revenue_score?: number | null
+          review_reason?: string | null
+          sms_opt_in?: boolean | null
           status?: string | null
           stripe_customer_id?: string | null
+          tags?: string[] | null
           total_paid?: number | null
           total_spend?: number | null
           trial_started_at?: string | null
+          wa_opt_in?: boolean | null
+        }
+        Relationships: []
+      }
+      contact_identities: {
+        Row: {
+          client_id: string | null
+          created_at: string
+          email_normalized: string | null
+          external_id: string
+          id: string
+          phone_e164: string | null
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          client_id?: string | null
+          created_at?: string
+          email_normalized?: string | null
+          external_id: string
+          id?: string
+          phone_e164?: string | null
+          source: string
+          updated_at?: string
+        }
+        Update: {
+          client_id?: string | null
+          created_at?: string
+          email_normalized?: string | null
+          external_id?: string
+          id?: string
+          phone_e164?: string | null
+          source?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_identities_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ghl_contacts_raw: {
+        Row: {
+          external_id: string
+          fetched_at: string
+          id: string
+          payload: Json
+          processed_at: string | null
+          sync_run_id: string | null
+        }
+        Insert: {
+          external_id: string
+          fetched_at?: string
+          id?: string
+          payload: Json
+          processed_at?: string | null
+          sync_run_id?: string | null
+        }
+        Update: {
+          external_id?: string
+          fetched_at?: string
+          id?: string
+          payload?: Json
+          processed_at?: string | null
+          sync_run_id?: string | null
         }
         Relationships: []
       }
@@ -456,6 +548,99 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      manychat_contacts_raw: {
+        Row: {
+          fetched_at: string
+          id: string
+          payload: Json
+          processed_at: string | null
+          subscriber_id: string
+          sync_run_id: string | null
+        }
+        Insert: {
+          fetched_at?: string
+          id?: string
+          payload: Json
+          processed_at?: string | null
+          subscriber_id: string
+          sync_run_id?: string | null
+        }
+        Update: {
+          fetched_at?: string
+          id?: string
+          payload?: Json
+          processed_at?: string | null
+          subscriber_id?: string
+          sync_run_id?: string | null
+        }
+        Relationships: []
+      }
+      merge_conflicts: {
+        Row: {
+          conflict_type: string
+          created_at: string
+          email_found: string | null
+          external_id: string
+          id: string
+          phone_found: string | null
+          raw_data: Json
+          resolution: string | null
+          resolved_at: string | null
+          resolved_by: string | null
+          source: string
+          status: string
+          suggested_client_id: string | null
+          sync_run_id: string | null
+        }
+        Insert: {
+          conflict_type: string
+          created_at?: string
+          email_found?: string | null
+          external_id: string
+          id?: string
+          phone_found?: string | null
+          raw_data: Json
+          resolution?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          source: string
+          status?: string
+          suggested_client_id?: string | null
+          sync_run_id?: string | null
+        }
+        Update: {
+          conflict_type?: string
+          created_at?: string
+          email_found?: string | null
+          external_id?: string
+          id?: string
+          phone_found?: string | null
+          raw_data?: Json
+          resolution?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          source?: string
+          status?: string
+          suggested_client_id?: string | null
+          sync_run_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "merge_conflicts_suggested_client_id_fkey"
+            columns: ["suggested_client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "merge_conflicts_sync_run_id_fkey"
+            columns: ["sync_run_id"]
+            isOneToOne: false
+            referencedRelation: "sync_runs"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       message_templates: {
         Row: {
@@ -633,6 +818,57 @@ export type Database = {
         }
         Relationships: []
       }
+      sync_runs: {
+        Row: {
+          checkpoint: Json | null
+          completed_at: string | null
+          dry_run: boolean | null
+          error_message: string | null
+          id: string
+          metadata: Json | null
+          source: string
+          started_at: string
+          status: string
+          total_conflicts: number | null
+          total_fetched: number | null
+          total_inserted: number | null
+          total_skipped: number | null
+          total_updated: number | null
+        }
+        Insert: {
+          checkpoint?: Json | null
+          completed_at?: string | null
+          dry_run?: boolean | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          source: string
+          started_at?: string
+          status?: string
+          total_conflicts?: number | null
+          total_fetched?: number | null
+          total_inserted?: number | null
+          total_skipped?: number | null
+          total_updated?: number | null
+        }
+        Update: {
+          checkpoint?: Json | null
+          completed_at?: string | null
+          dry_run?: boolean | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          source?: string
+          started_at?: string
+          status?: string
+          total_conflicts?: number | null
+          total_fetched?: number | null
+          total_inserted?: number | null
+          total_skipped?: number | null
+          total_updated?: number | null
+        }
+        Relationships: []
+      }
       system_settings: {
         Row: {
           created_at: string
@@ -761,6 +997,25 @@ export type Database = {
     }
     Functions: {
       is_admin: { Args: never; Returns: boolean }
+      merge_contact: {
+        Args: {
+          p_dry_run?: boolean
+          p_email: string
+          p_email_opt_in: boolean
+          p_external_id: string
+          p_extra_data?: Json
+          p_full_name: string
+          p_phone: string
+          p_sms_opt_in: boolean
+          p_source: string
+          p_sync_run_id?: string
+          p_tags: string[]
+          p_wa_opt_in: boolean
+        }
+        Returns: Json
+      }
+      normalize_email: { Args: { email: string }; Returns: string }
+      normalize_phone_e164: { Args: { phone: string }; Returns: string }
     }
     Enums: {
       app_role: "admin" | "user"

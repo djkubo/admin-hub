@@ -9,7 +9,8 @@ import {
   BarChart3, 
   Settings,
   LogOut,
-  Send
+  Send,
+  RefreshCw
 } from "lucide-react";
 
 interface SidebarProps {
@@ -21,6 +22,7 @@ const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "recovery", label: "Revenue Ops", icon: AlertTriangle },
   { id: "campaigns", label: "Campañas", icon: Send },
+  { id: "sync-center", label: "Sync Center", icon: RefreshCw },
   { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "subscriptions", label: "Suscripciones", icon: CreditCard },

@@ -10,6 +10,7 @@ import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel"
 import { SettingsPage } from "@/components/dashboard/SettingsPage";
 import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { CampaignControlCenter } from "@/components/dashboard/CampaignControlCenter";
+import SyncCenter from "@/components/dashboard/SyncCenter";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useAuth } from "@/hooks/useAuth";
@@ -53,6 +54,8 @@ const Index = () => {
         return <ImportSyncPage />;
       case "campaigns":
         return <CampaignControlCenter />;
+      case "sync-center":
+        return <SyncCenter />;
       case "analytics":
         return (
           <div className="space-y-6">
