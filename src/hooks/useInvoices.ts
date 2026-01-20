@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 export interface Invoice {
   id: string;
@@ -39,9 +40,7 @@ export function useInvoices() {
   // Sync invoices from Stripe
   const syncInvoices = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("fetch-invoices");
-      if (error) throw error;
-      return data;
+      return await invokeWithAdminKey("fetch-invoices", {});
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });

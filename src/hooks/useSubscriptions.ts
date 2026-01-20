@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 export interface Subscription {
   id: string;
@@ -89,9 +90,7 @@ export function useSubscriptions() {
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("fetch-subscriptions");
-      if (error) throw error;
-      return data;
+      return await invokeWithAdminKey("fetch-subscriptions", {});
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["subscriptions"] });

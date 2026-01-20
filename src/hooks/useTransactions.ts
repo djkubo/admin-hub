@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 export interface Transaction {
   id: string;
@@ -41,16 +42,10 @@ export function useTransactions() {
 
   const syncStripe = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("fetch-stripe", {
-        method: "POST",
-      });
-
-      if (error) throw error;
-      return data;
+      return await invokeWithAdminKey("fetch-stripe", {});
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      // CRITICAL FIX #5: Read synced_transactions instead of synced
       const syncedCount = data?.synced_transactions ?? data?.synced_count ?? data?.synced ?? 0;
       toast({
         title: "Sincronización completada",

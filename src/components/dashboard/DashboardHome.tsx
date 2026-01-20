@@ -21,13 +21,13 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { supabase } from '@/integrations/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { formatDistanceToNow, addDays, addHours } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 
 interface DashboardHomeProps {
   lastSync?: Date | null;
@@ -57,23 +57,24 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       const now = new Date();
       const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
       
-      const [stripeResult, paypalResult, subsResult, invoicesResult] = await Promise.all([
-        supabase.functions.invoke('fetch-stripe', {
-          body: { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }
-        }),
-        supabase.functions.invoke('fetch-paypal', {
-          body: { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }
-        }),
-        supabase.functions.invoke('fetch-subscriptions', { body: {} }),
-        supabase.functions.invoke('fetch-invoices', { body: {} }),
+      const [stripeResult, paypalResult, subsResult, invoicesResult] = await Promise.allSettled([
+        invokeWithAdminKey('fetch-stripe', { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }),
+        invokeWithAdminKey('fetch-paypal', { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }),
+        invokeWithAdminKey('fetch-subscriptions', {}),
+        invokeWithAdminKey('fetch-invoices', {}),
       ]);
 
-      const hasErrors = stripeResult.error || paypalResult.error;
+      const hasErrors = stripeResult.status === 'rejected' || paypalResult.status === 'rejected';
       setSyncStatus(hasErrors ? 'warning' : 'ok');
 
-      const totalTx = (stripeResult.data?.synced_transactions || 0) + (paypalResult.data?.synced_transactions || 0);
+      const stripeData = stripeResult.status === 'fulfilled' ? stripeResult.value : null;
+      const paypalData = paypalResult.status === 'fulfilled' ? paypalResult.value : null;
+      const subsData = subsResult.status === 'fulfilled' ? subsResult.value : null;
+      const invoicesData = invoicesResult.status === 'fulfilled' ? invoicesResult.value : null;
+
+      const totalTx = (stripeData?.synced_transactions || 0) + (paypalData?.synced_transactions || 0);
       
-      toast.success(`Sync completo: ${totalTx} transacciones, ${subsResult.data?.synced || 0} suscripciones, ${invoicesResult.data?.synced || 0} facturas`);
+      toast.success(`Sync completo: ${totalTx} transacciones, ${subsData?.synced || subsData?.upserted || 0} suscripciones, ${invoicesData?.synced || 0} facturas`);
       
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
