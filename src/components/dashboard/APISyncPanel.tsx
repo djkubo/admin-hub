@@ -3,10 +3,10 @@ import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, Mess
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { supabase } from '@/integrations/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 
 interface SyncResult {
   success: boolean;
@@ -57,22 +57,15 @@ export function APISyncPanel() {
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
       
       try {
-        const { data, error } = await supabase.functions.invoke(
+        const data = await invokeWithAdminKey(
           service === 'stripe' ? 'fetch-stripe' : 'fetch-paypal',
-          {
-            body: { 
-              fetchAll: true,
-              startDate: startDate.toISOString(),
-              endDate: endDate.toISOString()
-            }
+          { 
+            fetchAll: true,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString()
           }
         );
 
-        if (error) {
-          console.error(`Error en chunk ${i + 1}:`, error);
-          continue; // Continue with next chunk instead of failing completely
-        }
-        
         if (data?.success) {
           allResults.synced_transactions += data.synced_transactions || 0;
           allResults.synced_clients += data.synced_clients || 0;
@@ -104,15 +97,12 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const { data, error } = await supabase.functions.invoke('fetch-stripe', {
-          body: { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
+        const data = await invokeWithAdminKey('fetch-stripe', { 
+          fetchAll: true,
+          startDate: yesterday.toISOString(),
+          endDate: now.toISOString()
         });
 
-        if (error) throw error;
         setStripeResult(data);
         
         if (data.success) {
@@ -122,15 +112,12 @@ export function APISyncPanel() {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const { data, error } = await supabase.functions.invoke('fetch-stripe', {
-          body: { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
+        const data = await invokeWithAdminKey('fetch-stripe', { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: now.toISOString()
         });
 
-        if (error) throw error;
         setStripeResult(data);
         
         if (data.success) {
@@ -169,15 +156,12 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const { data, error } = await supabase.functions.invoke('fetch-paypal', {
-          body: { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
+        const data = await invokeWithAdminKey('fetch-paypal', { 
+          fetchAll: true,
+          startDate: yesterday.toISOString(),
+          endDate: now.toISOString()
         });
 
-        if (error) throw error;
         setPaypalResult(data);
         
         if (data.success) {
@@ -187,15 +171,12 @@ export function APISyncPanel() {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const { data, error } = await supabase.functions.invoke('fetch-paypal', {
-          body: { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
+        const data = await invokeWithAdminKey('fetch-paypal', { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: now.toISOString()
         });
 
-        if (error) throw error;
         setPaypalResult(data);
         
         if (data.success) {
@@ -230,11 +211,7 @@ export function APISyncPanel() {
     setManychatResult(null);
     
     try {
-      const { data, error } = await supabase.functions.invoke('sync-manychat', {
-        body: { dry_run: false }
-      });
-
-      if (error) throw error;
+      const data = await invokeWithAdminKey('sync-manychat', { dry_run: false });
       
       setManychatResult({
         success: true,
@@ -263,11 +240,7 @@ export function APISyncPanel() {
     setGhlResult(null);
     
     try {
-      const { data, error } = await supabase.functions.invoke('sync-ghl', {
-        body: { dry_run: false }
-      });
-
-      if (error) throw error;
+      const data = await invokeWithAdminKey('sync-ghl', { dry_run: false });
       
       setGhlResult({
         success: true,

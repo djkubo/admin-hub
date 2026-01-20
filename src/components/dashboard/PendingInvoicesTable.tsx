@@ -19,9 +19,9 @@ import {
 } from "@/components/ui/tooltip";
 import { format, formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import type { Invoice } from "@/hooks/useInvoices";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 interface PendingInvoicesTableProps {
   invoices: Invoice[];
@@ -75,11 +75,7 @@ export function PendingInvoicesTable({
   const handleForceCharge = async (invoice: Invoice) => {
     setChargingInvoice(invoice.id);
     try {
-      const { data, error } = await supabase.functions.invoke("force-charge-invoice", {
-        body: { stripe_invoice_id: invoice.stripe_invoice_id },
-      });
-
-      if (error) throw error;
+      const data = await invokeWithAdminKey("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
 
       if (data?.success) {
         toast({
@@ -128,13 +124,9 @@ export function PendingInvoicesTable({
       const invoice = chargeableInvoices[i];
       
       try {
-        const { data, error } = await supabase.functions.invoke("force-charge-invoice", {
-          body: { stripe_invoice_id: invoice.stripe_invoice_id },
-        });
+        const data = await invokeWithAdminKey("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
 
-        if (error) {
-          result.failed++;
-        } else if (data?.success) {
+        if (data?.success) {
           result.succeeded++;
           result.totalRecovered += data.amount_paid || 0;
         } else {

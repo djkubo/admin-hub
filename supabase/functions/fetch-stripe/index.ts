@@ -9,12 +9,18 @@ const corsHeaders = {
 // SECURITY: Simple admin key guard
 function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
   const adminKey = Deno.env.get("ADMIN_API_KEY");
-  if (!adminKey) {
-    return { valid: false, error: "ADMIN_API_KEY not configured" };
-  }
   const providedKey = req.headers.get("x-admin-key");
-  if (!providedKey || providedKey !== adminKey) {
-    return { valid: false, error: "Invalid or missing x-admin-key" };
+  
+  console.log(`🔐 Admin key check - Configured: ${adminKey ? 'YES (' + adminKey.substring(0, 10) + '...)' : 'NO'}, Provided: ${providedKey ? 'YES (' + providedKey.substring(0, 10) + '...)' : 'NO'}`);
+  
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured on server" };
+  }
+  if (!providedKey) {
+    return { valid: false, error: "x-admin-key header not provided" };
+  }
+  if (providedKey !== adminKey) {
+    return { valid: false, error: "x-admin-key does not match" };
   }
   return { valid: true };
 }

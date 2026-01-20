@@ -17,10 +17,10 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs';
 import { useInvoices, Invoice } from '@/hooks/useInvoices';
-import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { formatDistanceToNow, format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 
 type InvoiceFilter = 'all' | 'open' | 'draft' | 'scheduled' | 'unscheduled';
 
@@ -62,11 +62,7 @@ export function InvoicesPage() {
   const handleChargeInvoice = async (invoice: Invoice) => {
     setChargingInvoice(invoice.id);
     try {
-      const { data, error } = await supabase.functions.invoke('force-charge-invoice', {
-        body: { invoice_id: invoice.stripe_invoice_id },
-      });
-
-      if (error) throw error;
+      const data = await invokeWithAdminKey('force-charge-invoice', { invoice_id: invoice.stripe_invoice_id });
 
       if (data?.success) {
         toast.success(`Cobro exitoso: $${(invoice.amount_due / 100).toFixed(2)}`);
@@ -104,11 +100,9 @@ export function InvoicesPage() {
       setChargeProgress({ current: i + 1, total: toCharge.length, recovered });
 
       try {
-        const { data, error } = await supabase.functions.invoke('force-charge-invoice', {
-          body: { invoice_id: invoice.stripe_invoice_id },
-        });
+        const data = await invokeWithAdminKey('force-charge-invoice', { invoice_id: invoice.stripe_invoice_id });
 
-        if (!error && data?.success) {
+        if (data?.success) {
           recovered += invoice.amount_due;
         } else {
           failed++;

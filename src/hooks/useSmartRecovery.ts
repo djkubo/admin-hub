@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 export interface RecoverySuccessItem {
   invoice_id: string;
@@ -223,11 +223,7 @@ export function useSmartRecovery() {
           message: `Procesando lote ${batchNum}... (${aggregated.succeeded.length} recuperados)` 
         });
 
-        const { data, error } = await supabase.functions.invoke("recover-revenue", {
-          body: { hours_lookback, starting_after },
-        });
-
-        if (error) throw error;
+        const data = await invokeWithAdminKey("recover-revenue", { hours_lookback, starting_after });
 
         const batchResult = data as RecoveryResult;
 

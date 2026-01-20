@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -297,15 +298,11 @@ export default function DiagnosticsPanel() {
           startDate = subDays(new Date(), 7);
       }
 
-      const { data, error } = await supabase.functions.invoke('reconcile-metrics', {
-        body: {
-          source: reconcileSource,
-          start_date: format(startDate, 'yyyy-MM-dd'),
-          end_date: format(endDate, 'yyyy-MM-dd')
-        }
+      const data = await invokeWithAdminKey('reconcile-metrics', {
+        source: reconcileSource,
+        start_date: format(startDate, 'yyyy-MM-dd'),
+        end_date: format(endDate, 'yyyy-MM-dd')
       });
-
-      if (error) throw error;
 
       queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] });
       
@@ -382,11 +379,8 @@ Por favor:
 
 Responde en español, de forma concisa.`;
 
-      const { data, error } = await supabase.functions.invoke('analyze-business', {
-        body: { prompt, context: 'diagnostics' }
-      });
-
-      if (error) throw error;
+      const data = await invokeWithAdminKey('analyze-business', { prompt, context: 'diagnostics' });
+      
       
       setAiAnalysis(data.analysis || data.message || 'No se pudo generar análisis');
     } catch (error: any) {

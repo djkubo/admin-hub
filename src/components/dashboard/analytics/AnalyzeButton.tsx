@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Sparkles, Loader2, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 export function AnalyzeButton() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -16,11 +16,7 @@ export function AnalyzeButton() {
     setShowSuccess(false);
 
     try {
-      const { data, error } = await supabase.functions.invoke("analyze-business", {
-        method: "POST",
-      });
-
-      if (error) throw error;
+      await invokeWithAdminKey("analyze-business", {});
 
       // Refresh AI insights
       await queryClient.invalidateQueries({ queryKey: ["ai-insights-latest"] });

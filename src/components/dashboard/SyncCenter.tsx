@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -138,11 +139,7 @@ export default function SyncCenter() {
   const syncGHL = useMutation({
     mutationFn: async () => {
       setSyncingSource('ghl');
-      const { data, error } = await supabase.functions.invoke('sync-ghl', {
-        body: { dry_run: dryRun }
-      });
-      if (error) throw error;
-      return data;
+      return await invokeWithAdminKey('sync-ghl', { dry_run: dryRun });
     },
     onSuccess: (data) => {
       setSyncingSource(null);
@@ -168,11 +165,7 @@ export default function SyncCenter() {
   const syncManyChat = useMutation({
     mutationFn: async () => {
       setSyncingSource('manychat');
-      const { data, error } = await supabase.functions.invoke('sync-manychat', {
-        body: { dry_run: dryRun }
-      });
-      if (error) throw error;
-      return data;
+      return await invokeWithAdminKey('sync-manychat', { dry_run: dryRun });
     },
     onSuccess: (data) => {
       setSyncingSource(null);
