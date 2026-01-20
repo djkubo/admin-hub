@@ -34,6 +34,8 @@ export interface Conversation {
   last_channel: string;
   unread_count: number;
   total_messages: number;
+  last_inbound_at: string | null;
+  channels_used: string[];
 }
 
 export function useMessages(clientId?: string) {
@@ -101,11 +103,23 @@ export function useConversations() {
             last_channel: msg.channel,
             unread_count: msg.direction === "inbound" && !msg.read_at ? 1 : 0,
             total_messages: 1,
+            last_inbound_at: msg.direction === "inbound" ? msg.created_at : null,
+            channels_used: [msg.channel],
           });
         } else {
           existing.total_messages++;
           if (msg.direction === "inbound" && !msg.read_at) {
             existing.unread_count++;
+          }
+          // Track last inbound message time
+          if (msg.direction === "inbound") {
+            if (!existing.last_inbound_at || new Date(msg.created_at) > new Date(existing.last_inbound_at)) {
+              existing.last_inbound_at = msg.created_at;
+            }
+          }
+          // Track all channels used
+          if (!existing.channels_used.includes(msg.channel)) {
+            existing.channels_used.push(msg.channel);
           }
         }
       }
