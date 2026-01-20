@@ -397,32 +397,37 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...txBatchResult.allErrors);
   }
 
-  // 🔔 TRIGGER: Notify GHL for failed PayPal payments
+  // 🔔 TRIGGER: Notify GHL for failed PayPal payments (OPTIONAL - silent fail)
   const failedPayments = parsedRows.filter(row => row.status === 'failed');
   
   if (failedPayments.length > 0) {
-    console.log(`[GHL] Sending ${failedPayments.length} failed PayPal payments to CRM...`);
+    console.log(`[GHL] ${failedPayments.length} pagos fallidos detectados. Notificación GHL es opcional.`);
     
-    for (const payment of failedPayments.slice(0, 20)) { // Limit to 20 per batch
-      try {
-        const client = clientMap.get(payment.email);
-        await invokeWithAdminKey('notify-ghl', {
-          email: payment.email,
-          phone: client?.phone || null,
-          name: client?.full_name || null,
-          tag: 'payment_failed',
-          message_data: {
-            amount_cents: payment.amount,
-            currency: payment.currency,
-            transaction_id: payment.transactionId,
-            source: 'paypal_csv'
-          }
-        });
-      } catch (ghlError) {
-        console.warn(`[GHL] Failed to notify for ${payment.email}:`, ghlError);
+    // Run GHL notifications in background - don't block import
+    (async () => {
+      for (const payment of failedPayments.slice(0, 20)) {
+        try {
+          const client = clientMap.get(payment.email);
+          await invokeWithAdminKey('notify-ghl', {
+            email: payment.email,
+            phone: client?.phone || null,
+            name: client?.full_name || null,
+            tag: 'payment_failed',
+            message_data: {
+              amount_cents: payment.amount,
+              currency: payment.currency,
+              transaction_id: payment.transactionId,
+              source: 'paypal_csv'
+            }
+          });
+        } catch {
+          // GHL not configured - silently ignore
+        }
       }
-    }
-    console.log(`[GHL] Failed payment notifications sent`);
+    })().catch(() => {
+      // Silently ignore all GHL errors
+      console.log('[GHL] Notificaciones deshabilitadas o no configuradas');
+    });
   }
 
   return result;
