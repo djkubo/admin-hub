@@ -317,11 +317,27 @@ export function useSmartRecovery() {
     },
   });
 
+  // Calculate hours to exclude based on selected range
+  // e.g., 15d (360h) should exclude runs from last 7d (168h), 30d should exclude 15d, etc.
+  const getExcludeRecentHours = (hours: HoursLookback): number => {
+    const rangeMap: Record<HoursLookback, number> = {
+      24: 0,      // 1d: no exclusion
+      168: 24,    // 7d: exclude last 24h runs
+      360: 168,   // 15d: exclude last 7d runs
+      720: 360,   // 30d: exclude last 15d runs  
+      1440: 720,  // 60d: exclude last 30d runs
+    };
+    return rangeMap[hours] || 0;
+  };
+
   const runRecoveryBackground = useCallback(async (hours_lookback: HoursLookback) => {
     setIsRunning(true);
     setIsBackgroundRunning(true);
     setSelectedRange(hours_lookback);
-    setProgress({ batch: 0, message: "Iniciando Smart Recovery en segundo plano..." });
+    
+    const excludeHours = getExcludeRecentHours(hours_lookback);
+    const excludeMsg = excludeHours > 0 ? ` (omitiendo facturas ya procesadas en ${excludeHours}h)` : "";
+    setProgress({ batch: 0, message: `Iniciando Smart Recovery en segundo plano...${excludeMsg}` });
 
     try {
       // Use fetch directly with longer timeout for background mode
@@ -334,7 +350,11 @@ export function useSmartRecovery() {
             'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
             'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
-          body: JSON.stringify({ hours_lookback, background: true }),
+          body: JSON.stringify({ 
+            hours_lookback, 
+            background: true,
+            exclude_recent_hours: excludeHours,
+          }),
         }
       );
 
@@ -357,9 +377,12 @@ export function useSmartRecovery() {
         started_at: new Date().toISOString(),
       });
 
+      const toastMsg = excludeHours > 0 
+        ? `Omitirá facturas ya procesadas en las últimas ${excludeHours}h.`
+        : "El proceso continúa en segundo plano.";
       toast({
         title: "Smart Recovery Iniciado",
-        description: "El proceso continúa en segundo plano. Puedes cerrar o recargar la página.",
+        description: toastMsg,
       });
 
       startPolling(syncRunId);

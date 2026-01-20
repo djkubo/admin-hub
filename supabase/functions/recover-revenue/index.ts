@@ -221,13 +221,50 @@ async function processInvoice(
   return true;
 }
 
+// Fetch recently processed invoice IDs from completed sync runs
+async function getRecentlyProcessedInvoices(
+  supabaseServiceClient: any,
+  excludeHours: number
+): Promise<Set<string>> {
+  const cutoff = new Date(Date.now() - excludeHours * 60 * 60 * 1000).toISOString();
+  
+  const { data: recentRuns } = await supabaseServiceClient
+    .from("sync_runs")
+    .select("metadata")
+    .eq("source", "smart_recovery")
+    .in("status", ["completed", "partial"])
+    .gte("completed_at", cutoff);
+
+  const processedIds = new Set<string>();
+  
+  if (recentRuns) {
+    for (const run of recentRuns) {
+      const meta = run.metadata as Record<string, unknown> | null;
+      if (meta) {
+        // Extract invoice IDs from succeeded, failed, and skipped arrays
+        const succeeded = (meta.succeeded as Array<{ invoice_id: string }>) || [];
+        const failed = (meta.failed as Array<{ invoice_id: string }>) || [];
+        const skipped = (meta.skipped as Array<{ invoice_id: string }>) || [];
+        
+        for (const item of [...succeeded, ...failed, ...skipped]) {
+          if (item.invoice_id) processedIds.add(item.invoice_id);
+        }
+      }
+    }
+  }
+  
+  console.log(`🔍 Found ${processedIds.size} invoices processed in last ${excludeHours}h to exclude`);
+  return processedIds;
+}
+
 // Background task to process all invoices and save results
 async function runRecoveryInBackground(
   stripe: Stripe,
   supabaseServiceClient: any,
   syncRunId: string,
   hours_lookback: number,
-  starting_after?: string
+  starting_after?: string,
+  excludeRecentHours?: number
 ): Promise<void> {
   const startTime = Date.now();
   
@@ -235,6 +272,12 @@ async function runRecoveryInBackground(
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
     console.log(`🔄 Background processing started for sync run ${syncRunId}`);
     console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
+
+    // Get recently processed invoices to exclude (avoid duplicate attempts)
+    let excludedInvoices = new Set<string>();
+    if (excludeRecentHours && excludeRecentHours > 0) {
+      excludedInvoices = await getRecentlyProcessedInvoices(supabaseServiceClient, excludeRecentHours);
+    }
 
     const result: RecoveryResult = {
       succeeded: [],
@@ -255,6 +298,7 @@ async function runRecoveryInBackground(
     let currentStartingAfter = starting_after;
     let hasMore = true;
     let totalFetched = 0;
+    let totalExcluded = 0;
 
     while (hasMore) {
       const elapsed = Date.now() - startTime;
@@ -281,9 +325,17 @@ async function runRecoveryInBackground(
       console.log(`📄 Batch: ${invoices.length} invoices (total: ${totalFetched}, hasMore: ${hasMore})`);
 
       for (const invoice of invoices) {
+        currentStartingAfter = invoice.id;
+        
+        // Skip if already processed recently
+        if (excludedInvoices.has(invoice.id)) {
+          totalExcluded++;
+          console.log(`⏭️ Skipping ${invoice.id} - already processed recently`);
+          continue;
+        }
+        
         await processInvoice(stripe, invoice, result);
         result.summary.processed_invoices++;
-        currentStartingAfter = invoice.id;
 
         // Update progress after EACH invoice for real-time UI feedback
         await supabaseServiceClient
@@ -313,7 +365,7 @@ async function runRecoveryInBackground(
     // Complete the sync run
     const elapsed = Date.now() - startTime;
     console.log(`\n🏁 Background Recovery Complete in ${elapsed}ms!`);
-    console.log(`📊 Processed: ${result.summary.processed_invoices}/${totalFetched}`);
+    console.log(`📊 Processed: ${result.summary.processed_invoices}/${totalFetched} (${totalExcluded} excluded)`);
     console.log(`✅ Recovered: $${(result.summary.total_recovered / 100).toFixed(2)}`);
     console.log(`❌ Failed: $${(result.summary.total_failed_amount / 100).toFixed(2)}`);
     console.log(`🚫 Skipped: $${(result.summary.total_skipped_amount / 100).toFixed(2)}`);
@@ -330,6 +382,8 @@ async function runRecoveryInBackground(
           succeeded_count: result.succeeded.length,
           failed_count: result.failed.length,
           skipped_count: result.skipped.length,
+          excluded_count: totalExcluded,
+          exclude_recent_hours: excludeRecentHours || 0,
           execution_time_ms: elapsed,
           succeeded: result.succeeded,
           failed: result.failed,
@@ -338,7 +392,7 @@ async function runRecoveryInBackground(
         total_fetched: totalFetched,
         total_inserted: result.succeeded.length,
         total_updated: 0,
-        total_skipped: result.skipped.length,
+        total_skipped: result.skipped.length + totalExcluded,
       })
       .eq("id", syncRunId);
 
@@ -383,7 +437,7 @@ serve(async (req) => {
 
     // Parse body FIRST before any async operations
     const body = await req.json();
-    const { hours_lookback = 24, starting_after, background = false } = body;
+    const { hours_lookback = 24, starting_after, background = false, exclude_recent_hours = 0 } = body;
     
     const validHours = [24, 168, 360, 720, 1440];
     if (!validHours.includes(hours_lookback)) {
@@ -442,6 +496,7 @@ serve(async (req) => {
                 hours_lookback,
                 starting_after: starting_after || null,
                 initiated_by: user.email,
+                exclude_recent_hours: exclude_recent_hours || 0,
               },
             })
             .select()
@@ -453,7 +508,7 @@ serve(async (req) => {
           }
 
           console.log(`📝 Created sync run: ${syncRun.id}`);
-          await runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after);
+          await runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after, exclude_recent_hours);
         } catch (err) {
           console.error("❌ Background processing error:", err);
         }
