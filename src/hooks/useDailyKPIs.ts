@@ -100,14 +100,24 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         })));
       }
 
-      // Fetch ALL historical transactions to determine first payments
-      // This is critical for correctly classifying new vs renewal
-      const { data: allHistoricalTx } = await supabase
+      // Get FIRST payment date for each customer email
+      // Load all paid transactions ordered by date to find first payments
+      const { data: firstPaymentDates } = await supabase
         .from('transactions')
-        .select('id, customer_email, subscription_id, stripe_payment_intent_id, stripe_created_at, status')
+        .select('customer_email, stripe_created_at')
         .in('status', ['paid', 'succeeded'])
-        .order('stripe_created_at', { ascending: true })
-        .limit(10000);
+        .not('customer_email', 'is', null)
+        .order('stripe_created_at', { ascending: true });
+
+      // Build a map of email -> first payment date
+      const firstPaymentDateByEmail = new Map<string, string>();
+      for (const tx of firstPaymentDates || []) {
+        if (tx.customer_email && !firstPaymentDateByEmail.has(tx.customer_email)) {
+          firstPaymentDateByEmail.set(tx.customer_email, tx.stripe_created_at || '');
+        }
+      }
+      
+      console.log(`📊 Found ${firstPaymentDateByEmail.size} unique customers with first payment dates`);
 
       // Fetch subscriptions for trial info
       const { data: subscriptions } = await supabase
@@ -146,23 +156,6 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         subMap.set(sub.stripe_subscription_id, sub);
       }
 
-      // Track first payment per customer email (more reliable than subscription ID)
-      const firstPaymentPerEmail = new Map<string, string>();
-      const firstPaymentPerSub = new Map<string, string>();
-      
-      // Use ALL historical transactions to find first payments
-      for (const tx of allHistoricalTx || []) {
-        // Track by email
-        if (tx.customer_email && !firstPaymentPerEmail.has(tx.customer_email)) {
-          firstPaymentPerEmail.set(tx.customer_email, tx.id);
-        }
-        // Track by subscription
-        const subId = tx.subscription_id || tx.stripe_payment_intent_id;
-        if (subId && !firstPaymentPerSub.has(subId)) {
-          firstPaymentPerSub.set(subId, tx.id);
-        }
-      }
-
       const allTransactions = transactions || [];
 
       // Now classify each transaction in the date range
@@ -180,18 +173,16 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         // Only count paid transactions
         if (tx.status !== 'paid' && tx.status !== 'succeeded') continue;
 
-        const subId = tx.subscription_id || tx.stripe_payment_intent_id;
         const sub = subMap.get(tx.subscription_id || '');
         
-        // Check if this is first payment - by subscription OR by email
-        const isFirstPaymentBySub = firstPaymentPerSub.get(subId) === tx.id;
-        const isFirstPaymentByEmail = tx.customer_email && firstPaymentPerEmail.get(tx.customer_email) === tx.id;
-        const isFirstPayment = isFirstPaymentBySub || isFirstPaymentByEmail;
+        // Check if this transaction date matches the customer's first payment date
+        const firstPaymentDate = tx.customer_email ? firstPaymentDateByEmail.get(tx.customer_email) : null;
+        const isFirstPayment = firstPaymentDate && tx.stripe_created_at === firstPaymentDate;
 
         // Check if this is a trial conversion
         const hasTrialEnded = sub?.trial_end && new Date(sub.trial_end) <= new Date(tx.stripe_created_at || '');
         
-        // Use payment_type if already classified
+        // Determine payment type
         let paymentType = tx.payment_type;
         
         if (!paymentType || paymentType === 'unknown') {
