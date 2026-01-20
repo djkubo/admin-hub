@@ -12,6 +12,78 @@ interface PayPalEvent {
   create_time: string;
 }
 
+// Verify PayPal webhook signature
+async function verifyPayPalWebhook(req: Request, body: string): Promise<boolean> {
+  const webhookId = Deno.env.get('PAYPAL_WEBHOOK_ID');
+  const clientId = Deno.env.get('PAYPAL_CLIENT_ID');
+  const clientSecret = Deno.env.get('PAYPAL_SECRET');
+  
+  if (!webhookId || !clientId || !clientSecret) {
+    console.warn('⚠️ PayPal webhook verification not configured - skipping');
+    return true; // Allow if not configured (but log warning)
+  }
+
+  const transmissionId = req.headers.get('paypal-transmission-id');
+  const transmissionTime = req.headers.get('paypal-transmission-time');
+  const transmissionSig = req.headers.get('paypal-transmission-sig');
+  const certUrl = req.headers.get('paypal-cert-url');
+  const authAlgo = req.headers.get('paypal-auth-algo');
+
+  if (!transmissionId || !transmissionTime || !transmissionSig) {
+    console.error('❌ Missing PayPal signature headers');
+    return false;
+  }
+
+  try {
+    // Get OAuth token
+    const authResponse = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    });
+
+    if (!authResponse.ok) {
+      console.error('❌ Failed to get PayPal OAuth token');
+      return false;
+    }
+
+    const authData = await authResponse.json();
+    const accessToken = authData.access_token;
+
+    // Verify webhook signature
+    const verifyResponse = await fetch('https://api-m.paypal.com/v1/notifications/verify-webhook-signature', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        auth_algo: authAlgo,
+        cert_url: certUrl,
+        transmission_id: transmissionId,
+        transmission_sig: transmissionSig,
+        transmission_time: transmissionTime,
+        webhook_id: webhookId,
+        webhook_event: JSON.parse(body),
+      }),
+    });
+
+    if (!verifyResponse.ok) {
+      console.error('❌ PayPal signature verification request failed');
+      return false;
+    }
+
+    const verifyData = await verifyResponse.json();
+    return verifyData.verification_status === 'SUCCESS';
+  } catch (error) {
+    console.error('❌ PayPal verification error:', error);
+    return false;
+  }
+}
+
 function mapPayPalStatus(eventType: string): string {
   if (eventType.includes('COMPLETED') || eventType.includes('APPROVED') || eventType.includes('CAPTURED')) {
     return 'paid';
@@ -33,7 +105,6 @@ function mapPayPalStatus(eventType: string): string {
 }
 
 function extractAmount(resource: Record<string, unknown>): number {
-  // Try different amount locations - PayPal sends DOLLARS, multiply by 100 for CENTS
   const amount = resource.amount as Record<string, unknown> | undefined;
   if (amount?.total) return Math.round(parseFloat(amount.total as string) * 100);
   if (amount?.value) return Math.round(parseFloat(amount.value as string) * 100);
@@ -47,7 +118,6 @@ function extractAmount(resource: Record<string, unknown>): number {
   const grossAmount = resource.gross_amount as Record<string, unknown> | undefined;
   if (grossAmount?.value) return Math.round(parseFloat(grossAmount.value as string) * 100);
 
-  // For subscriptions
   const billingInfo = resource.billing_info as Record<string, unknown> | undefined;
   if (billingInfo?.last_payment) {
     const lastPayment = billingInfo.last_payment as Record<string, unknown>;
@@ -73,7 +143,6 @@ function extractCurrency(resource: Record<string, unknown>): string {
 }
 
 function extractEmail(resource: Record<string, unknown>): string | null {
-  // Direct payer info
   const payer = resource.payer as Record<string, unknown> | undefined;
   if (payer?.email_address) return payer.email_address as string;
   if (payer?.payer_info) {
@@ -81,15 +150,12 @@ function extractEmail(resource: Record<string, unknown>): string | null {
     if (payerInfo.email) return payerInfo.email as string;
   }
 
-  // Subscriber info (for subscriptions)
   const subscriber = resource.subscriber as Record<string, unknown> | undefined;
   if (subscriber?.email_address) return subscriber.email_address as string;
 
-  // Buyer info
   const buyer = resource.buyer as Record<string, unknown> | undefined;
   if (buyer?.email_address) return buyer.email_address as string;
 
-  // Direct email field
   if (resource.email_address) return resource.email_address as string;
   if (resource.email) return resource.email as string;
 
@@ -125,9 +191,35 @@ Deno.serve(async (req) => {
       throw new Error('Missing required environment variables');
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const body = await req.text();
+
+    // SECURITY: Verify PayPal signature
+    const isValid = await verifyPayPalWebhook(req, body);
+    if (!isValid) {
+      console.error('❌ PayPal signature verification failed');
+      return new Response(
+        JSON.stringify({ error: 'Invalid signature' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const event: PayPalEvent = JSON.parse(body);
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // IDEMPOTENCY: Check if event already processed
+    const { data: existingEvent } = await supabase
+      .from('transactions')
+      .select('id')
+      .eq('metadata->webhook_event_id', event.id)
+      .maybeSingle();
+
+    if (existingEvent) {
+      console.log(`⏭️ Event ${event.id} already processed, skipping`);
+      return new Response(
+        JSON.stringify({ received: true, skipped: true, reason: 'already_processed' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     console.log(`🔔 PayPal Event: ${event.event_type}, ID: ${event.id}`);
 
@@ -138,9 +230,8 @@ Deno.serve(async (req) => {
     const currency = extractCurrency(resource);
     const fullName = extractName(resource);
     
-    // Get transaction ID - use clean ID for payment_key
     let transactionId = resource.id as string;
-    let paymentKey = transactionId; // Clean ID for dedup
+    let paymentKey = transactionId;
     let fullTransactionId: string;
     
     if (!transactionId) {
@@ -196,7 +287,6 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Determine failure info
       let failureCode: string | null = null;
       let failureMessage: string | null = null;
       
@@ -206,23 +296,21 @@ Deno.serve(async (req) => {
         failureMessage = (statusDetail?.reason as string) || `Payment ${event.event_type}`;
       }
 
-      // NORMALIZED: payment_key = clean transaction ID for perfect dedup
       const transactionData = {
-        stripe_payment_intent_id: fullTransactionId, // Backwards compat with prefix
-        payment_key: paymentKey, // CANONICAL dedup key (NO prefix)
-        external_transaction_id: paymentKey, // Clean ID for reference
+        stripe_payment_intent_id: fullTransactionId,
+        payment_key: paymentKey,
+        external_transaction_id: paymentKey,
         amount,
-        currency: currency.toLowerCase(), // Normalize to lowercase
+        currency: currency.toLowerCase(),
         status,
         customer_email: email,
         stripe_created_at: createdAt,
         source: 'paypal',
         failure_code: failureCode,
         failure_message: failureMessage,
-        metadata: { event_type: event.event_type, paypal_id: resource.id },
+        metadata: { event_type: event.event_type, paypal_id: resource.id, webhook_event_id: event.id },
       };
 
-      // Use new UNIQUE constraint: (source, payment_key)
       const { error: txError } = await supabase
         .from('transactions')
         .upsert(transactionData, { onConflict: 'source,payment_key' });
@@ -232,7 +320,6 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
-      // Update client - amount is already in cents, convert to dollars for total_paid display field
       if (status === 'paid' && amount > 0) {
         const { data: existingClient } = await supabase
           .from('clients')
@@ -246,7 +333,7 @@ Deno.serve(async (req) => {
             email,
             full_name: fullName,
             payment_status: 'paid',
-            total_paid: (existingClient?.total_paid || 0) + (amount / 100), // Convert cents to dollars for display
+            total_paid: (existingClient?.total_paid || 0) + (amount / 100),
             last_sync: new Date().toISOString(),
           }, { onConflict: 'email' });
 
