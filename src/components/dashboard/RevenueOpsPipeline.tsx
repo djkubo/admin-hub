@@ -99,8 +99,19 @@ const messageTemplates = {
     `🚨 ÚLTIMO AVISO ${name || 'usuario'}: Servicio será suspendido en 24h por falta de pago ($${amount.toFixed(2)}).`,
 };
 
+type DateRange = '1d' | '7d' | '30d' | '90d' | 'all';
+
+const dateRangeConfig: Record<DateRange, { label: string; days: number | null }> = {
+  '1d': { label: '1 día', days: 1 },
+  '7d': { label: '7 días', days: 7 },
+  '30d': { label: '30 días', days: 30 },
+  '90d': { label: '90 días', days: 90 },
+  'all': { label: 'Todo', days: null },
+};
+
 export function RevenueOpsPipeline() {
   const [activeTab, setActiveTab] = useState<'recovery' | 'trial_expiring' | 'winback'>('recovery');
+  const [dateRange, setDateRange] = useState<DateRange>('30d');
   const [clients, setClients] = useState<PipelineClient[]>([]);
   const [metrics, setMetrics] = useState<CampaignMetrics>({
     total_sent: 0, total_delivered: 0, total_replied: 0, 
@@ -108,15 +119,24 @@ export function RevenueOpsPipeline() {
   });
   const [loading, setLoading] = useState(true);
   const [showOnlyWithPhone, setShowOnlyWithPhone] = useState(false);
+  const getDateFilter = () => {
+    const days = dateRangeConfig[dateRange].days;
+    if (days === null) return null;
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  };
 
   const loadData = async () => {
     setLoading(true);
+    const dateFilter = getDateFilter();
     try {
       // Load campaign metrics
-      const { data: executions } = await supabase
+      let executionsQuery = supabase
         .from('campaign_executions')
-        .select('status, revenue_at_risk, trigger_event')
-        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+        .select('status, revenue_at_risk, trigger_event');
+      if (dateFilter) {
+        executionsQuery = executionsQuery.gte('created_at', dateFilter);
+      }
+      const { data: executions } = await executionsQuery;
 
       if (executions) {
         const sent = executions.filter(e => e.status !== 'pending').length;
@@ -143,11 +163,14 @@ export function RevenueOpsPipeline() {
       }
 
       // Load failed transactions for recovery
-      const { data: failedTx } = await supabase
+      let failedTxQuery = supabase
         .from('transactions')
         .select('customer_email, amount')
-        .eq('status', 'failed')
-        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+        .eq('status', 'failed');
+      if (dateFilter) {
+        failedTxQuery = failedTxQuery.gte('created_at', dateFilter);
+      }
+      const { data: failedTx } = await failedTxQuery;
 
       // Load clients with their data
       const { data: clientsData } = await supabase
@@ -259,7 +282,7 @@ export function RevenueOpsPipeline() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [dateRange]);
 
   const filteredClients = useMemo(() => {
     let result = clients.filter(c => c.pipeline_type === activeTab);
@@ -375,7 +398,7 @@ export function RevenueOpsPipeline() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white flex items-center gap-3">
             <Zap className="h-8 w-8 text-amber-500" />
@@ -385,10 +408,26 @@ export function RevenueOpsPipeline() {
             Centro de operaciones multicanal para maximizar ingresos
           </p>
         </div>
-        <Button onClick={loadData} variant="outline" className="gap-2">
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Actualizar
-        </Button>
+        <div className="flex items-center gap-3">
+          {/* Date Range Selector */}
+          <div className="flex items-center bg-muted/50 rounded-lg p-1">
+            {(Object.entries(dateRangeConfig) as [DateRange, typeof dateRangeConfig['1d']][]).map(([key, config]) => (
+              <Button
+                key={key}
+                variant={dateRange === key ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setDateRange(key)}
+                className={`text-xs px-3 ${dateRange === key ? 'bg-primary text-primary-foreground' : ''}`}
+              >
+                {config.label}
+              </Button>
+            ))}
+          </div>
+          <Button onClick={loadData} variant="outline" className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Actualizar
+          </Button>
+        </div>
       </div>
 
       {/* Metrics Cards */}
@@ -402,7 +441,7 @@ export function RevenueOpsPipeline() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-white">{metrics.total_sent}</p>
-            <p className="text-xs text-muted-foreground">Últimos 30 días</p>
+            <p className="text-xs text-muted-foreground">{dateRangeConfig[dateRange].label}</p>
           </CardContent>
         </Card>
 
@@ -443,7 +482,7 @@ export function RevenueOpsPipeline() {
             <p className="text-2xl font-bold text-green-400">
               ${metrics.revenue_recovered.toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </p>
-            <p className="text-xs text-muted-foreground">Últimos 30 días</p>
+            <p className="text-xs text-muted-foreground">{dateRangeConfig[dateRange].label}</p>
           </CardContent>
         </Card>
       </div>
