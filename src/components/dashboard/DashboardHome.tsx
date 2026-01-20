@@ -72,10 +72,10 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
       };
     case 'full':
       return { 
-        startDate: subYears(now, 3), 
+        startDate: subYears(now, 5), 
         endDate: now, 
         fetchAll: true,
-        maxPages: 100 
+        maxPages: 500 // Allow up to 50k transactions
       };
   }
 }
@@ -290,7 +290,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           
           {/* Time filter */}
           <div className="flex rounded-lg border border-border/50 overflow-hidden">
-            {(['today', '7d', 'month'] as TimeFilter[]).map((f) => (
+            {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
