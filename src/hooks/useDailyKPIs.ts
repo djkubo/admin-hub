@@ -46,18 +46,21 @@ function getDateRange(filter: TimeFilter): { start: Date; end: Date } {
 
   switch (filter) {
     case 'today':
-      start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      // Use UTC to match database timestamps
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       break;
     case '7d':
       start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
       break;
     case 'month':
-      start = new Date(now.getFullYear(), now.getMonth(), 1);
+      // First day of current month in UTC
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       break;
     default:
-      start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   }
 
+  console.log(`📊 KPI date range (${filter}): ${start.toISOString()} to ${end.toISOString()}`);
   return { start, end };
 }
 
