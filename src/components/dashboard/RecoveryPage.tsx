@@ -265,33 +265,34 @@ export function RecoveryPage() {
       ) : (
         <>
           {/* Mobile Cards View */}
-          <div className="md:hidden space-y-3">
+          <div className="md:hidden space-y-2">
             {filteredClients.map((client, index) => {
               const stage = getStage(client.email);
               const config = stageConfig[stage];
               const StageIcon = config.icon;
 
               return (
-                <div key={index} className="rounded-xl border border-border/50 bg-card p-3 touch-feedback">
-                  {/* Header row: Name + Amount */}
-                  <div className="flex items-start justify-between gap-2 mb-2">
+                <div key={index} className="rounded-lg border border-border/50 bg-card p-3">
+                  {/* Row 1: Name + Amount */}
+                  <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm text-foreground truncate">
+                      <p className="font-medium text-sm truncate">
                         {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
                       </p>
-                      <p className="text-[10px] text-muted-foreground truncate">{client.email}</p>
                     </div>
-                    <span className="text-base font-bold text-red-400 shrink-0">
+                    <span className="text-sm font-bold text-red-400">
                       ${client.amount.toFixed(0)}
                     </span>
                   </div>
                   
-                  {/* Info row: Stage + Source */}
-                  <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+                  {/* Row 2: Email + Stage + Source */}
+                  <div className="flex items-center gap-1 mb-2 overflow-x-auto">
+                    <p className="text-[10px] text-muted-foreground truncate max-w-[120px]">{client.email}</p>
+                    <span className="text-muted-foreground/30">•</span>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Badge variant="outline" className={`cursor-pointer text-[10px] px-1.5 py-0 h-5 ${config.color}`}>
-                          <StageIcon className="h-2.5 w-2.5 mr-0.5" />
+                        <Badge variant="outline" className={`cursor-pointer text-[10px] px-1 h-4 shrink-0 ${config.color}`}>
+                          <StageIcon className="h-2 w-2 mr-0.5" />
                           {config.label}
                         </Badge>
                       </DropdownMenuTrigger>
@@ -304,22 +305,19 @@ export function RecoveryPage() {
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
-                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] px-1.5 py-0 h-5">
+                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] px-1 h-4 shrink-0">
                       {client.source}
                     </Badge>
                   </div>
 
-                  {/* Action buttons - Grid layout for better mobile fit */}
-                  <div className="grid grid-cols-4 gap-1.5">
+                  {/* Row 3: Action buttons - Horizontal scroll */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 -mx-1 px-1">
                     {/* ManyChat */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button 
-                          size="sm" 
-                          className="h-9 w-full flex-col gap-0.5 bg-[#0084FF]/10 hover:bg-[#0084FF]/20 text-[#0084FF] border border-[#0084FF]/30 p-1"
-                        >
-                          <Facebook className="h-4 w-4" />
-                          <span className="text-[9px] font-medium">FB</span>
+                        <Button size="sm" className="h-7 px-2 shrink-0 bg-[#0084FF]/15 hover:bg-[#0084FF]/25 text-[#0084FF] text-[10px] gap-1">
+                          <Facebook className="h-3 w-3" />
+                          FB
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="bg-popover border-border">
@@ -335,10 +333,10 @@ export function RecoveryPage() {
                         <Button 
                           size="sm" 
                           disabled={!client.phone}
-                          className="h-9 w-full flex-col gap-0.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 p-1 disabled:opacity-40"
+                          className="h-7 px-2 shrink-0 bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 text-[10px] gap-1 disabled:opacity-30"
                         >
-                          <Phone className="h-4 w-4" />
-                          <span className="text-[9px] font-medium">SMS</span>
+                          <Phone className="h-3 w-3" />
+                          SMS
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="bg-popover border-border">
@@ -349,16 +347,16 @@ export function RecoveryPage() {
                     </DropdownMenu>
 
                     {/* Native SMS (iPhone) */}
-                    {supportsNativeSms() ? (
+                    {supportsNativeSms() && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button 
                             size="sm" 
                             disabled={!client.phone}
-                            className="h-9 w-full flex-col gap-0.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 p-1 disabled:opacity-40"
+                            className="h-7 px-2 shrink-0 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[10px] gap-1 disabled:opacity-30"
                           >
-                            <Smartphone className="h-4 w-4" />
-                            <span className="text-[9px] font-medium">Nativo</span>
+                            <Smartphone className="h-3 w-3" />
+                            Nativo
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="center" className="bg-popover border-border">
@@ -367,15 +365,6 @@ export function RecoveryPage() {
                           <DropdownMenuItem onClick={() => handleNativeSms(client, 'final')}>🚨 Último</DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    ) : (
-                      <Button 
-                        size="sm" 
-                        disabled
-                        className="h-9 w-full flex-col gap-0.5 bg-muted/20 text-muted-foreground/40 border border-border/30 p-1"
-                      >
-                        <Smartphone className="h-4 w-4" />
-                        <span className="text-[9px] font-medium">Nativo</span>
-                      </Button>
                     )}
 
                     {/* WhatsApp */}
@@ -384,10 +373,10 @@ export function RecoveryPage() {
                         <Button 
                           size="sm" 
                           disabled={!client.phone}
-                          className="h-9 w-full flex-col gap-0.5 bg-[#25D366] hover:bg-[#1da851] text-white p-1 disabled:opacity-40"
+                          className="h-7 px-2 shrink-0 bg-[#25D366] hover:bg-[#1da851] text-white text-[10px] gap-1 disabled:opacity-30"
                         >
-                          <MessageCircle className="h-4 w-4" />
-                          <span className="text-[9px] font-medium">WA</span>
+                          <MessageCircle className="h-3 w-3" />
+                          WA
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="bg-popover border-border">
