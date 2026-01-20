@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
-import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send } from "lucide-react";
+import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,12 +44,12 @@ interface ClientsTableProps {
 
 const VIP_THRESHOLD = 100000; // $1,000 USD in cents
 
-// Lifecycle stage badge (más informativo que status)
+// Lifecycle stage badge
 const getLifecycleBadge = (stage: string | null, isDelinquent?: boolean) => {
   if (isDelinquent) {
     return (
-      <Badge variant="outline" className="text-xs font-medium border bg-red-500/10 text-red-400 border-red-500/30">
-        <AlertTriangle className="h-3 w-3 mr-1" />
+      <Badge variant="outline" className="text-[10px] md:text-xs font-medium border bg-red-500/10 text-red-400 border-red-500/30">
+        <AlertTriangle className="h-2.5 w-2.5 md:h-3 md:w-3 mr-0.5 md:mr-1" />
         Moroso
       </Badge>
     );
@@ -57,38 +57,38 @@ const getLifecycleBadge = (stage: string | null, isDelinquent?: boolean) => {
 
   const stageLower = stage?.toUpperCase() || "UNKNOWN";
   
-  const stageConfig: Record<string, { label: string; className: string; icon?: string }> = {
+  const stageConfig: Record<string, { label: string; className: string }> = {
     LEAD: { label: "Lead", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
     TRIAL: { label: "Trial", className: "bg-purple-500/10 text-purple-400 border-purple-500/30" },
     CUSTOMER: { label: "Cliente", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
-    CHURN: { label: "Cancelado", className: "bg-red-500/10 text-red-400 border-red-500/30" },
+    CHURN: { label: "Cancel", className: "bg-red-500/10 text-red-400 border-red-500/30" },
   };
 
-  const config = stageConfig[stageLower] || { label: stage || "Desconocido", className: "bg-muted text-muted-foreground" };
+  const config = stageConfig[stageLower] || { label: stage || "?", className: "bg-muted text-muted-foreground" };
 
   return (
-    <Badge variant="outline" className={cn("text-xs font-medium border", config.className)}>
+    <Badge variant="outline" className={cn("text-[10px] md:text-xs font-medium border", config.className)}>
       {config.label}
     </Badge>
   );
 };
 
 // Payment status badge
-const getPaymentStatusBadge = (paymentStatus: string | null, isDelinquent?: boolean) => {
+const getPaymentStatusBadge = (paymentStatus: string | null) => {
   if (!paymentStatus || paymentStatus === 'none') return null;
   
   const statusConfig: Record<string, { label: string; className: string }> = {
     active: { label: "Pagando", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
-    past_due: { label: "Atrasado", className: "bg-orange-500/10 text-orange-400 border-orange-500/30" },
+    past_due: { label: "Atrás", className: "bg-orange-500/10 text-orange-400 border-orange-500/30" },
     failed: { label: "Fallido", className: "bg-red-500/10 text-red-400 border-red-500/30" },
-    canceled: { label: "Cancelado", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
+    canceled: { label: "Cancel", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
   };
 
   const config = statusConfig[paymentStatus] || null;
   if (!config) return null;
 
   return (
-    <Badge variant="outline" className={cn("text-xs font-medium border", config.className)}>
+    <Badge variant="outline" className={cn("text-[10px] md:text-xs font-medium border", config.className)}>
       {config.label}
     </Badge>
   );
@@ -188,7 +188,7 @@ export function ClientsTable({
       console.error("Error sending to CRM:", error);
       toast({
         title: "Error",
-        description: "No se pudo enviar al CRM. Verifica que la URL del webhook esté configurada.",
+        description: "No se pudo enviar al CRM.",
         variant: "destructive",
       });
     } finally {
@@ -199,9 +199,9 @@ export function ClientsTable({
   if (isLoading) {
     return (
       <div className="rounded-xl border border-border bg-card">
-        <div className="p-8 text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Cargando clientes...</p>
+        <div className="p-6 md:p-8 text-center">
+          <div className="mx-auto h-6 w-6 md:h-8 md:w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <p className="mt-3 md:mt-4 text-xs md:text-sm text-muted-foreground">Cargando...</p>
         </div>
       </div>
     );
@@ -210,9 +210,9 @@ export function ClientsTable({
   if (clients.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-card">
-        <div className="p-8 text-center">
-          <p className="text-muted-foreground">
-            {vipOnly ? "No hay clientes VIP (>$1,000 USD)" : "No hay clientes registrados"}
+        <div className="p-6 md:p-8 text-center">
+          <p className="text-sm text-muted-foreground">
+            {vipOnly ? "No hay clientes VIP" : "No hay clientes"}
           </p>
         </div>
       </div>
@@ -222,13 +222,13 @@ export function ClientsTable({
   return (
     <TooltipProvider>
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        {/* VIP Filter */}
+        {/* VIP Filter - Compact on mobile */}
         {onVipOnlyChange && (
-          <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-muted/20">
-            <div className="flex items-center gap-2">
-              <Crown className="h-4 w-4 text-yellow-500" />
-              <Label htmlFor="vip-filter" className="text-sm font-medium cursor-pointer">
-                Solo VIPs (LTV &gt; $1,000 USD)
+          <div className="flex items-center justify-between px-3 md:px-6 py-2.5 md:py-3 border-b border-border bg-muted/20">
+            <div className="flex items-center gap-1.5 md:gap-2">
+              <Crown className="h-3.5 w-3.5 md:h-4 md:w-4 text-yellow-500" />
+              <Label htmlFor="vip-filter" className="text-xs md:text-sm font-medium cursor-pointer">
+                Solo VIPs
               </Label>
             </div>
             <Switch
@@ -239,7 +239,126 @@ export function ClientsTable({
           </div>
         )}
 
-        <div className="overflow-x-auto">
+        {/* Mobile Card View */}
+        <div className="md:hidden divide-y divide-border">
+          {clients.map((client) => {
+            const isInRecovery = client.email && recoveryEmails.has(client.email);
+            const clientIsVip = isVip(client);
+            const totalSpendUSD = (client.total_spend || 0) / 100;
+            
+            return (
+              <div 
+                key={client.id} 
+                className={cn(
+                  "p-3 touch-feedback",
+                  clientIsVip && "bg-yellow-500/5"
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  {/* Left: Avatar + Info */}
+                  <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                    <div className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-full shrink-0",
+                      clientIsVip ? "bg-yellow-500/20" : "bg-primary/10"
+                    )}>
+                      <span className={cn(
+                        "text-xs font-medium",
+                        clientIsVip ? "text-yellow-500" : "text-primary"
+                      )}>
+                        {client.full_name?.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase() || "??"}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="font-medium text-sm text-foreground truncate max-w-[140px]">
+                          {client.full_name || "Sin nombre"}
+                        </p>
+                        {clientIsVip && <Crown className="h-3 w-3 text-yellow-500 shrink-0" />}
+                      </div>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {client.email || "Sin email"}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                        {getLifecycleBadge(client.lifecycle_stage, client.is_delinquent)}
+                        {getPaymentStatusBadge(client.payment_status)}
+                        {isInRecovery && !client.is_delinquent && (
+                          <Badge variant="outline" className="text-[10px] bg-orange-500/10 text-orange-400 border-orange-500/30">
+                            Fallo
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: LTV + Actions */}
+                  <div className="flex flex-col items-end gap-2 shrink-0">
+                    <span className={cn(
+                      "text-sm font-semibold",
+                      clientIsVip ? "text-yellow-400" : "text-foreground"
+                    )}>
+                      ${totalSpendUSD.toLocaleString()}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {client.phone && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-[#25D366]"
+                          onClick={() => handleWhatsAppClick(client)}
+                        >
+                          <MessageCircle className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-primary/70"
+                        onClick={() => setTimelineClient({ id: client.id, name: client.full_name || "Cliente" })}
+                      >
+                        <Activity className="h-3.5 w-3.5" />
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7">
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-popover border-border">
+                          {client.stripe_customer_id && (
+                            <DropdownMenuItem onClick={() => handlePortalLink(client)}>
+                              <Link className="h-4 w-4 mr-2" />
+                              Copiar portal
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem 
+                            onClick={() => handleSendToCRM(client)}
+                            disabled={!client.email}
+                          >
+                            <Send className="h-4 w-4 mr-2" />
+                            Enviar a CRM
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => onEdit?.(client)}>
+                            Editar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => onDelete?.(client.id)}
+                          >
+                            Eliminar
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Desktop Table View */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-muted/30">
@@ -256,7 +375,7 @@ export function ClientsTable({
                   Estado
                 </th>
                 <th className="px-6 py-4 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  Última sincronización
+                  Última sync
                 </th>
                 <th className="px-6 py-4 text-right text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Acciones
@@ -298,23 +417,25 @@ export function ClientsTable({
                                 <TooltipTrigger>
                                   <Crown className="h-4 w-4 text-yellow-500" />
                                 </TooltipTrigger>
-                                <TooltipContent>Cliente VIP - LTV: ${totalSpendUSD.toLocaleString()}</TooltipContent>
+                                <TooltipContent>VIP - ${totalSpendUSD.toLocaleString()}</TooltipContent>
                               </Tooltip>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            {client.is_delinquent && (
-                              <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
-                                <AlertTriangle className="h-3 w-3 mr-1" />
-                                Moroso
-                              </Badge>
-                            )}
-                            {isInRecovery && !client.is_delinquent && (
-                              <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-400 border-orange-500/30">
-                                Pago fallido
-                              </Badge>
-                            )}
-                          </div>
+                          {(client.is_delinquent || isInRecovery) && (
+                            <div className="flex items-center gap-2 mt-1">
+                              {client.is_delinquent && (
+                                <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
+                                  <AlertTriangle className="h-3 w-3 mr-1" />
+                                  Moroso
+                                </Badge>
+                              )}
+                              {isInRecovery && !client.is_delinquent && (
+                                <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-400 border-orange-500/30">
+                                  Pago fallido
+                                </Badge>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -326,7 +447,7 @@ export function ClientsTable({
                         )}>
                           ${totalSpendUSD.toLocaleString()}
                         </span>
-                        <span className="text-xs text-muted-foreground">USD lifetime</span>
+                        <span className="text-xs text-muted-foreground">USD</span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
@@ -334,7 +455,7 @@ export function ClientsTable({
                         {client.email && (
                           <div className="flex items-center gap-2 text-sm text-muted-foreground">
                             <Mail className="h-3.5 w-3.5" />
-                            {client.email}
+                            <span className="truncate max-w-[180px]">{client.email}</span>
                           </div>
                         )}
                         {client.phone && (
@@ -351,7 +472,7 @@ export function ClientsTable({
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-1">
                         {getLifecycleBadge(client.lifecycle_stage, client.is_delinquent)}
-                        {getPaymentStatusBadge(client.payment_status, client.is_delinquent)}
+                        {getPaymentStatusBadge(client.payment_status)}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-muted-foreground">
@@ -364,7 +485,6 @@ export function ClientsTable({
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-2">
-                        {/* Portal Link Button */}
                         {client.stripe_customer_id && (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -384,11 +504,10 @@ export function ClientsTable({
                                 )}
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>Copiar link de portal de pagos</TooltipContent>
+                            <TooltipContent>Copiar link portal</TooltipContent>
                           </Tooltip>
                         )}
 
-                        {/* Timeline Button */}
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -400,10 +519,9 @@ export function ClientsTable({
                               <Activity className="h-4 w-4" />
                             </Button>
                           </TooltipTrigger>
-                          <TooltipContent>Ver historial de eventos</TooltipContent>
+                          <TooltipContent>Ver historial</TooltipContent>
                         </Tooltip>
 
-                        {/* WhatsApp Button */}
                         {client.phone ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -417,7 +535,7 @@ export function ClientsTable({
                               </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              {isInRecovery ? "Enviar mensaje de cobro" : "Enviar saludo"}
+                              {isInRecovery ? "Mensaje cobro" : "Saludo"}
                             </TooltipContent>
                           </Tooltip>
                         ) : (
@@ -432,18 +550,17 @@ export function ClientsTable({
                                 <MessageCircle className="h-4 w-4" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>Sin teléfono registrado</TooltipContent>
+                            <TooltipContent>Sin teléfono</TooltipContent>
                           </Tooltip>
                         )}
                         
-                        {/* Actions Menu */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8">
                               <MoreHorizontal className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" className="bg-popover border-border">
                             <DropdownMenuItem 
                               onClick={() => handleSendToCRM(client)}
                               disabled={!client.email || sendingToCRM === client.id}
@@ -476,28 +593,32 @@ export function ClientsTable({
           </table>
         </div>
         
-        {/* Pagination */}
+        {/* Pagination - Compact on mobile */}
         {totalPages > 1 && onPageChange && (
-          <div className="flex items-center justify-between px-6 py-4 border-t border-border">
-            <p className="text-sm text-muted-foreground">
-              Página {page + 1} de {totalPages}
+          <div className="flex items-center justify-between px-3 md:px-6 py-3 md:py-4 border-t border-border">
+            <p className="text-xs md:text-sm text-muted-foreground">
+              {page + 1}/{totalPages}
             </p>
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 md:gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => onPageChange(page - 1)}
                 disabled={page === 0}
+                className="h-8 px-2 md:px-3"
               >
-                Anterior
+                <ChevronLeft className="h-4 w-4" />
+                <span className="hidden sm:inline ml-1">Anterior</span>
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => onPageChange(page + 1)}
                 disabled={page >= totalPages - 1}
+                className="h-8 px-2 md:px-3"
               >
-                Siguiente
+                <span className="hidden sm:inline mr-1">Siguiente</span>
+                <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
           </div>
