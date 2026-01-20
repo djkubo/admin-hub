@@ -50,3 +50,9 @@ verify_jwt = false
 
 [functions.send-campaign]
 verify_jwt = false
+
+[functions.sync-ghl]
+verify_jwt = false
+
+[functions.sync-manychat]
+verify_jwt = false
