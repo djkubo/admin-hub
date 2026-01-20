@@ -102,7 +102,7 @@ serve(async (req) => {
       }
     }
 
-    console.log(`Sending ${channel.toUpperCase()} to:`, toAddress);
+    console.log(`Sending ${channel.toUpperCase()} to:`, toAddress, 'from:', fromAddress);
 
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
     
