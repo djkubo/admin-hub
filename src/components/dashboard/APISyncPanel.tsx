@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock } from 'lucide-react';
+import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +15,9 @@ interface SyncResult {
   paid_count?: number;
   failed_count?: number;
   total_fetched?: number;
+  total_inserted?: number;
+  total_updated?: number;
+  total_conflicts?: number;
   message?: string;
   error?: string;
 }
@@ -23,8 +26,10 @@ export function APISyncPanel() {
   const queryClient = useQueryClient();
   const [stripeSyncing, setStripeSyncing] = useState(false);
   const [paypalSyncing, setPaypalSyncing] = useState(false);
+  const [manychatSyncing, setManychatSyncing] = useState(false);
   const [stripeResult, setStripeResult] = useState<SyncResult | null>(null);
   const [paypalResult, setPaypalResult] = useState<SyncResult | null>(null);
+  const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; label: string } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts
@@ -218,13 +223,46 @@ export function APISyncPanel() {
     }
   };
 
+  const syncManyChat = async () => {
+    setManychatSyncing(true);
+    setManychatResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-manychat', {
+        body: { dry_run: false }
+      });
+
+      if (error) throw error;
+      
+      setManychatResult({
+        success: true,
+        total_fetched: data.stats?.total_fetched || 0,
+        total_inserted: data.stats?.total_inserted || 0,
+        total_updated: data.stats?.total_updated || 0,
+        total_conflicts: data.stats?.total_conflicts || 0
+      });
+      
+      toast.success(`ManyChat: ${data.stats?.total_fetched || 0} contactos sincronizados (${data.stats?.total_inserted || 0} nuevos, ${data.stats?.total_updated || 0} actualizados)`);
+      
+      // Refresh clients data
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      setManychatResult({ success: false, error: errorMessage });
+      toast.error(`Error sincronizando ManyChat: ${errorMessage}`);
+    } finally {
+      setManychatSyncing(false);
+    }
+  };
+
   const syncAllHistory = async () => {
     // Run sequentially to avoid rate limits
     await syncStripe('allHistory');
     await syncPayPal('allHistory');
   };
 
-  const isSyncing = stripeSyncing || paypalSyncing;
+  const isSyncing = stripeSyncing || paypalSyncing || manychatSyncing;
 
   return (
     <Card className="bg-[#1a1f36] border-border/50">
@@ -399,6 +437,57 @@ export function APISyncPanel() {
               Todo Historial
             </Button>
           </div>
+        </div>
+
+        {/* ManyChat Sync */}
+        <div className="p-4 bg-[#0f1225] rounded-lg border border-blue-500/30 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                <MessageCircle className="h-5 w-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-white">ManyChat</h4>
+                <p className="text-xs text-gray-400">
+                  {manychatResult?.success 
+                    ? `${manychatResult.total_fetched} contactos (${manychatResult.total_inserted} nuevos, ${manychatResult.total_updated} actualizados)`
+                    : 'Sincroniza todos tus suscriptores de ManyChat'
+                  }
+                </p>
+              </div>
+            </div>
+            {manychatResult && (
+              <Badge variant={manychatResult.success ? 'default' : 'destructive'} className="gap-1">
+                {manychatResult.success ? (
+                  <><CheckCircle className="h-3 w-3" /> OK</>
+                ) : (
+                  <><AlertCircle className="h-3 w-3" /> Error</>
+                )}
+              </Badge>
+            )}
+          </div>
+          
+          <Button
+            onClick={syncManyChat}
+            disabled={isSyncing}
+            className="w-full gap-2 bg-blue-600 hover:bg-blue-700"
+          >
+            {manychatSyncing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Sincronizando contactos...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4" />
+                Importar Todos los Contactos
+              </>
+            )}
+          </Button>
+          
+          <p className="text-xs text-gray-500">
+            📱 Importa suscriptores de Instagram, Messenger y WhatsApp. Unifica por email/phone.
+          </p>
         </div>
 
         {/* Sync All Button */}
