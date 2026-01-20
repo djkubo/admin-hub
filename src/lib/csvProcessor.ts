@@ -364,26 +364,28 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Prepare transactions for batch UPSERT
-  // Use CLEAN external_transaction_id for deduplication
+  // NORMALIZED DEDUPLICATION using payment_key + source
+  // PayPal: transaction_id is the canonical payment_key
   const transactionsToUpsert = parsedRows.map(row => ({
     customer_email: row.email,
     amount: row.amount, // Already in cents
     status: row.status,
     source: 'paypal',
-    external_transaction_id: row.transactionId, // CLEAN ID, no prefix
-    stripe_payment_intent_id: `paypal_${row.transactionId}`, // Keep prefix for upsert conflict
+    payment_key: row.transactionId, // CANONICAL dedup key (NO prefix)
+    external_transaction_id: row.transactionId, // CLEAN ID for reference
+    stripe_payment_intent_id: `paypal_${row.transactionId}`, // Backwards compat
     stripe_created_at: row.transactionDate.toISOString(),
-    currency: row.currency,
+    currency: row.currency.toLowerCase(), // Normalize to lowercase
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
     failure_message: row.status === 'failed' ? 'Pago rechazado por PayPal' : null
   }));
 
   if (transactionsToUpsert.length > 0) {
     const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
+      // Use new UNIQUE constraint: (source, payment_key)
       const { error } = await supabase
         .from('transactions')
-        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
+        .upsert(batch, { onConflict: 'source,payment_key', ignoreDuplicates: false });
       
       if (error) {
         return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
@@ -882,27 +884,33 @@ export async function processPaymentCSV(
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // CRITICAL FIX #3: Prepare transactions with proper ID handling
-  // - stripe_payment_intent_id = PaymentIntent ID (or Charge ID if no PI)
-  // - external_transaction_id = ALWAYS the original Charge ID
-  const transactionsToUpsert = parsedRows.map(row => ({
-    customer_email: row.email,
-    amount: row.amount, // Already in cents
-    status: row.status, // Already normalized to lowercase
-    source: 'stripe',
-    external_transaction_id: row.chargeId || row.paymentIntentId, // Original Charge ID
-    stripe_payment_intent_id: row.paymentIntentId, // Primary dedup key
-    stripe_created_at: new Date(row.date).toISOString(),
-    currency: 'usd',
-    failure_code: row.status === 'failed' ? 'payment_failed' : null,
-    failure_message: row.status === 'failed' ? 'Pago fallido' : null
-  }));
+  // NORMALIZED DEDUPLICATION using payment_key + source
+  // Stripe CSV: use payment_intent_id if exists, else charge_id
+  const transactionsToUpsert = parsedRows.map(row => {
+    // payment_key: PaymentIntent takes priority over Charge ID
+    const paymentKey = row.paymentIntentId || row.chargeId;
+    
+    return {
+      customer_email: row.email,
+      amount: row.amount, // Already in cents
+      status: row.status, // Already normalized to lowercase
+      source: 'stripe',
+      payment_key: paymentKey, // CANONICAL dedup key
+      external_transaction_id: row.chargeId || null, // Original Charge ID
+      stripe_payment_intent_id: row.paymentIntentId || row.chargeId, // For backwards compat
+      stripe_created_at: new Date(row.date).toISOString(),
+      currency: 'usd',
+      failure_code: row.status === 'failed' ? 'payment_failed' : null,
+      failure_message: row.status === 'failed' ? 'Pago fallido' : null
+    };
+  });
 
   if (transactionsToUpsert.length > 0) {
     const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
+      // Use new UNIQUE constraint: (source, payment_key)
       const { error } = await supabase
         .from('transactions')
-        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
+        .upsert(batch, { onConflict: 'source,payment_key', ignoreDuplicates: false });
       
       if (error) {
         return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };

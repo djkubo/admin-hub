@@ -264,6 +264,7 @@ export type Database = {
           failure_message: string | null
           id: string
           metadata: Json | null
+          payment_key: string | null
           source: string | null
           status: string
           stripe_created_at: string | null
@@ -280,6 +281,7 @@ export type Database = {
           failure_message?: string | null
           id?: string
           metadata?: Json | null
+          payment_key?: string | null
           source?: string | null
           status: string
           stripe_created_at?: string | null
@@ -296,6 +298,7 @@ export type Database = {
           failure_message?: string | null
           id?: string
           metadata?: Json | null
+          payment_key?: string | null
           source?: string | null
           status?: string
           stripe_created_at?: string | null

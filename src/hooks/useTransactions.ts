@@ -5,8 +5,9 @@ import { useToast } from "@/hooks/use-toast";
 export interface Transaction {
   id: string;
   stripe_payment_intent_id: string;
-  amount: number;
-  currency: string | null;
+  payment_key: string | null; // CANONICAL dedup key
+  amount: number; // Always in CENTS
+  currency: string | null; // Always lowercase (usd, mxn)
   status: string;
   failure_code: string | null;
   failure_message: string | null;
@@ -14,7 +15,7 @@ export interface Transaction {
   stripe_customer_id: string | null;
   stripe_created_at: string | null;
   created_at: string | null;
-  source: string | null;
+  source: string | null; // 'stripe' | 'paypal'
   external_transaction_id: string | null;
   metadata: any | null;
 }

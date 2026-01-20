@@ -234,6 +234,8 @@ Deno.serve(async (req) => {
 
     const transactionsMap = new Map<string, {
       stripe_payment_intent_id: string;
+      payment_key: string;
+      external_transaction_id: string;
       customer_email: string;
       amount: number;
       currency: string;
@@ -263,12 +265,14 @@ Deno.serve(async (req) => {
       }
 
       const transactionId = info.transaction_id;
-      const paymentIntentId = `paypal_${transactionId}`;
-
-      if (transactionsMap.has(paymentIntentId)) {
+      
+      // Check for duplicate using clean transaction ID (no prefix)
+      if (transactionsMap.has(transactionId)) {
         skippedDuplicate++;
         continue;
       }
+
+      const paymentIntentId = `paypal_${transactionId}`; // For backwards compat
 
       const amount = parseFloat(info.transaction_amount?.value || '0');
       const currency = info.transaction_amount?.currency_code || 'USD';
@@ -284,11 +288,14 @@ Deno.serve(async (req) => {
         failedCount++;
       }
 
-      transactionsMap.set(paymentIntentId, {
-        stripe_payment_intent_id: paymentIntentId,
+      // NORMALIZED: payment_key = transaction_id (NO prefix) for perfect dedup
+      transactionsMap.set(transactionId, {
+        stripe_payment_intent_id: paymentIntentId, // Backwards compat with prefix
+        payment_key: transactionId, // CANONICAL dedup key (NO prefix)
+        external_transaction_id: transactionId, // Clean ID for reference
         customer_email: email,
-        amount: Math.round(Math.abs(amount) * 100),
-        currency: currency.toLowerCase(),
+        amount: Math.round(Math.abs(amount) * 100), // Convert dollars to cents
+        currency: currency.toLowerCase(), // Normalize to lowercase
         status,
         failure_code: status === 'failed' ? info.transaction_status : null,
         failure_message: status === 'failed' ? `PayPal status: ${info.transaction_status}` : null,
@@ -330,9 +337,10 @@ Deno.serve(async (req) => {
     
     for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
       const batch = transactions.slice(i, i + BATCH_SIZE);
+      // Use new UNIQUE constraint: (source, payment_key)
       const { data: upsertedData, error: upsertError } = await supabase
         .from("transactions")
-        .upsert(batch, { onConflict: "stripe_payment_intent_id", ignoreDuplicates: false })
+        .upsert(batch, { onConflict: "source,payment_key", ignoreDuplicates: false })
         .select();
 
       if (upsertError) {
