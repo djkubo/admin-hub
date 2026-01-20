@@ -78,3 +78,9 @@ verify_jwt = false
 
 [functions.reconcile-metrics]
 verify_jwt = false
+
+[functions.ghl-templates]
+verify_jwt = false
+
+[functions.twilio-templates]
+verify_jwt = false
