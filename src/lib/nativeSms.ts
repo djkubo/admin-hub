@@ -76,12 +76,27 @@ export async function sendNativeSms({ to, message }: NativeSmsOptions): Promise<
 
 /**
  * Open WhatsApp with a pre-filled message
+ * Uses multiple strategies for better cross-browser compatibility (especially Safari)
  */
 export function openWhatsApp(phone: string, message: string): void {
   const cleanedPhone = cleanPhoneNumber(phone).replace(/^\+/, '');
   const encodedMessage = encodeURIComponent(message);
   const waUrl = `https://wa.me/${cleanedPhone}?text=${encodedMessage}`;
-  window.open(waUrl, '_blank');
+  
+  // Try window.open first (works in most browsers)
+  const newWindow = window.open(waUrl, '_blank');
+  
+  // If blocked by popup blocker (Safari), fallback to location change
+  if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+    // Use a link click as fallback (most reliable for Safari)
+    const link = document.createElement('a');
+    link.href = waUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
 }
 
 /**
