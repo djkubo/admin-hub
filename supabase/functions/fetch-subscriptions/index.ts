@@ -119,9 +119,16 @@ serve(async (req) => {
         plan_name: planName,
         plan_id: plan?.id || null,
         amount: plan?.amount || 0,
-        currency: plan?.currency || "usd",
+        currency: (plan?.currency || "usd").toLowerCase(), // Normalize to lowercase
         interval: plan?.interval || "month",
         status: sub.status,
+        provider: 'stripe', // Add provider
+        trial_start: sub.trial_start 
+          ? new Date(sub.trial_start * 1000).toISOString() 
+          : null,
+        trial_end: sub.trial_end 
+          ? new Date(sub.trial_end * 1000).toISOString() 
+          : null,
         current_period_start: sub.current_period_start 
           ? new Date(sub.current_period_start * 1000).toISOString() 
           : null,
@@ -131,6 +138,7 @@ serve(async (req) => {
         canceled_at: sub.canceled_at 
           ? new Date(sub.canceled_at * 1000).toISOString() 
           : null,
+        cancel_reason: sub.cancellation_details?.reason || null,
         updated_at: new Date().toISOString(),
       };
     });

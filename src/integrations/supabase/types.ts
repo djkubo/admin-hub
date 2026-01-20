@@ -202,6 +202,7 @@ export type Database = {
       subscriptions: {
         Row: {
           amount: number
+          cancel_reason: string | null
           canceled_at: string | null
           created_at: string | null
           currency: string | null
@@ -212,13 +213,17 @@ export type Database = {
           interval: string | null
           plan_id: string | null
           plan_name: string
+          provider: string | null
           status: string
           stripe_customer_id: string | null
           stripe_subscription_id: string
+          trial_end: string | null
+          trial_start: string | null
           updated_at: string | null
         }
         Insert: {
           amount?: number
+          cancel_reason?: string | null
           canceled_at?: string | null
           created_at?: string | null
           currency?: string | null
@@ -229,13 +234,17 @@ export type Database = {
           interval?: string | null
           plan_id?: string | null
           plan_name: string
+          provider?: string | null
           status: string
           stripe_customer_id?: string | null
           stripe_subscription_id: string
+          trial_end?: string | null
+          trial_start?: string | null
           updated_at?: string | null
         }
         Update: {
           amount?: number
+          cancel_reason?: string | null
           canceled_at?: string | null
           created_at?: string | null
           currency?: string | null
@@ -246,9 +255,12 @@ export type Database = {
           interval?: string | null
           plan_id?: string | null
           plan_name?: string
+          provider?: string | null
           status?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string
+          trial_end?: string | null
+          trial_start?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -265,11 +277,13 @@ export type Database = {
           id: string
           metadata: Json | null
           payment_key: string | null
+          payment_type: string | null
           source: string | null
           status: string
           stripe_created_at: string | null
           stripe_customer_id: string | null
           stripe_payment_intent_id: string
+          subscription_id: string | null
         }
         Insert: {
           amount: number
@@ -282,11 +296,13 @@ export type Database = {
           id?: string
           metadata?: Json | null
           payment_key?: string | null
+          payment_type?: string | null
           source?: string | null
           status: string
           stripe_created_at?: string | null
           stripe_customer_id?: string | null
           stripe_payment_intent_id: string
+          subscription_id?: string | null
         }
         Update: {
           amount?: number
@@ -299,11 +315,13 @@ export type Database = {
           id?: string
           metadata?: Json | null
           payment_key?: string | null
+          payment_type?: string | null
           source?: string | null
           status?: string
           stripe_created_at?: string | null
           stripe_customer_id?: string | null
           stripe_payment_intent_id?: string
+          subscription_id?: string | null
         }
         Relationships: []
       }
