@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -16,37 +16,82 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useInvoices, Invoice } from '@/hooks/useInvoices';
 import { toast } from 'sonner';
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow, format, addDays, isAfter, isBefore } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 
 type InvoiceFilter = 'all' | 'open' | 'draft' | 'scheduled' | 'unscheduled';
+type DateRange = 'all' | '1d' | '7d' | '15d' | '30d' | '60d';
 
 export function InvoicesPage() {
   const { invoices, isLoading, syncInvoices, totalPending, refetch } = useInvoices();
   const [filter, setFilter] = useState<InvoiceFilter>('open');
+  const [dateRange, setDateRange] = useState<DateRange>('all');
   const [chargingInvoice, setChargingInvoice] = useState<string | null>(null);
   const [isChargingAll, setIsChargingAll] = useState(false);
   const [chargeProgress, setChargeProgress] = useState<{ current: number; total: number; recovered: number } | null>(null);
 
+  // Get date range cutoff
+  const getDateCutoff = (range: DateRange): Date | null => {
+    const now = new Date();
+    switch (range) {
+      case '1d': return addDays(now, 1);
+      case '7d': return addDays(now, 7);
+      case '15d': return addDays(now, 15);
+      case '30d': return addDays(now, 30);
+      case '60d': return addDays(now, 60);
+      default: return null;
+    }
+  };
+
   const filteredInvoices = useMemo(() => {
     let result = invoices;
     
+    // Status filter
     switch (filter) {
       case 'open':
-        result = invoices.filter((i: Invoice) => i.status === 'open');
+        result = result.filter((i: Invoice) => i.status === 'open');
         break;
       case 'draft':
-        result = invoices.filter((i: Invoice) => i.status === 'draft');
+        result = result.filter((i: Invoice) => i.status === 'draft');
         break;
       case 'scheduled':
-        result = invoices.filter((i: Invoice) => i.next_payment_attempt);
+        result = result.filter((i: Invoice) => i.next_payment_attempt);
         break;
       case 'unscheduled':
-        result = invoices.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft');
+        result = result.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft');
         break;
+    }
+
+    // Date range filter (based on next_payment_attempt or created_at)
+    const cutoff = getDateCutoff(dateRange);
+    if (cutoff) {
+      const now = new Date();
+      result = result.filter((i: Invoice) => {
+        const dateToCheck = i.next_payment_attempt 
+          ? new Date(i.next_payment_attempt) 
+          : i.created_at 
+          ? new Date(i.created_at) 
+          : null;
+        
+        if (!dateToCheck) return true; // Include if no date
+        
+        // Include invoices where next_payment_attempt is between now and cutoff
+        // Or for created_at, include if created within the range
+        if (i.next_payment_attempt) {
+          return isAfter(dateToCheck, now) && isBefore(dateToCheck, cutoff);
+        }
+        return true; // Include drafts/unscheduled regardless
+      });
     }
     
     // Sort by next payment attempt (soonest first)
@@ -55,7 +100,7 @@ export function InvoicesPage() {
       if (!b.next_payment_attempt) return -1;
       return new Date(a.next_payment_attempt).getTime() - new Date(b.next_payment_attempt).getTime();
     });
-  }, [invoices, filter]);
+  }, [invoices, filter, dateRange]);
 
   const totalFiltered = filteredInvoices.reduce((sum, i) => sum + (i.amount_due || 0), 0);
 
@@ -79,13 +124,13 @@ export function InvoicesPage() {
   };
 
   const handleChargeAll = async () => {
-    // Only charge open invoices with scheduled payment
+    // Only charge open invoices from the filtered list (respects date range filter)
     const toCharge = filteredInvoices.filter((i: Invoice) => 
-      i.status === 'open' && i.next_payment_attempt
+      i.status === 'open'
     );
 
     if (toCharge.length === 0) {
-      toast.error('No hay facturas elegibles para cobrar');
+      toast.error('No hay facturas elegibles para cobrar en el rango seleccionado');
       return;
     }
 
@@ -178,15 +223,34 @@ export function InvoicesPage() {
       {/* Filters */}
       <div className="rounded-xl border border-border/50 bg-card p-4">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <Tabs value={filter} onValueChange={(v) => setFilter(v as InvoiceFilter)}>
-            <TabsList className="bg-muted/50">
-              <TabsTrigger value="all">Todas ({filterCounts.all})</TabsTrigger>
-              <TabsTrigger value="open">Abiertas ({filterCounts.open})</TabsTrigger>
-              <TabsTrigger value="draft">Borrador ({filterCounts.draft})</TabsTrigger>
-              <TabsTrigger value="scheduled">Programadas ({filterCounts.scheduled})</TabsTrigger>
-              <TabsTrigger value="unscheduled">Sin programar ({filterCounts.unscheduled})</TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="flex items-center gap-4 flex-wrap">
+            <Tabs value={filter} onValueChange={(v) => setFilter(v as InvoiceFilter)}>
+              <TabsList className="bg-muted/50">
+                <TabsTrigger value="all">Todas ({filterCounts.all})</TabsTrigger>
+                <TabsTrigger value="open">Abiertas ({filterCounts.open})</TabsTrigger>
+                <TabsTrigger value="draft">Borrador ({filterCounts.draft})</TabsTrigger>
+                <TabsTrigger value="scheduled">Programadas ({filterCounts.scheduled})</TabsTrigger>
+                <TabsTrigger value="unscheduled">Sin programar ({filterCounts.unscheduled})</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+              <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
+                <SelectTrigger className="w-32 bg-muted/50 border-border/50">
+                  <SelectValue placeholder="Período" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas</SelectItem>
+                  <SelectItem value="1d">1 día</SelectItem>
+                  <SelectItem value="7d">7 días</SelectItem>
+                  <SelectItem value="15d">15 días</SelectItem>
+                  <SelectItem value="30d">30 días</SelectItem>
+                  <SelectItem value="60d">60 días</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-muted-foreground">
@@ -194,11 +258,12 @@ export function InvoicesPage() {
             </Badge>
             <Button
               onClick={handleChargeAll}
-              disabled={isChargingAll || filter !== 'open'}
+              disabled={isChargingAll || filteredInvoices.filter(i => i.status === 'open').length === 0}
               className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+              title={`Cobrar ${filteredInvoices.filter(i => i.status === 'open').length} facturas abiertas${dateRange !== 'all' ? ` en próximos ${dateRange}` : ''}`}
             >
               {isChargingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <DollarSign className="h-4 w-4" />}
-              Cobrar Todas
+              Cobrar {dateRange !== 'all' ? `(${dateRange})` : 'Todas'}
             </Button>
           </div>
         </div>
