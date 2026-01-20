@@ -44,3 +44,6 @@ verify_jwt = false
 
 [functions.send-manychat]
 verify_jwt = false
+
+[functions.execute-campaign]
+verify_jwt = false

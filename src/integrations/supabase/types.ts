@@ -65,6 +65,111 @@ export type Database = {
         }
         Relationships: []
       }
+      campaign_executions: {
+        Row: {
+          attempt_number: number | null
+          channel_used: string | null
+          client_id: string | null
+          created_at: string | null
+          external_message_id: string | null
+          id: string
+          message_content: string | null
+          metadata: Json | null
+          revenue_at_risk: number | null
+          rule_id: string | null
+          status: string
+          trigger_event: string
+          updated_at: string | null
+        }
+        Insert: {
+          attempt_number?: number | null
+          channel_used?: string | null
+          client_id?: string | null
+          created_at?: string | null
+          external_message_id?: string | null
+          id?: string
+          message_content?: string | null
+          metadata?: Json | null
+          revenue_at_risk?: number | null
+          rule_id?: string | null
+          status?: string
+          trigger_event: string
+          updated_at?: string | null
+        }
+        Update: {
+          attempt_number?: number | null
+          channel_used?: string | null
+          client_id?: string | null
+          created_at?: string | null
+          external_message_id?: string | null
+          id?: string
+          message_content?: string | null
+          metadata?: Json | null
+          revenue_at_risk?: number | null
+          rule_id?: string | null
+          status?: string
+          trigger_event?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_executions_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_executions_rule_id_fkey"
+            columns: ["rule_id"]
+            isOneToOne: false
+            referencedRelation: "campaign_rules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_rules: {
+        Row: {
+          channel_priority: string[] | null
+          created_at: string | null
+          delay_minutes: number | null
+          description: string | null
+          id: string
+          is_active: boolean | null
+          max_attempts: number | null
+          name: string
+          template_type: string
+          trigger_event: string
+          updated_at: string | null
+        }
+        Insert: {
+          channel_priority?: string[] | null
+          created_at?: string | null
+          delay_minutes?: number | null
+          description?: string | null
+          id?: string
+          is_active?: boolean | null
+          max_attempts?: number | null
+          name: string
+          template_type?: string
+          trigger_event: string
+          updated_at?: string | null
+        }
+        Update: {
+          channel_priority?: string[] | null
+          created_at?: string | null
+          delay_minutes?: number | null
+          description?: string | null
+          id?: string
+          is_active?: boolean | null
+          max_attempts?: number | null
+          name?: string
+          template_type?: string
+          trigger_event?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       client_events: {
         Row: {
           client_id: string
@@ -110,6 +215,7 @@ export type Database = {
           lifecycle_stage: string | null
           payment_status: string | null
           phone: string | null
+          revenue_score: number | null
           status: string | null
           stripe_customer_id: string | null
           total_paid: number | null
@@ -128,6 +234,7 @@ export type Database = {
           lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
+          revenue_score?: number | null
           status?: string | null
           stripe_customer_id?: string | null
           total_paid?: number | null
@@ -146,6 +253,7 @@ export type Database = {
           lifecycle_stage?: string | null
           payment_status?: string | null
           phone?: string | null
+          revenue_score?: number | null
           status?: string | null
           stripe_customer_id?: string | null
           total_paid?: number | null
@@ -198,6 +306,38 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      opt_outs: {
+        Row: {
+          channel: string
+          client_id: string | null
+          id: string
+          opted_out_at: string | null
+          reason: string | null
+        }
+        Insert: {
+          channel: string
+          client_id?: string | null
+          id?: string
+          opted_out_at?: string | null
+          reason?: string | null
+        }
+        Update: {
+          channel?: string
+          client_id?: string | null
+          id?: string
+          opted_out_at?: string | null
+          reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opt_outs_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       subscriptions: {
         Row: {

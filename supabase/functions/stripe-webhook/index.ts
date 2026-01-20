@@ -292,38 +292,67 @@ Deno.serve(async (req) => {
         throw txError;
       }
 
-      // 🔔 TRIGGER: Notify GHL for failed payments
+      // 🔔 TRIGGER: Execute campaign for failed payments via Rules Engine
       if (status === 'failed' && email) {
-        console.log(`🔔 Triggering GHL notification for failed payment: ${email}`);
+        console.log(`🔔 Triggering campaign for failed payment: ${email}`);
         try {
           const { data: client } = await supabase
             .from('clients')
-            .select('full_name, phone')
+            .select('id, full_name, phone')
             .eq('email', email)
             .single();
 
-          await fetch(`${supabaseUrl}/functions/v1/notify-ghl`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${supabaseServiceKey}`
-            },
-            body: JSON.stringify({
-              email,
-              phone: client?.phone || null,
-              name: client?.full_name || null,
-              tag: 'payment_failed',
-              message_data: {
-                amount_cents: amount,
-                failure_code: failureCode,
-                failure_message: failureMessage,
-                payment_id: paymentIntentId
-              }
-            })
-          });
-          console.log(`✅ GHL notification sent for failed payment: ${email}`);
-        } catch (ghlError) {
-          console.error('⚠️ GHL notification failed (non-blocking):', ghlError);
+          if (client) {
+            await fetch(`${supabaseUrl}/functions/v1/execute-campaign`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`
+              },
+              body: JSON.stringify({
+                trigger_event: 'payment_failed',
+                client_id: client.id,
+                revenue_at_risk: amount,
+                metadata: {
+                  failure_code: failureCode,
+                  failure_message: failureMessage,
+                  payment_id: paymentIntentId
+                }
+              })
+            });
+            console.log(`✅ Campaign triggered for failed payment: ${email}`);
+          }
+        } catch (campaignError) {
+          console.error('⚠️ Campaign trigger failed (non-blocking):', campaignError);
+        }
+      }
+
+      // 🔔 TRIGGER: Execute campaign for trial started
+      if (status === 'trial' && email) {
+        console.log(`🔔 Triggering campaign for trial started: ${email}`);
+        try {
+          const { data: client } = await supabase
+            .from('clients')
+            .select('id')
+            .eq('email', email)
+            .single();
+
+          if (client) {
+            await fetch(`${supabaseUrl}/functions/v1/execute-campaign`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`
+              },
+              body: JSON.stringify({
+                trigger_event: 'trial_started',
+                client_id: client.id,
+              })
+            });
+            console.log(`✅ Campaign triggered for trial started: ${email}`);
+          }
+        } catch (campaignError) {
+          console.error('⚠️ Campaign trigger failed (non-blocking):', campaignError);
         }
       }
 

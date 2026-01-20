@@ -8,6 +8,7 @@ import { SubscriptionsPage } from "@/components/dashboard/SubscriptionsPage";
 import { ImportSyncPage } from "@/components/dashboard/ImportSyncPage";
 import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel";
 import { SettingsPage } from "@/components/dashboard/SettingsPage";
+import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useAuth } from "@/hooks/useAuth";
@@ -40,7 +41,7 @@ const Index = () => {
       case "dashboard":
         return <DashboardHome lastSync={lastSync} onNavigate={setActiveMenuItem} />;
       case "recovery":
-        return <RecoveryPage />;
+        return <RevenueOpsPipeline />;
       case "invoices":
         return <InvoicesPage />;
       case "clients":
