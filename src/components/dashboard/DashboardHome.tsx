@@ -1,0 +1,416 @@
+import { useState, useMemo } from 'react';
+import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
+import { useMetrics } from '@/hooks/useMetrics';
+import { useInvoices } from '@/hooks/useInvoices';
+import { useSubscriptions } from '@/hooks/useSubscriptions';
+import { 
+  DollarSign, 
+  UserPlus, 
+  RefreshCw, 
+  ArrowRightCircle, 
+  AlertTriangle,
+  XCircle,
+  Loader2,
+  Clock,
+  Zap,
+  MessageCircle,
+  FileText,
+  ChevronRight,
+  CheckCircle,
+  CreditCard
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { supabase } from '@/integrations/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { formatDistanceToNow, addDays, addHours } from 'date-fns';
+import { es } from 'date-fns/locale';
+import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
+import type { RecoveryClient } from '@/lib/csvProcessor';
+
+interface DashboardHomeProps {
+  lastSync?: Date | null;
+  onNavigate?: (page: string) => void;
+}
+
+export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
+  const [filter, setFilter] = useState<TimeFilter>('today');
+  const { kpis, isLoading, refetch } = useDailyKPIs(filter);
+  const { metrics } = useMetrics();
+  const { invoices, invoicesNext72h } = useInvoices();
+  const { subscriptions } = useSubscriptions();
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'ok' | 'warning' | null>(null);
+  const queryClient = useQueryClient();
+
+  const filterLabels: Record<TimeFilter, string> = {
+    today: 'Hoy',
+    '7d': '7d',
+    month: 'Mes',
+  };
+
+  const handleSyncAll = async () => {
+    setIsSyncing(true);
+    setSyncStatus(null);
+    try {
+      const now = new Date();
+      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      
+      const [stripeResult, paypalResult, subsResult, invoicesResult] = await Promise.all([
+        supabase.functions.invoke('fetch-stripe', {
+          body: { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }
+        }),
+        supabase.functions.invoke('fetch-paypal', {
+          body: { fetchAll: true, startDate: yesterday.toISOString(), endDate: now.toISOString() }
+        }),
+        supabase.functions.invoke('fetch-subscriptions', { body: {} }),
+        supabase.functions.invoke('fetch-invoices', { body: {} }),
+      ]);
+
+      const hasErrors = stripeResult.error || paypalResult.error;
+      setSyncStatus(hasErrors ? 'warning' : 'ok');
+
+      const totalTx = (stripeResult.data?.synced_transactions || 0) + (paypalResult.data?.synced_transactions || 0);
+      
+      toast.success(`Sync completo: ${totalTx} transacciones, ${subsResult.data?.synced || 0} suscripciones, ${invoicesResult.data?.synced || 0} facturas`);
+      
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['daily-kpis'] });
+      
+      refetch();
+    } catch (error) {
+      console.error('Sync error:', error);
+      setSyncStatus('warning');
+      toast.error('Error en sincronización');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Top 10 failed payments with phone
+  const top10Failures = useMemo(() => {
+    return metrics.recoveryList
+      .filter((c: RecoveryClient) => c.phone)
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 10);
+  }, [metrics.recoveryList]);
+
+  // Top 10 invoices to collect soon
+  const top10Invoices = useMemo(() => {
+    return invoicesNext72h?.slice(0, 10) || [];
+  }, [invoicesNext72h]);
+
+  // Top 10 trials expiring in 24-48h
+  const top10ExpiringTrials = useMemo(() => {
+    const now = new Date();
+    const in48h = addHours(now, 48);
+    
+    return subscriptions
+      .filter(s => {
+        if (s.status !== 'trialing' || !s.trial_end) return false;
+        const trialEnd = new Date(s.trial_end);
+        return trialEnd >= now && trialEnd <= in48h;
+      })
+      .sort((a, b) => new Date(a.trial_end!).getTime() - new Date(b.trial_end!).getTime())
+      .slice(0, 10);
+  }, [subscriptions]);
+
+  const totalRevenue = kpis.newRevenue + kpis.conversionRevenue + kpis.renewalRevenue;
+  const atRiskAmount = kpis.failuresToday * 50;
+
+  const cards = [
+    {
+      title: 'Ventas',
+      value: `$${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      icon: DollarSign,
+      color: 'emerald',
+      subtitle: filterLabels[filter],
+    },
+    {
+      title: 'Nuevos',
+      value: kpis.newPayersToday,
+      icon: UserPlus,
+      color: 'cyan',
+      subtitle: `$${kpis.newRevenue.toFixed(0)}`,
+    },
+    {
+      title: 'Renovaciones',
+      value: kpis.renewalsToday,
+      icon: RefreshCw,
+      color: 'green',
+      subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
+    },
+    {
+      title: 'Trial→Paid',
+      value: kpis.trialConversionsToday,
+      icon: ArrowRightCircle,
+      color: 'purple',
+      subtitle: `$${kpis.conversionRevenue.toFixed(0)}`,
+    },
+    {
+      title: 'Fallos',
+      value: kpis.failuresToday,
+      icon: AlertTriangle,
+      color: 'amber',
+      subtitle: kpis.failuresToday > 0 ? `~$${atRiskAmount} riesgo` : 'OK',
+      isNegative: true,
+    },
+    {
+      title: 'Cancelaciones',
+      value: kpis.cancellationsToday,
+      icon: XCircle,
+      color: 'red',
+      subtitle: 'suscripciones',
+      isNegative: true,
+    },
+  ];
+
+  const getColorClasses = (color: string) => {
+    const colors: Record<string, { bg: string; text: string; icon: string; border: string }> = {
+      emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: 'text-emerald-500', border: 'border-emerald-500/30' },
+      cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', icon: 'text-cyan-500', border: 'border-cyan-500/30' },
+      green: { bg: 'bg-green-500/10', text: 'text-green-400', icon: 'text-green-500', border: 'border-green-500/30' },
+      purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', icon: 'text-purple-500', border: 'border-purple-500/30' },
+      amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', icon: 'text-amber-500', border: 'border-amber-500/30' },
+      red: { bg: 'bg-red-500/10', text: 'text-red-400', icon: 'text-red-500', border: 'border-red-500/30' },
+    };
+    return colors[color] || colors.emerald;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* A) Top Bar */}
+      <div className="flex items-center justify-between bg-card rounded-xl border border-border/50 p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Zap className="h-5 w-5 text-primary" />
+            <h1 className="text-lg font-semibold text-foreground">Command Center</h1>
+          </div>
+          
+          {/* Time filter */}
+          <div className="flex rounded-lg border border-border/50 overflow-hidden">
+            {(['today', '7d', 'month'] as TimeFilter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  filter === f
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-card text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {filterLabels[f]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          {/* Last Sync Status */}
+          <div className="flex items-center gap-2 text-sm">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <span className="text-muted-foreground">
+              {lastSync ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es }) : 'Sin sync'}
+            </span>
+            {syncStatus && (
+              <Badge variant="outline" className={syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}>
+                {syncStatus === 'ok' ? <CheckCircle className="h-3 w-3 mr-1" /> : <AlertTriangle className="h-3 w-3 mr-1" />}
+                {syncStatus === 'ok' ? 'OK' : 'Warnings'}
+              </Badge>
+            )}
+          </div>
+
+          {/* Sync All button */}
+          <Button
+            onClick={handleSyncAll}
+            disabled={isSyncing}
+            className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"
+          >
+            {isSyncing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Sync All
+          </Button>
+        </div>
+      </div>
+
+      {/* B) 6 KPI Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {cards.map((card, index) => {
+          const colors = getColorClasses(card.color);
+          const Icon = card.icon;
+
+          if (isLoading) {
+            return (
+              <div key={index} className="rounded-xl border border-border/50 bg-card p-4 animate-pulse">
+                <div className="h-8 w-8 rounded-lg bg-muted mb-2" />
+                <div className="h-4 w-16 bg-muted rounded mb-1" />
+                <div className="h-6 w-12 bg-muted rounded" />
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={index}
+              className={`rounded-xl border ${colors.border} bg-card p-4 transition-all hover:shadow-lg`}
+            >
+              <div className={`inline-flex p-2 rounded-lg ${colors.bg} mb-2`}>
+                <Icon className={`h-4 w-4 ${colors.icon}`} />
+              </div>
+              <p className="text-xs text-muted-foreground">{card.title}</p>
+              <p className={`text-2xl font-bold ${card.isNegative && typeof card.value === 'number' && card.value > 0 ? 'text-red-400' : 'text-foreground'}`}>
+                {card.value}
+              </p>
+              <p className={`text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* C) 3 Short Lists with CTAs */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Top 10 Failures with Phone */}
+        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border/50">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <h3 className="font-semibold text-foreground">Fallos con Teléfono</h3>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1">
+              Ver todo <ChevronRight className="h-3 w-3" />
+            </Button>
+          </div>
+          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+            {top10Failures.length === 0 ? (
+              <div className="p-4 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin fallos con teléfono
+              </div>
+            ) : (
+              top10Failures.map((client, i) => (
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
+                    <p className="text-xs text-red-400">${client.amount.toFixed(2)}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-[#25D366] hover:bg-[#25D366]/10"
+                    onClick={() => openWhatsApp(client.phone!, client.full_name || '', getRecoveryMessage(client.full_name || '', client.amount))}
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Top 10 Invoices to Collect */}
+        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border/50">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-blue-500" />
+              <h3 className="font-semibold text-foreground">Facturas por Cobrar</h3>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1">
+              Ver todo <ChevronRight className="h-3 w-3" />
+            </Button>
+          </div>
+          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+            {top10Invoices.length === 0 ? (
+              <div className="p-4 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin facturas pendientes
+              </div>
+            ) : (
+              top10Invoices.map((invoice, i) => (
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
+                    <p className="text-xs text-muted-foreground">
+                      ${(invoice.amount_due / 100).toFixed(2)} - {invoice.status}
+                    </p>
+                  </div>
+                  {invoice.hosted_invoice_url && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-blue-400 hover:bg-blue-500/10"
+                      onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
+                    >
+                      <FileText className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Top 10 Trials Expiring */}
+        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border/50">
+            <div className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-purple-500" />
+              <h3 className="font-semibold text-foreground">Trials por Vencer</h3>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1">
+              Ver todo <ChevronRight className="h-3 w-3" />
+            </Button>
+          </div>
+          <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+            {top10ExpiringTrials.length === 0 ? (
+              <div className="p-4 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
+                Sin trials por vencer
+              </div>
+            ) : (
+              top10ExpiringTrials.map((sub, i) => (
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-muted/20">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {sub.plan_name} - Vence {formatDistanceToNow(new Date(sub.trial_end!), { addSuffix: true, locale: es })}
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-xs">
+                    Trial
+                  </Badge>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Failure reasons inline */}
+      {kpis.failureReasons.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap p-4 bg-card rounded-xl border border-border/50">
+          <span className="text-xs text-amber-400 flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Razones de fallo:
+          </span>
+          {kpis.failureReasons.slice(0, 5).map((reason, i) => (
+            <Badge
+              key={i}
+              variant="outline"
+              className="text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
+            >
+              {reason.reason}: {reason.count}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

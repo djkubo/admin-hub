@@ -1,10 +1,14 @@
 import { cn } from "@/lib/utils";
 import { 
-  Users, 
   LayoutDashboard, 
+  AlertTriangle,
+  FileText,
+  Users, 
+  CreditCard,
+  Upload,
   BarChart3, 
-  LogOut,
-  Settings
+  Settings,
+  LogOut
 } from "lucide-react";
 
 interface SidebarProps {
@@ -14,9 +18,13 @@ interface SidebarProps {
 
 const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "recovery", label: "Recuperación", icon: AlertTriangle },
+  { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },
+  { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
+  { id: "import", label: "Importar/Sync", icon: Upload },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "settings", label: "Configuración", icon: Settings },
+  { id: "settings", label: "Ajustes", icon: Settings },
 ];
 
 export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps) {
