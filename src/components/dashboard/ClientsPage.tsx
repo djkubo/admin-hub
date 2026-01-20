@@ -30,6 +30,8 @@ export function ClientsPage() {
     page, 
     setPage, 
     totalPages,
+    pageSize,
+    setPageSize,
     vipOnly,
     setVipOnly,
     isVip
@@ -224,7 +226,7 @@ export function ClientsPage() {
         </Button>
       </div>
 
-      {/* Search */}
+      {/* Search and Page Size */}
       <div className="rounded-xl border border-border/50 bg-card p-4">
         <div className="flex items-center gap-4 flex-wrap">
           <div className="relative flex-1 min-w-[200px]">
@@ -236,6 +238,23 @@ export function ClientsPage() {
               className="pl-9"
             />
           </div>
+          
+          {/* Page Size Selector */}
+          <Select 
+            value={pageSize === 'all' ? 'all' : pageSize.toString()} 
+            onValueChange={(v) => setPageSize(v === 'all' ? 'all' : parseInt(v))}
+          >
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Por página" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="50">50 por página</SelectItem>
+              <SelectItem value="100">100 por página</SelectItem>
+              <SelectItem value="500">500 por página</SelectItem>
+              <SelectItem value="all">Ver todos</SelectItem>
+            </SelectContent>
+          </Select>
+          
           <Badge variant="outline" className="text-muted-foreground">
             {filteredClients.length} resultados
           </Badge>

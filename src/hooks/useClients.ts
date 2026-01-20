@@ -39,7 +39,7 @@ export interface Client {
   tags: string[] | null;
 }
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 50;
 const VIP_THRESHOLD = 100000; // $1,000 USD in cents
 
 export function useClients() {
@@ -47,6 +47,7 @@ export function useClients() {
   const { toast } = useToast();
   const [page, setPage] = useState(0);
   const [vipOnly, setVipOnly] = useState(false);
+  const [pageSize, setPageSize] = useState<number | 'all'>(DEFAULT_PAGE_SIZE);
 
   // Query for total count (exact count without downloading data)
   const { data: totalCount = 0, refetch: refetchCount } = useQuery({
@@ -69,20 +70,26 @@ export function useClients() {
 
   // Query for paginated clients
   const { data: clients = [], isLoading, error, refetch: refetchClients } = useQuery({
-    queryKey: ["clients", page, vipOnly],
+    queryKey: ["clients", page, vipOnly, pageSize],
     queryFn: async () => {
-      const from = page * PAGE_SIZE;
-      const to = from + PAGE_SIZE - 1;
-      
       let query = supabase
         .from("clients")
         .select("*")
         .order("total_spend", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false })
-        .range(from, to);
+        .order("created_at", { ascending: false });
 
       if (vipOnly) {
         query = query.gte("total_spend", VIP_THRESHOLD);
+      }
+
+      // Apply pagination only if not "all"
+      if (pageSize !== 'all') {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+        query = query.range(from, to);
+      } else {
+        // Limit to 10000 for safety
+        query = query.limit(10000);
       }
 
       const { data, error } = await query;
@@ -96,8 +103,13 @@ export function useClients() {
     refetchCount();
     refetchClients();
   };
-
-  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(totalCount / pageSize);
+  
+  // Reset to page 0 when changing page size
+  const handleSetPageSize = (size: number | 'all') => {
+    setPage(0);
+    setPageSize(size);
+  };
 
   const addClient = useMutation({
     mutationFn: async (client: {
@@ -176,7 +188,8 @@ export function useClients() {
     page,
     setPage,
     totalPages,
-    pageSize: PAGE_SIZE,
+    pageSize,
+    setPageSize: handleSetPageSize,
     vipOnly,
     setVipOnly,
     isVip,
