@@ -35,10 +35,25 @@ async function verifyWebhookSignature(
   const certUrl = headers.get('paypal-cert-url');
   const authAlgo = headers.get('paypal-auth-algo');
 
+  console.log(`🔍 PayPal headers: id=${transmissionId ? 'present' : 'MISSING'}, time=${transmissionTime ? 'present' : 'MISSING'}, sig=${transmissionSig ? 'present' : 'MISSING'}, cert=${certUrl ? 'present' : 'MISSING'}, algo=${authAlgo ? 'present' : 'MISSING'}`);
+  console.log(`🔍 Webhook ID being used: ${webhookId}`);
+
   if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) {
-    console.error('Missing PayPal signature headers');
+    console.error('❌ Missing PayPal signature headers');
     return false;
   }
+
+  const verifyPayload = {
+    auth_algo: authAlgo,
+    cert_url: certUrl,
+    transmission_id: transmissionId,
+    transmission_sig: transmissionSig,
+    transmission_time: transmissionTime,
+    webhook_id: webhookId,
+    webhook_event: JSON.parse(body),
+  };
+
+  console.log(`📤 Calling PayPal verify-webhook-signature API...`);
 
   const response = await fetch('https://api-m.paypal.com/v1/notifications/verify-webhook-signature', {
     method: 'POST',
@@ -46,23 +61,19 @@ async function verifyWebhookSignature(
       'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      auth_algo: authAlgo,
-      cert_url: certUrl,
-      transmission_id: transmissionId,
-      transmission_sig: transmissionSig,
-      transmission_time: transmissionTime,
-      webhook_id: webhookId,
-      webhook_event: JSON.parse(body),
-    }),
+    body: JSON.stringify(verifyPayload),
   });
 
+  const responseText = await response.text();
+  console.log(`📥 PayPal verify response: status=${response.status}, body=${responseText}`);
+
   if (!response.ok) {
-    console.error('PayPal verification request failed:', response.status);
+    console.error(`❌ PayPal verification request failed: ${response.status} - ${responseText}`);
     return false;
   }
 
-  const result = await response.json();
+  const result = JSON.parse(responseText);
+  console.log(`🔐 Verification result: ${result.verification_status}`);
   return result.verification_status === 'SUCCESS';
 }
 
