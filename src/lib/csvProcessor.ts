@@ -277,14 +277,22 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
   const parsedRows = Array.from(parsedRowsMap.values());
   console.log(`[PayPal CSV] Parsed ${parsedRows.length} valid rows`);
 
-  // Get unique emails
+  // Get unique emails - load in batches to avoid Supabase 1000 param limit
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails);
-
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+  const clientMap = new Map<string, any>();
+  const EMAIL_BATCH_SIZE = 500;
+  
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[PayPal CSV] Loaded ${clientMap.size} existing clients from DB`);
 
   // Aggregate payments per email
   const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean; hasPaid: boolean }>();
@@ -487,12 +495,22 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
   console.log(`[Web Users CSV] Parsed ${parsedRows.length} valid users`);
 
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails);
-
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+  
+  // Load existing clients in batches to avoid Supabase 1000 param limit
+  const clientMap = new Map<string, any>();
+  const EMAIL_BATCH_SIZE = 500;
+  
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[Web Users CSV] Loaded ${clientMap.size} existing clients from DB`);
 
   // Merge data from multiple rows with same email
   const emailDataMap = new Map<string, ParsedWebUser>();
@@ -642,22 +660,36 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
   console.log(`[Subscriptions CSV] Parsed ${parsedRows.length} valid subscriptions`);
 
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
+  const EMAIL_BATCH_SIZE = 500;
   
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails.slice(0, 1000));
+  // Load existing clients in batches
+  const clientMap = new Map<string, any>();
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[Subscriptions CSV] Loaded ${clientMap.size} existing clients from DB`);
 
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
-
-  // Fetch existing transactions to check for paid status
-  const { data: existingTransactions } = await supabase
-    .from('transactions')
-    .select('customer_email, status')
-    .in('customer_email', uniqueEmails.slice(0, 1000))
-    .in('status', ['succeeded', 'paid']);
-
-  const paidEmails = new Set(existingTransactions?.map(t => t.customer_email) || []);
+  // Fetch existing transactions to check for paid status (in batches)
+  const paidEmails = new Set<string>();
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingTransactions } = await supabase
+      .from('transactions')
+      .select('customer_email, status')
+      .in('customer_email', emailBatch)
+      .in('status', ['succeeded', 'paid']);
+    
+    existingTransactions?.forEach(t => {
+      if (t.customer_email) paidEmails.add(t.customer_email);
+    });
+  }
 
   // Analyze subscription status per email
   const emailStatusMap = new Map<string, { 
@@ -866,12 +898,21 @@ export async function processPaymentCSV(
   console.log(`[Stripe CSV] Parsed ${parsedRows.length} valid rows`);
 
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails);
-
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+  const EMAIL_BATCH_SIZE = 500;
+  
+  // Load existing clients in batches to avoid Supabase 1000 param limit
+  const clientMap = new Map<string, any>();
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[Stripe CSV] Loaded ${clientMap.size} existing clients from DB`);
 
   // Aggregate payments per email
   const emailPayments = new Map<string, { paidAmountCents: number; hasFailed: boolean; hasPaid: boolean }>();
@@ -1150,14 +1191,22 @@ export async function processStripeCustomersCSV(csvText: string): Promise<Stripe
 
   console.log(`[Stripe Customers CSV] ${canonicalCustomers.length} canonical customers after deduplication`);
 
-  // Get existing clients from DB
+  // Get existing clients from DB (in batches to avoid 1000 param limit)
   const uniqueEmails = canonicalCustomers.map(c => c.email);
-  const { data: existingClients } = await supabase
-    .from('clients')
-    .select('*')
-    .in('email', uniqueEmails.slice(0, 1000));
-
-  const clientMap = new Map(existingClients?.map(c => [c.email, c]) || []);
+  const EMAIL_BATCH_SIZE = 500;
+  const clientMap = new Map<string, any>();
+  
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[Stripe Customers CSV] Loaded ${clientMap.size} existing clients from DB`);
 
   // Prepare upsert batch
   const clientsToUpsert: Array<{
