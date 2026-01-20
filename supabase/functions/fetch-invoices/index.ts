@@ -37,6 +37,9 @@ interface StripeInvoice {
 const EXCLUDED_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired", "unpaid"];
 const EXCLUDED_INVOICE_STATUSES = ["void", "uncollectible", "paid"];
 
+// Admin key for internal authentication
+const ADMIN_API_KEY = Deno.env.get("ADMIN_API_KEY");
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   const corsHeaders = getCorsHeaders(origin);
@@ -46,39 +49,27 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify JWT authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
-
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    // SECURITY: Verify admin key authentication (same as other sync functions)
+    const providedAdminKey = req.headers.get("x-admin-key");
     
-    if (claimsError || !claimsData?.user) {
-      console.error("Auth error:", claimsError);
+    console.log(`🔐 Admin key check - Configured: ${ADMIN_API_KEY ? 'YES' : 'NO'}, Provided: ${providedAdminKey ? 'YES' : 'NO'}`);
+    
+    if (!ADMIN_API_KEY || !providedAdminKey || providedAdminKey !== ADMIN_API_KEY) {
+      console.error("❌ Admin key verification failed");
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
+        JSON.stringify({ error: "Unauthorized - Invalid admin key" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("✅ User authenticated:", claimsData.user.email);
+    console.log("✅ Admin key verified");
 
     const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
     if (!STRIPE_SECRET_KEY) {
       throw new Error("STRIPE_SECRET_KEY not configured");
     }
 
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
