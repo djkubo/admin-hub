@@ -201,12 +201,21 @@ export function useSmartRecovery() {
           return;
         }
         
+        const checkpoint = syncRun.checkpoint as Record<string, unknown> | null;
         const metadata = syncRun.metadata as Record<string, unknown> | null;
         
-        if (metadata) {
+        // Use checkpoint for real-time progress (updated per-invoice), fallback to metadata
+        const progressData = checkpoint || metadata;
+        
+        if (progressData) {
+          const processed = (progressData.processed as number) || 0;
+          const recoveredAmt = (progressData.recovered_amount as number) || (progressData.recovered as number) || 0;
+          const failedCount = (progressData.failed_count as number) || 0;
+          const succeededCount = (progressData.succeeded_count as number) || 0;
+          
           setProgress({
-            batch: (metadata.processed as number) || 0,
-            message: `Procesando en segundo plano... ($${((metadata.recovered as number) || 0).toFixed(2)} recuperados)`,
+            batch: processed,
+            message: `Procesando... ${processed} facturas (✅ ${succeededCount} | ❌ ${failedCount}) - $${recoveredAmt.toFixed(2)} recuperados`,
           });
         }
         

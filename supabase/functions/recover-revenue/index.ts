@@ -284,26 +284,30 @@ async function runRecoveryInBackground(
         await processInvoice(stripe, invoice, result);
         result.summary.processed_invoices++;
         currentStartingAfter = invoice.id;
+
+        // Update progress after EACH invoice for real-time UI feedback
+        await supabaseServiceClient
+          .from("sync_runs")
+          .update({
+            checkpoint: {
+              recovered_amount: result.summary.total_recovered / 100,
+              failed_amount: result.summary.total_failed_amount / 100,
+              skipped_amount: result.summary.total_skipped_amount / 100,
+              processed: result.summary.processed_invoices,
+              succeeded_count: result.succeeded.length,
+              failed_count: result.failed.length,
+              skipped_count: result.skipped.length,
+              last_invoice: currentStartingAfter,
+            },
+            total_fetched: totalFetched,
+            total_inserted: result.succeeded.length,
+            total_updated: result.failed.length,
+            total_skipped: result.skipped.length,
+          })
+          .eq("id", syncRunId);
       }
 
       result.summary.total_invoices = totalFetched;
-
-      // Update sync run progress
-      await supabaseServiceClient
-        .from("sync_runs")
-        .update({
-          metadata: {
-            recovered: result.summary.total_recovered / 100,
-            failed: result.summary.total_failed_amount / 100,
-            skipped: result.summary.total_skipped_amount / 100,
-            processed: result.summary.processed_invoices,
-            last_invoice: currentStartingAfter,
-          },
-          total_fetched: totalFetched,
-          total_inserted: result.succeeded.length,
-          total_skipped: result.skipped.length,
-        })
-        .eq("id", syncRunId);
     }
 
     // Complete the sync run
