@@ -59,8 +59,10 @@ Deno.serve(async (req) => {
 
     console.log(`[ghl-templates] Fetching templates from GHL location: ${ghlLocationId}`);
 
-    // Fetch all templates from GHL
-    const templatesUrl = `https://services.leadconnectorhq.com/locations/${ghlLocationId}/templates`;
+    // Fetch all templates from GHL - originId is required per API docs
+    // Try with type=whatsapp filter first, then fall back to all
+    const baseUrl = `https://services.leadconnectorhq.com/locations/${ghlLocationId}/templates`;
+    const templatesUrl = `${baseUrl}?originId=${ghlLocationId}`;
     
     const response = await fetch(templatesUrl, {
       method: 'GET',
