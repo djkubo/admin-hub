@@ -273,48 +273,6 @@ export function useSmartRecovery() {
     pollingRef.current = setInterval(poll, 3000);
   }, [toast]);
 
-  // Load the most recent completed sync result from DB
-  const loadLatestCompletedSync = useCallback(async () => {
-    try {
-      const { data: latestSync } = await supabase
-        .from("sync_runs")
-        .select("*")
-        .eq("source", "smart_recovery")
-        .in("status", ["completed", "partial"])
-        .order("completed_at", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (latestSync?.metadata) {
-        const metadata = latestSync.metadata as Record<string, unknown>;
-        const completedAt = new Date(latestSync.completed_at as string);
-        const hoursSinceCompletion = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60);
-        
-        // Only load if completed in the last 24 hours
-        if (hoursSinceCompletion < 24 && metadata.succeeded !== undefined) {
-          const aggregated: AggregatedResult = {
-            succeeded: (metadata.succeeded as RecoverySuccessItem[]) || [],
-            failed: (metadata.failed as RecoveryFailedItem[]) || [],
-            skipped: (metadata.skipped as RecoverySkippedItem[]) || [],
-            summary: {
-              total_invoices: latestSync.total_fetched || 0,
-              total_recovered: ((metadata.recovered_amount as number) || 0) * 100,
-              total_failed_amount: ((metadata.failed_amount as number) || 0) * 100,
-              total_skipped_amount: ((metadata.skipped_amount as number) || 0) * 100,
-              currency: "usd",
-              batches_processed: 1,
-            },
-          };
-          setResult(aggregated);
-          saveResult(aggregated);
-          console.log("Loaded latest sync result from DB:", latestSync.id);
-        }
-      }
-    } catch (err) {
-      console.log("No recent sync results to load");
-    }
-  }, []);
-
   // Load persisted result and check for background process on mount
   useEffect(() => {
     const savedResult = loadResult();
@@ -322,6 +280,46 @@ export function useSmartRecovery() {
       setResult(savedResult);
     } else {
       // If no saved result, try to load from DB
+      const loadLatestCompletedSync = async () => {
+        try {
+          const { data: latestSync } = await supabase
+            .from("sync_runs")
+            .select("*")
+            .eq("source", "smart_recovery")
+            .in("status", ["completed", "partial"])
+            .order("completed_at", { ascending: false })
+            .limit(1)
+            .single();
+
+          if (latestSync?.metadata) {
+            const metadata = latestSync.metadata as Record<string, unknown>;
+            const completedAt = new Date(latestSync.completed_at as string);
+            const hoursSinceCompletion = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60);
+            
+            // Only load if completed in the last 24 hours
+            if (hoursSinceCompletion < 24 && metadata.succeeded !== undefined) {
+              const aggregated: AggregatedResult = {
+                succeeded: (metadata.succeeded as RecoverySuccessItem[]) || [],
+                failed: (metadata.failed as RecoveryFailedItem[]) || [],
+                skipped: (metadata.skipped as RecoverySkippedItem[]) || [],
+                summary: {
+                  total_invoices: latestSync.total_fetched || 0,
+                  total_recovered: ((metadata.recovered_amount as number) || 0) * 100,
+                  total_failed_amount: ((metadata.failed_amount as number) || 0) * 100,
+                  total_skipped_amount: ((metadata.skipped_amount as number) || 0) * 100,
+                  currency: "usd",
+                  batches_processed: 1,
+                },
+              };
+              setResult(aggregated);
+              saveResult(aggregated);
+              console.log("Loaded latest sync result from DB:", latestSync.id);
+            }
+          }
+        } catch (err) {
+          console.log("No recent sync results to load");
+        }
+      };
       loadLatestCompletedSync();
     }
     
@@ -347,7 +345,7 @@ export function useSmartRecovery() {
         clearInterval(pollingRef.current);
       }
     };
-  }, [startPolling, loadLatestCompletedSync]);
+  }, [startPolling]);
 
   const createEmptyAggregated = (): AggregatedResult => ({
     succeeded: [],
