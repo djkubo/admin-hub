@@ -8,13 +8,14 @@ import { TransactionsTable } from "@/components/dashboard/TransactionsTable";
 import { AddClientDialog } from "@/components/dashboard/AddClientDialog";
 import { CSVUploader } from "@/components/dashboard/CSVUploader";
 import { APISyncPanel } from "@/components/dashboard/APISyncPanel";
-import { MetricsCards } from "@/components/dashboard/MetricsCards";
-import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel";
 import { AIInsightsWidget } from "@/components/dashboard/AIInsightsWidget";
 import { PendingInvoicesTable } from "@/components/dashboard/PendingInvoicesTable";
 import { SmartRecoveryCard } from "@/components/dashboard/SmartRecoveryCard";
-import { DailyKPIsPanel } from "@/components/dashboard/DailyKPIsPanel";
+import { CommandCenter } from "@/components/dashboard/CommandCenter";
+import { CustomerDrawer } from "@/components/dashboard/CustomerDrawer";
+import { RecoveryPipeline } from "@/components/dashboard/RecoveryPipeline";
+import { DataHealthPanel } from "@/components/dashboard/DataHealthPanel";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
@@ -24,12 +25,16 @@ import { Users, UserCheck, UserX, Clock, LogOut, BarChart3 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import type { Client } from "@/hooks/useClients";
+import type { RecoveryClient } from "@/lib/csvProcessor";
 
 const Index = () => {
   const queryClient = useQueryClient();
   const [activeMenuItem, setActiveMenuItem] = useState("dashboard");
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [lastSync, setLastSync] = useState<Date | null>(null);
   
   const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages, vipOnly, setVipOnly, isVip } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
@@ -175,19 +180,20 @@ const Index = () => {
         </div>
       </div>
 
-      {/* KPI Metrics Cards with Incoming Revenue */}
-      <MetricsCards 
-        metrics={metrics} 
-        invoiceData={{
-          totalNext72h,
-          totalPending,
-          invoiceCount: invoicesNext72h.length,
-          isLoading: isLoadingInvoices,
+      {/* Command Center - Main KPIs */}
+      <CommandCenter lastSync={lastSync} />
+
+      {/* Data Health Panel */}
+      <DataHealthPanel clients={clients} transactions={transactions} />
+
+      {/* Recovery Pipeline - Enhanced recovery CRM */}
+      <RecoveryPipeline 
+        clients={metrics.recoveryList} 
+        onClientClick={(rc) => {
+          const client = clients.find(c => c.email === rc.email);
+          if (client) setSelectedClient(client);
         }}
       />
-
-      {/* Daily KPIs Panel - Clasificación de pagos */}
-      <DailyKPIsPanel />
 
       {/* Pending Invoices Table - Cash Flow */}
       <PendingInvoicesTable
@@ -208,41 +214,6 @@ const Index = () => {
 
       {/* CSV Uploader - Manual import */}
       <CSVUploader onProcessingComplete={handleProcessingComplete} />
-
-      {/* Stats Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatsCard
-          title="Total Clientes"
-          value={stats.total}
-          change="+12% desde el mes pasado"
-          changeType="positive"
-          icon={Users}
-        />
-        <StatsCard
-          title="Clientes Activos"
-          value={stats.active}
-          change={`${stats.total > 0 ? Math.round((stats.active / stats.total) * 100) : 0}% del total`}
-          changeType="positive"
-          icon={UserCheck}
-        />
-        <StatsCard
-          title="Pendientes"
-          value={stats.pending}
-          change="Requieren atención"
-          changeType="neutral"
-          icon={Clock}
-        />
-        <StatsCard
-          title="Inactivos"
-          value={stats.inactive}
-          change="Sin actividad reciente"
-          changeType="negative"
-          icon={UserX}
-        />
-      </div>
-
-      {/* Recovery Table - CRM Action Table */}
-      <RecoveryTable clients={metrics.recoveryList} />
 
       {/* Tabs for Data Tables */}
       <Tabs defaultValue="clients" className="space-y-4">
@@ -378,6 +349,14 @@ const Index = () => {
         onOpenChange={setIsAddDialogOpen}
         onAdd={handleAddClient}
         isLoading={addClient.isPending}
+      />
+
+      {/* Customer 360 Drawer */}
+      <CustomerDrawer
+        client={selectedClient}
+        open={!!selectedClient}
+        onOpenChange={(open) => !open && setSelectedClient(null)}
+        debtAmount={selectedClient?.email ? recoveryAmounts[selectedClient.email] : 0}
       />
     </div>
   );
