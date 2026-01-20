@@ -20,8 +20,10 @@ function getCorsHeaders(origin: string | null) {
   };
 }
 
-const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired"];
-const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
+// Skip invoices linked to problematic subscription statuses
+const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired", "past_due"];
+// Skip invoices that are already resolved or uncollectible  
+const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible", "draft"];
 const API_DELAY_MS = 150;
 const BATCH_SIZE = 15;
 const MAX_EXECUTION_MS = 45000;
