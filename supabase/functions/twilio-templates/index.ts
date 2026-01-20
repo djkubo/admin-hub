@@ -47,35 +47,77 @@ serve(async (req) => {
       );
     }
 
-    // Fetch Content Templates from Twilio
-    console.log("📋 Fetching Twilio Content Templates...");
+    const authHeader = 'Basic ' + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+
+    // 1. Fetch ALL Content Templates (with pagination)
+    console.log("📋 Fetching ALL Twilio Content Templates...");
     
-    const contentUrl = 'https://content.twilio.com/v1/Content';
+    let allTemplates: any[] = [];
+    let nextPageUri: string | null = '/v1/Content?PageSize=100';
     
-    const response = await fetch(contentUrl, {
+    while (nextPageUri) {
+      const currentUrl: string = `https://content.twilio.com${nextPageUri}`;
+      console.log(`Fetching: ${currentUrl}`);
+      
+      const contentResponse: Response = await fetch(currentUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const contentResult: any = await contentResponse.json();
+      
+      if (!contentResponse.ok) {
+        console.error('Twilio Content API error:', contentResult);
+        break;
+      }
+      
+      if (contentResult.contents) {
+        allTemplates = [...allTemplates, ...contentResult.contents];
+      }
+      
+      // Check for next page
+      nextPageUri = contentResult.meta?.next_page_uri || null;
+    }
+
+    console.log(`📋 Total Content Templates: ${allTemplates.length}`);
+
+    // 2. Fetch Messaging Services
+    console.log("📱 Fetching Messaging Services...");
+    const messagingServicesUrl = `https://messaging.twilio.com/v1/Services`;
+    
+    const msResponse = await fetch(messagingServicesUrl, {
       method: 'GET',
       headers: {
-        'Authorization': 'Basic ' + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        'Authorization': authHeader,
         'Content-Type': 'application/json',
       },
     });
-
-    const result = await response.json();
-    console.log('Twilio Content API response status:', response.status);
     
-    if (!response.ok) {
-      console.error('Twilio Content API error:', result);
-      return new Response(
-        JSON.stringify({ 
-          error: 'Failed to fetch templates', 
-          details: result 
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    const msResult = await msResponse.json();
+    const messagingServices = msResult.services || [];
+    console.log(`📱 Found ${messagingServices.length} Messaging Services`);
+
+    // 3. Fetch Verify Services  
+    console.log("🔐 Fetching Verify Services...");
+    const verifyUrl = `https://verify.twilio.com/v2/Services`;
+    
+    const verifyResponse = await fetch(verifyUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    const verifyResult = await verifyResponse.json();
+    const verifyServices = verifyResult.services || [];
+    console.log(`🔐 Found ${verifyServices.length} Verify Services`);
 
     // Format templates for easier reading
-    const templates = result.contents?.map((template: any) => ({
+    const templates = allTemplates.map((template: any) => ({
       sid: template.sid,
       friendly_name: template.friendly_name,
       language: template.language,
@@ -86,19 +128,46 @@ serve(async (req) => {
       approval_status: template.approval_requests?.[0]?.status || 'unknown',
       content_type: template.types?.['twilio/text']?.body ? 'text' : 
                    template.types?.['twilio/media']?.body ? 'media' :
-                   template.types?.['twilio/quick-reply']?.body ? 'quick-reply' : 'other',
+                   template.types?.['twilio/quick-reply']?.body ? 'quick-reply' :
+                   template.types?.['whatsapp/authentication'] ? 'whatsapp-auth' : 'other',
       body: template.types?.['twilio/text']?.body || 
             template.types?.['twilio/media']?.body ||
             template.types?.['twilio/quick-reply']?.body || null,
-    })) || [];
+    }));
 
-    console.log(`📋 Found ${templates.length} templates`);
+    // Filter out verify_auto_created templates for cleaner view (they're auto-generated)
+    const customTemplates = templates.filter((t: any) => 
+      t.friendly_name !== 'verify_auto_created'
+    );
+    
+    const verifyTemplates = templates.filter((t: any) => 
+      t.friendly_name === 'verify_auto_created'
+    );
 
     return new Response(
       JSON.stringify({ 
         success: true, 
-        count: templates.length,
-        templates 
+        summary: {
+          total_templates: templates.length,
+          custom_templates: customTemplates.length,
+          verify_auto_templates: verifyTemplates.length,
+          messaging_services: messagingServices.length,
+          verify_services: verifyServices.length,
+        },
+        custom_templates: customTemplates,
+        verify_templates_languages: verifyTemplates.map((t: any) => t.language),
+        messaging_services: messagingServices.map((s: any) => ({
+          sid: s.sid,
+          friendly_name: s.friendly_name,
+          inbound_request_url: s.inbound_request_url,
+          use_inbound_webhook_on_number: s.use_inbound_webhook_on_number,
+        })),
+        verify_services: verifyServices.map((s: any) => ({
+          sid: s.sid,
+          friendly_name: s.friendly_name,
+          code_length: s.code_length,
+          default_template_sid: s.default_template_sid,
+        })),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
