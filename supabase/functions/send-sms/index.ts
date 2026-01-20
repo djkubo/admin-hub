@@ -3,8 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
+
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
+}
 
 interface SMSRequest {
   to: string;
@@ -16,12 +29,23 @@ interface SMSRequest {
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log("✅ Admin key verified");
+
     const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID');
     const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
     const TWILIO_PHONE_NUMBER = Deno.env.get('TWILIO_PHONE_NUMBER');
@@ -39,12 +63,9 @@ serve(async (req) => {
     const payload: SMSRequest = await req.json();
     console.log('SMS Request received:', { to: payload.to, template: payload.template });
 
-    // Clean phone number - remove non-numeric except +
     let phoneNumber = payload.to.replace(/[^\d+]/g, '');
     
-    // Ensure it starts with + for international format
     if (!phoneNumber.startsWith('+')) {
-      // Assume US number if no country code
       if (phoneNumber.length === 10) {
         phoneNumber = '+1' + phoneNumber;
       } else if (phoneNumber.length === 11 && phoneNumber.startsWith('1')) {
@@ -54,7 +75,6 @@ serve(async (req) => {
       }
     }
 
-    // Build message based on template
     let message = payload.message;
     if (payload.template && payload.template !== 'custom') {
       const name = payload.client_name || 'Cliente';
@@ -75,7 +95,6 @@ serve(async (req) => {
 
     console.log('Sending SMS to:', phoneNumber);
 
-    // Send SMS via Twilio REST API
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
     
     const formData = new URLSearchParams();
@@ -106,13 +125,12 @@ serve(async (req) => {
       );
     }
 
-    // Log event to client_events if client_id provided
     if (payload.client_id) {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       
       await supabase.from('client_events').insert({
         client_id: payload.client_id,
-        event_type: 'email_sent', // Using email_sent as closest match for SMS
+        event_type: 'email_sent',
         metadata: {
           channel: 'sms',
           template: payload.template || 'custom',

@@ -3,8 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
+
+// SECURITY: Simple admin key guard
+function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
+  const adminKey = Deno.env.get("ADMIN_API_KEY");
+  if (!adminKey) {
+    return { valid: false, error: "ADMIN_API_KEY not configured" };
+  }
+  const providedKey = req.headers.get("x-admin-key");
+  if (!providedKey || providedKey !== adminKey) {
+    return { valid: false, error: "Invalid or missing x-admin-key" };
+  }
+  return { valid: true };
+}
 
 interface SyncRequest {
   dry_run?: boolean;
@@ -16,6 +29,18 @@ serve(async (req) => {
   }
 
   try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log("✅ Admin key verified");
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const manychatApiKey = Deno.env.get('MANYCHAT_API_KEY');
@@ -37,7 +62,6 @@ serve(async (req) => {
 
     console.log(`[sync-manychat] Starting sync, dry_run=${dryRun}`);
 
-    // Create sync run
     const { data: syncRun, error: syncError } = await supabase
       .from('sync_runs')
       .insert({
@@ -61,7 +85,6 @@ serve(async (req) => {
     let totalSkipped = 0;
     let totalConflicts = 0;
 
-    // Get all clients with emails that might be in ManyChat
     const { data: existingClients, error: clientsError } = await supabase
       .from('clients')
       .select('email, phone, manychat_subscriber_id')
@@ -77,10 +100,8 @@ serve(async (req) => {
     
     console.log(`[sync-manychat] Found ${emailsToSearch.length} clients to search in ManyChat`);
 
-    // Search ManyChat for each email using GET with query params
     for (const email of emailsToSearch.slice(0, 100)) {
       try {
-        // Use GET request with query parameters - correct ManyChat API format
         const encodedEmail = encodeURIComponent(email);
         const searchResponse = await fetch(
           `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
@@ -96,7 +117,6 @@ serve(async (req) => {
         if (!searchResponse.ok) {
           const status = searchResponse.status;
           if (status === 404 || status === 400) {
-            // Not found in ManyChat or invalid email
             totalSkipped++;
             continue;
           }
@@ -116,7 +136,6 @@ serve(async (req) => {
         totalFetched++;
         console.log(`[sync-manychat] Found subscriber ${subscriber.id} for ${email}`);
 
-        // Store raw data for audit
         if (!dryRun) {
           await supabase
             .from('manychat_contacts_raw')
@@ -128,7 +147,6 @@ serve(async (req) => {
             }, { onConflict: 'subscriber_id' });
         }
 
-        // Extract fields
         const subEmail = subscriber.email || email;
         const phone = subscriber.phone || subscriber.whatsapp_phone || null;
         const fullName = [subscriber.first_name, subscriber.last_name].filter(Boolean).join(' ') || subscriber.name || null;
@@ -137,7 +155,6 @@ serve(async (req) => {
         const smsOptIn = subscriber.optin_sms === true;
         const emailOptIn = subscriber.optin_email !== false;
 
-        // Call merge function
         const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
           p_source: 'manychat',
           p_external_id: subscriber.id,
@@ -165,7 +182,6 @@ serve(async (req) => {
         else if (action === 'conflict') totalConflicts++;
         else totalSkipped++;
 
-        // Rate limit: ManyChat allows ~10 requests/second
         await new Promise(resolve => setTimeout(resolve, 150));
 
       } catch (subError) {
@@ -174,7 +190,6 @@ serve(async (req) => {
       }
     }
 
-    // Mark sync as complete
     await supabase
       .from('sync_runs')
       .update({
