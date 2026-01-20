@@ -13,7 +13,7 @@ const corsHeaders = {
 interface SyncRequest {
   dry_run?: boolean;
   batch_size?: number;
-  checkpoint?: { cursor?: string };
+  checkpoint?: { cursor?: string; offset?: number };
   background?: boolean;
   continue_run_id?: string; // For auto-continuation
 }
@@ -25,7 +25,8 @@ interface SyncStats {
   total_skipped: number;
   total_conflicts: number;
   has_more: boolean;
-  next_cursor?: string;
+  next_offset?: number;
+  final_offset?: number;
 }
 
 // ============ BACKGROUND SYNC PROCESSOR ============
@@ -36,10 +37,11 @@ async function runGHLSync(
   syncRunId: string,
   dryRun: boolean,
   batchSize: number,
-  initialCursor?: string,
+  initialOffset?: number,
   adminKey?: string
 ): Promise<SyncStats> {
-  let cursor = initialCursor;
+  // Use offset-based pagination instead of cursor - more reliable for large datasets
+  let offset = initialOffset || 0;
   let totalFetched = 0;
   let totalInserted = 0;
   let totalUpdated = 0;
@@ -47,20 +49,19 @@ async function runGHLSync(
   let totalConflicts = 0;
   let hasMore = true;
   let pageCount = 0;
-  const maxPages = 20; // Process 20 pages per invocation (100 contacts/page = 2000 per batch)
-  // With auto-continuation, 150k contacts = ~75 continuation cycles (~1-2 hours total)
+  const maxPages = 50; // Process 50 pages per invocation (100 contacts/page = 5000 per batch)
+  // With auto-continuation, 150k contacts = ~30 continuation cycles (~30-60 mins total)
 
   try {
     while (hasMore && pageCount < maxPages) {
       pageCount++;
-      console.log(`[sync-ghl] Page ${pageCount}, cursor=${cursor || 'initial'}`);
+      console.log(`[sync-ghl] Page ${pageCount}, offset=${offset}`);
 
+      // Use skip/limit pagination - more reliable than cursor for large datasets
       const ghlUrl = new URL(`https://services.leadconnectorhq.com/contacts/`);
       ghlUrl.searchParams.set('locationId', ghlLocationId);
       ghlUrl.searchParams.set('limit', batchSize.toString());
-      if (cursor) {
-        ghlUrl.searchParams.set('startAfterId', cursor);
-      }
+      ghlUrl.searchParams.set('skip', offset.toString());
 
       const ghlResponse = await fetch(ghlUrl.toString(), {
         headers: {
@@ -169,28 +170,20 @@ async function runGHLSync(
         }
       }
 
-      // Update progress - ALWAYS update cursor from the API response, not from local contacts
-      // The GHL API uses 'meta.nextPageUrl' or returns fewer contacts when no more data
-      const newCursor = (contacts[contacts.length - 1] as { id: string })?.id;
-      
-      // Only continue if we got a full batch AND cursor actually changed
+      // Simple offset-based pagination - just advance by batch size
       if (contacts.length < batchSize) {
         hasMore = false;
         console.log(`[sync-ghl] Last page reached (got ${contacts.length} < ${batchSize})`);
-      } else if (newCursor && newCursor !== cursor) {
-        cursor = newCursor;
-        console.log(`[sync-ghl] Cursor advanced to: ${cursor}`);
       } else {
-        // Cursor didn't change or is invalid - we're stuck, stop to prevent infinite loop
-        hasMore = false;
-        console.warn(`[sync-ghl] Cursor stuck at ${cursor}, stopping to prevent infinite loop`);
+        offset += batchSize;
+        console.log(`[sync-ghl] Offset advanced to: ${offset}`);
       }
 
       // Save checkpoint every page
       await supabase
         .from('sync_runs')
         .update({
-          checkpoint: { cursor },
+          checkpoint: { offset },
           total_fetched: totalFetched,
           total_inserted: totalInserted,
           total_updated: totalUpdated,
@@ -206,8 +199,8 @@ async function runGHLSync(
     }
 
     // If there's more data, schedule a continuation
-    if (hasMore && cursor && adminKey) {
-      console.log(`[sync-ghl] Scheduling continuation from cursor ${cursor}...`);
+    if (hasMore && adminKey) {
+      console.log(`[sync-ghl] Scheduling continuation from offset ${offset}...`);
       
       // Update status to partial before continuing
       await supabase
@@ -219,11 +212,13 @@ async function runGHLSync(
           total_updated: totalUpdated,
           total_skipped: totalSkipped,
           total_conflicts: totalConflicts,
-          checkpoint: { cursor }
+          checkpoint: { offset }
         })
         .eq('id', syncRunId);
 
-      // Auto-continue by calling self
+      // Auto-continue by calling self with small delay to avoid rate limits
+      await new Promise(r => setTimeout(r, 500));
+      
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
       try {
         const continueResponse = await fetch(`${supabaseUrl}/functions/v1/sync-ghl`, {
@@ -235,7 +230,7 @@ async function runGHLSync(
           body: JSON.stringify({
             dry_run: dryRun,
             batch_size: batchSize,
-            checkpoint: { cursor },
+            checkpoint: { offset },
             continue_run_id: syncRunId
           })
         });
@@ -256,7 +251,7 @@ async function runGHLSync(
         total_skipped: totalSkipped,
         total_conflicts: totalConflicts,
         has_more: true,
-        next_cursor: cursor
+        next_offset: offset
       };
     }
 
@@ -271,7 +266,7 @@ async function runGHLSync(
         total_updated: totalUpdated,
         total_skipped: totalSkipped,
         total_conflicts: totalConflicts,
-        checkpoint: { cursor }
+        checkpoint: { offset }
       })
       .eq('id', syncRunId);
 
@@ -284,7 +279,7 @@ async function runGHLSync(
       total_skipped: totalSkipped,
       total_conflicts: totalConflicts,
       has_more: false,
-      next_cursor: cursor
+      final_offset: offset
     };
 
   } catch (error) {
@@ -338,14 +333,15 @@ Deno.serve(async (req) => {
     const dryRun = body.dry_run ?? false;
     const batchSize = Math.min(body.batch_size ?? 100, 100); // Default 100, max 100 (GHL API limit)
     const background = body.background ?? true;
-    const cursor = body.checkpoint?.cursor;
+    // Support both old cursor format and new offset format for backwards compatibility
+    const offset = body.checkpoint?.offset ?? (body.checkpoint?.cursor ? 0 : 0);
     const continueRunId = (body as { continue_run_id?: string }).continue_run_id;
 
     // If continuing an existing run, use that ID instead of creating new
     let syncRunId: string;
     
     if (continueRunId) {
-      console.log(`[sync-ghl] CONTINUING run ${continueRunId} from cursor=${cursor}`);
+      console.log(`[sync-ghl] CONTINUING run ${continueRunId} from offset=${offset}`);
       syncRunId = continueRunId;
       
       // Update status to running
@@ -363,7 +359,7 @@ Deno.serve(async (req) => {
           source: 'ghl',
           status: 'running',
           dry_run: dryRun,
-          checkpoint: { cursor }
+          checkpoint: { offset: 0 }
         })
         .select()
         .single();
@@ -385,7 +381,7 @@ Deno.serve(async (req) => {
         syncRunId,
         dryRun,
         batchSize,
-        cursor,
+        offset,
         providedKey! // Pass admin key for auto-continuation
       );
       
@@ -413,7 +409,7 @@ Deno.serve(async (req) => {
       syncRunId,
       dryRun,
       batchSize,
-      cursor,
+      offset,
       providedKey!
     );
 
