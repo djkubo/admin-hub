@@ -421,8 +421,16 @@ Responde en español, de forma concisa.`;
           </p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={() => refetchChecks()} variant="outline" size="sm">
-            <RefreshCw className="w-4 h-4 mr-2" />
+          <Button 
+            onClick={async () => {
+              await refetchChecks();
+              toast.success("Datos de calidad actualizados");
+            }} 
+            variant="outline" 
+            size="sm"
+            disabled={loadingChecks}
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${loadingChecks ? 'animate-spin' : ''}`} />
             Actualizar
           </Button>
         </div>
