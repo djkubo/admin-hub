@@ -6,6 +6,8 @@ export interface Transaction {
   id: string;
   stripe_payment_intent_id: string;
   payment_key: string | null; // CANONICAL dedup key
+  payment_type: string | null; // 'new' | 'renewal' | 'trial_conversion'
+  subscription_id: string | null;
   amount: number; // Always in CENTS
   currency: string | null; // Always lowercase (usd, mxn)
   status: string;

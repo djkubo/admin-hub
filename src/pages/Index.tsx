@@ -14,6 +14,7 @@ import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel"
 import { AIInsightsWidget } from "@/components/dashboard/AIInsightsWidget";
 import { PendingInvoicesTable } from "@/components/dashboard/PendingInvoicesTable";
 import { SmartRecoveryCard } from "@/components/dashboard/SmartRecoveryCard";
+import { DailyKPIsPanel } from "@/components/dashboard/DailyKPIsPanel";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
@@ -184,6 +185,9 @@ const Index = () => {
           isLoading: isLoadingInvoices,
         }}
       />
+
+      {/* Daily KPIs Panel - Clasificación de pagos */}
+      <DailyKPIsPanel />
 
       {/* Pending Invoices Table - Cash Flow */}
       <PendingInvoicesTable

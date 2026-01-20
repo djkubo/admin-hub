@@ -13,9 +13,13 @@ export interface Subscription {
   currency: string | null;
   interval: string | null;
   status: string;
+  provider: string | null; // 'stripe' | 'paypal'
+  trial_start: string | null;
+  trial_end: string | null;
   current_period_start: string | null;
   current_period_end: string | null;
   canceled_at: string | null;
+  cancel_reason: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
