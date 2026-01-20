@@ -71,36 +71,67 @@ export function SyncStatusBanner() {
       paypal: "PayPal",
       subscriptions: "Suscripciones",
       invoices: "Facturas",
+      ghl: "GoHighLevel",
+      manychat: "ManyChat",
     };
     return labels[source] || source;
   };
 
+  // Estimate progress based on time (GHL syncs take ~10-15 min for large datasets)
+  const getEstimatedProgress = (sync: SyncRun) => {
+    const startTime = new Date(sync.started_at).getTime();
+    const elapsed = Date.now() - startTime;
+    const estimatedTotal = 15 * 60 * 1000; // 15 minutes estimate
+    const progress = Math.min((elapsed / estimatedTotal) * 100, 95);
+    
+    // If we have fetched data, use that as a better indicator
+    if (sync.total_fetched && sync.total_fetched > 0) {
+      // Estimate based on typical GHL contact counts (assume ~5000 contacts max)
+      const estimatedTotal = 5000;
+      return Math.min((sync.total_fetched / estimatedTotal) * 100, 95);
+    }
+    
+    return progress;
+  };
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md">
       {/* Running syncs */}
-      {runningSyncs.map((sync) => (
-        <div
-          key={sync.id}
-          className="bg-primary/10 border border-primary/30 rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm animate-pulse"
-        >
-          <div className="flex items-center gap-3">
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                Sincronizando {getSourceLabel(sync.source)}...
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Iniciado {formatDistanceToNow(new Date(sync.started_at), { 
-                  addSuffix: true, 
-                  locale: es 
-                })}
-                {sync.total_fetched ? ` • ${sync.total_fetched} registros` : ""}
-              </p>
+      {runningSyncs.map((sync) => {
+        const progress = getEstimatedProgress(sync);
+        return (
+          <div
+            key={sync.id}
+            className="bg-primary/10 border border-primary/30 rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm"
+          >
+            <div className="flex items-center gap-3">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground">
+                  Sincronizando {getSourceLabel(sync.source)}...
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Iniciado {formatDistanceToNow(new Date(sync.started_at), { 
+                    addSuffix: true, 
+                    locale: es 
+                  })}
+                  {sync.total_fetched ? ` • ${sync.total_fetched} descargados` : ""}
+                  {sync.total_inserted ? ` • ${sync.total_inserted} nuevos` : ""}
+                  {sync.total_updated ? ` • ${sync.total_updated} actualizados` : ""}
+                </p>
+                {/* Progress bar */}
+                <div className="mt-2 h-1.5 w-full bg-primary/20 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+              <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
             </div>
-            <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {/* Recently completed syncs */}
       {recentCompleted.map((sync) => (
