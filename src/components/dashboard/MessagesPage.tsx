@@ -20,12 +20,14 @@ import {
   Clock,
   AlertCircle,
   Zap,
-  Timer
+  Timer,
+  Smartphone
 } from "lucide-react";
 import { formatDistanceToNow, format, differenceInHours } from "date-fns";
 import { es } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
+import { sendNativeSms, supportsNativeSms, isNativeApp, getPlatform } from "@/lib/nativeSms";
 
 const channelConfig = {
   sms: { 
@@ -77,13 +79,16 @@ export default function MessagesPage() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [newMessage, setNewMessage] = useState("");
-  const [selectedChannel, setSelectedChannel] = useState<"sms" | "whatsapp">("whatsapp");
+  const [selectedChannel, setSelectedChannel] = useState<"sms" | "whatsapp" | "native">("whatsapp");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: conversations, isLoading: loadingConversations } = useConversations();
   const { data: messages, isLoading: loadingMessages } = useMessages(selectedConversation?.client_id || undefined);
   const markAsRead = useMarkAsRead();
   const sendMessage = useSendMessage();
+
+  const canUseNativeSms = supportsNativeSms();
+  const platform = getPlatform();
 
   // Filter conversations
   const filteredConversations = conversations?.filter((conv) => {
@@ -141,10 +146,29 @@ export default function MessagesPage() {
     const phone = selectedConversation.client_phone;
     if (!phone) return;
 
+    // If native SMS selected, open device's messaging app
+    if (selectedChannel === "native") {
+      const result = await sendNativeSms({ to: phone, message: newMessage });
+      if (result.success) {
+        // Log the message as sent via native (we can't confirm delivery)
+        await supabase.from("messages").insert({
+          client_id: selectedConversation.client_id,
+          direction: "outbound",
+          channel: "sms",
+          to_address: phone,
+          body: newMessage,
+          status: "sent",
+          metadata: { native: true, method: result.method, platform },
+        });
+        setNewMessage("");
+      }
+      return;
+    }
+
     try {
       await sendMessage.mutateAsync({
         clientId: selectedConversation.client_id,
-        channel: selectedChannel,
+        channel: selectedChannel as "sms" | "whatsapp",
         body: newMessage,
         to: phone,
       });
@@ -480,9 +504,9 @@ export default function MessagesPage() {
               {/* Input with channel selector */}
               <div className="p-4 border-t space-y-2">
                 {/* Channel selector */}
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2 text-sm flex-wrap">
                   <span className="text-muted-foreground">Enviar por:</span>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1 flex-wrap">
                     <Button
                       type="button"
                       size="sm"
@@ -507,13 +531,47 @@ export default function MessagesPage() {
                       onClick={() => setSelectedChannel("sms")}
                     >
                       <Phone className="h-3.5 w-3.5" />
-                      SMS
+                      SMS Twilio
                     </Button>
+                    {canUseNativeSms && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={selectedChannel === "native" ? "default" : "outline"}
+                            className={cn(
+                              "gap-1.5 h-7",
+                              selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
+                            )}
+                            onClick={() => setSelectedChannel("native")}
+                          >
+                            <Smartphone className="h-3.5 w-3.5" />
+                            {platform === "ios" ? "iMessage" : platform === "android" ? "SMS Nativo" : "Mi Teléfono"}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Abre la app de Mensajes de tu dispositivo</p>
+                          <p className="text-xs text-muted-foreground">
+                            {platform === "ios" 
+                              ? "Se abrirá iMessage con el mensaje listo"
+                              : "Se abrirá la app de SMS con el mensaje listo"
+                            }
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </div>
                   {!windowOpen && selectedChannel === "whatsapp" && (
                     <span className="text-xs text-amber-600 flex items-center gap-1">
                       <AlertCircle className="h-3 w-3" />
                       Requiere plantilla
+                    </span>
+                  )}
+                  {selectedChannel === "native" && (
+                    <span className="text-xs text-purple-600 flex items-center gap-1">
+                      <Smartphone className="h-3 w-3" />
+                      Se abrirá tu app de mensajes
                     </span>
                   )}
                 </div>
@@ -526,9 +584,12 @@ export default function MessagesPage() {
                   className="flex gap-2"
                 >
                   <Input
-                    placeholder={windowOpen || selectedChannel === "sms" 
-                      ? "Escribe un mensaje..." 
-                      : "Escribe un mensaje (se usará plantilla si aplica)..."
+                    placeholder={
+                      selectedChannel === "native"
+                        ? "Escribe un mensaje (se abrirá tu app de mensajes)..."
+                        : windowOpen || selectedChannel === "sms" 
+                          ? "Escribe un mensaje..." 
+                          : "Escribe un mensaje (se usará plantilla si aplica)..."
                     }
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
@@ -540,7 +601,8 @@ export default function MessagesPage() {
                     disabled={!newMessage.trim() || sendMessage.isPending}
                     className={cn(
                       selectedChannel === "whatsapp" && "bg-green-600 hover:bg-green-700",
-                      selectedChannel === "sms" && "bg-blue-600 hover:bg-blue-700"
+                      selectedChannel === "sms" && "bg-blue-600 hover:bg-blue-700",
+                      selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
                     )}
                   >
                     <Send className="h-4 w-4" />
