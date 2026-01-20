@@ -182,225 +182,297 @@ export function RecoveryPage() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      {/* Header - Responsive */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-            <AlertTriangle className="h-8 w-8 text-amber-500" />
-            Recuperación de Pagos
+          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+            <AlertTriangle className="h-6 w-6 md:h-8 md:w-8 text-amber-500" />
+            Recuperación
           </h1>
-          <p className="text-muted-foreground mt-1">
-            CRM para gestionar pagos fallidos y recuperar ingresos
+          <p className="text-xs md:text-sm text-muted-foreground mt-1">
+            CRM para gestionar pagos fallidos
           </p>
         </div>
-        <div className="text-right">
-          <p className="text-3xl font-bold text-red-400">${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-          <p className="text-sm text-muted-foreground">Deuda total filtrada</p>
+        <div className="text-left sm:text-right">
+          <p className="text-2xl md:text-3xl font-bold text-red-400">${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+          <p className="text-xs md:text-sm text-muted-foreground">Deuda total</p>
         </div>
       </div>
 
-      {/* Stage Summary */}
-      <div className="grid grid-cols-4 gap-4">
+      {/* Stage Summary - 2x2 on mobile */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
         {(Object.entries(stageConfig) as [RecoveryStage, typeof stageConfig.pending][]).map(([stage, config]) => {
           const Icon = config.icon;
           return (
-            <div key={stage} className={`rounded-xl border p-4 text-center ${config.color}`}>
-              <Icon className="h-6 w-6 mx-auto mb-2" />
-              <p className="text-2xl font-bold">{stageCounts[stage]}</p>
-              <p className="text-sm">{config.label}</p>
+            <div key={stage} className={`rounded-xl border p-3 md:p-4 text-center ${config.color} touch-feedback`}>
+              <Icon className="h-5 w-5 md:h-6 md:w-6 mx-auto mb-1 md:mb-2" />
+              <p className="text-xl md:text-2xl font-bold">{stageCounts[stage]}</p>
+              <p className="text-xs md:text-sm">{config.label}</p>
             </div>
           );
         })}
       </div>
 
-      {/* Filters */}
-      <div className="rounded-xl border border-border/50 bg-card p-4">
-        <div className="flex items-center justify-between flex-wrap gap-4">
+      {/* Filters - Stack on mobile */}
+      <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Tabs value={sourceFilter} onValueChange={(v) => setSourceFilter(v as typeof sourceFilter)}>
-            <TabsList className="bg-muted/50">
-              <TabsTrigger value="all">Todos</TabsTrigger>
-              <TabsTrigger value="stripe">Stripe</TabsTrigger>
-              <TabsTrigger value="paypal">PayPal</TabsTrigger>
+            <TabsList className="bg-muted/50 h-8">
+              <TabsTrigger value="all" className="text-xs px-3">Todos</TabsTrigger>
+              <TabsTrigger value="stripe" className="text-xs px-3">Stripe</TabsTrigger>
+              <TabsTrigger value="paypal" className="text-xs px-3">PayPal</TabsTrigger>
             </TabsList>
           </Tabs>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 justify-between sm:justify-end">
             <div className="flex items-center gap-2">
               <Switch
                 id="phone-filter"
                 checked={showOnlyWithPhone}
                 onCheckedChange={setShowOnlyWithPhone}
               />
-              <Label htmlFor="phone-filter" className="text-sm cursor-pointer">
-                Solo con teléfono
+              <Label htmlFor="phone-filter" className="text-xs cursor-pointer">
+                Con tel
               </Label>
             </div>
-            <Badge variant="outline" className="text-muted-foreground">
+            <Badge variant="outline" className="text-muted-foreground text-xs">
               {filteredClients.length} clientes
             </Badge>
           </div>
         </div>
       </div>
 
-      {/* Table */}
+      {/* Cards/Table - Use cards on mobile */}
       {filteredClients.length === 0 ? (
-        <div className="rounded-xl border border-border/50 bg-card p-12 text-center">
-          <CheckCircle className="h-12 w-12 mx-auto mb-3 text-emerald-500/50" />
-          <p className="text-muted-foreground mb-1">¡Sin pagos fallidos!</p>
+        <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
+          <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
+          <p className="text-sm text-muted-foreground mb-1">¡Sin pagos fallidos!</p>
           <p className="text-xs text-muted-foreground">Los clientes con pagos fallidos aparecerán aquí</p>
         </div>
       ) : (
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-border/50 hover:bg-transparent">
-                <TableHead className="text-muted-foreground">Cliente</TableHead>
-                <TableHead className="text-muted-foreground">Deuda</TableHead>
-                <TableHead className="text-muted-foreground">Etapa</TableHead>
-                <TableHead className="text-muted-foreground">Fuente</TableHead>
-                <TableHead className="text-muted-foreground">Teléfono</TableHead>
-                <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredClients.map((client, index) => {
-                const stage = getStage(client.email);
-                const config = stageConfig[stage];
-                const StageIcon = config.icon;
+        <>
+          {/* Mobile Cards View */}
+          <div className="md:hidden space-y-3">
+            {filteredClients.map((client, index) => {
+              const stage = getStage(client.email);
+              const config = stageConfig[stage];
+              const StageIcon = config.icon;
 
-                return (
-                  <TableRow key={index} className="border-border/50 hover:bg-muted/20">
-                    <TableCell>
-                      <div>
-                        <p className="font-medium text-foreground">
-                          {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
-                        </p>
-                        <p className="text-xs text-muted-foreground">{client.email}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-red-400 font-semibold text-lg">
-                        ${client.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Badge variant="outline" className={`cursor-pointer ${config.color}`}>
-                            <StageIcon className="h-3 w-3 mr-1" />
-                            {config.label}
-                          </Badge>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                          {(Object.entries(stageConfig) as [RecoveryStage, typeof stageConfig.pending][]).map(([s, c]) => (
-                            <DropdownMenuItem key={s} onClick={() => setStage(client.email, s)}>
-                              <c.icon className={`h-4 w-4 mr-2 ${c.color.split(' ')[1]}`} />
-                              {c.label}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30">
-                        {client.source}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {client.phone ? (
-                        <span className="text-sm text-muted-foreground">{client.phone}</span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground/50">Sin teléfono</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2 flex-wrap">
-                        {/* ManyChat Button */}
+              return (
+                <div key={index} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground truncate">
+                        {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">{client.email}</p>
+                    </div>
+                    <span className="text-lg font-bold text-red-400 ml-2">
+                      ${client.amount.toFixed(2)}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 mb-3">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Badge variant="outline" className={`cursor-pointer text-xs ${config.color}`}>
+                          <StageIcon className="h-3 w-3 mr-1" />
+                          {config.label}
+                        </Badge>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="bg-popover border-border">
+                        {(Object.entries(stageConfig) as [RecoveryStage, typeof stageConfig.pending][]).map(([s, c]) => (
+                          <DropdownMenuItem key={s} onClick={() => setStage(client.email, s)}>
+                            <c.icon className={`h-4 w-4 mr-2 ${c.color.split(' ')[1]}`} />
+                            {c.label}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-xs">
+                      {client.source}
+                    </Badge>
+                    {client.phone && (
+                      <span className="text-xs text-muted-foreground truncate">{client.phone}</span>
+                    )}
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button size="sm" variant="outline" className="gap-1.5 text-xs border-[#0084FF]/30 text-[#0084FF] h-8 touch-feedback">
+                          <Facebook className="h-3.5 w-3.5" />
+                          FB
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="bg-popover border-border">
+                        <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>🚨 Último</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    {client.phone && (
+                      <>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-2 border-[#0084FF]/30 text-[#0084FF] hover:bg-[#0084FF]/10"
-                            >
-                              <Facebook className="h-4 w-4" />
-                              Messenger
+                            <Button size="sm" variant="outline" className="gap-1.5 text-xs border-blue-500/30 text-blue-400 h-8 touch-feedback">
+                              <Smartphone className="h-3.5 w-3.5" />
+                              SMS
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
-                              😊 Mensaje Amigable
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
-                              ⚠️ Mensaje Urgente
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>
-                              🚨 Último Aviso
-                            </DropdownMenuItem>
+                          <DropdownMenuContent align="start" className="bg-popover border-border">
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
 
-                        {client.phone && (
-                          <>
-                            {/* SMS Button */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="sm" className="gap-1.5 text-xs bg-[#25D366] hover:bg-[#1da851] text-white h-8 touch-feedback">
+                              <MessageCircle className="h-3.5 w-3.5" />
+                              WA
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="bg-popover border-border">
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-border/50 hover:bg-transparent">
+                    <TableHead className="text-muted-foreground">Cliente</TableHead>
+                    <TableHead className="text-muted-foreground">Deuda</TableHead>
+                    <TableHead className="text-muted-foreground">Etapa</TableHead>
+                    <TableHead className="text-muted-foreground">Fuente</TableHead>
+                    <TableHead className="text-muted-foreground">Teléfono</TableHead>
+                    <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredClients.map((client, index) => {
+                    const stage = getStage(client.email);
+                    const config = stageConfig[stage];
+                    const StageIcon = config.icon;
+
+                    return (
+                      <TableRow key={index} className="border-border/50 hover:bg-muted/20">
+                        <TableCell>
+                          <div>
+                            <p className="font-medium text-foreground">
+                              {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
+                            </p>
+                            <p className="text-xs text-muted-foreground">{client.email}</p>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-red-400 font-semibold text-lg">
+                            ${client.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Badge variant="outline" className={`cursor-pointer ${config.color}`}>
+                                <StageIcon className="h-3 w-3 mr-1" />
+                                {config.label}
+                              </Badge>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="bg-popover border-border">
+                              {(Object.entries(stageConfig) as [RecoveryStage, typeof stageConfig.pending][]).map(([s, c]) => (
+                                <DropdownMenuItem key={s} onClick={() => setStage(client.email, s)}>
+                                  <c.icon className={`h-4 w-4 mr-2 ${c.color.split(' ')[1]}`} />
+                                  {c.label}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30">
+                            {client.source}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {client.phone ? (
+                            <span className="text-sm text-muted-foreground">{client.phone}</span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/50">Sin teléfono</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
-                                >
-                                  <Smartphone className="h-4 w-4" />
-                                  SMS
+                                <Button size="sm" variant="outline" className="gap-2 border-[#0084FF]/30 text-[#0084FF] hover:bg-[#0084FF]/10">
+                                  <Facebook className="h-4 w-4" />
+                                  Messenger
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
-                                  😊 Mensaje Amigable
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
-                                  ⚠️ Mensaje Urgente
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
-                                  🚨 Último Aviso
-                                </DropdownMenuItem>
+                              <DropdownMenuContent align="end" className="bg-popover border-border">
+                                <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>😊 Mensaje Amigable</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>⚠️ Mensaje Urgente</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>🚨 Último Aviso</DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
 
-                            {/* WhatsApp Button */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button
-                                  size="sm"
-                                  className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white"
-                                >
-                                  <MessageCircle className="h-4 w-4" />
-                                  WhatsApp
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
-                                  😊 Mensaje Amigable
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
-                                  ⚠️ Mensaje Urgente
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
-                                  🚨 Último Aviso
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+                            {client.phone && (
+                              <>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="sm" variant="outline" className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10">
+                                      <Smartphone className="h-4 w-4" />
+                                      SMS
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="bg-popover border-border">
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Mensaje Amigable</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Mensaje Urgente</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Último Aviso</DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="sm" className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white">
+                                      <MessageCircle className="h-4 w-4" />
+                                      WhatsApp
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="bg-popover border-border">
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Mensaje Amigable</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Mensaje Urgente</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Último Aviso</DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

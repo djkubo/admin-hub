@@ -232,31 +232,31 @@ export default function MessagesPage() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-[calc(100vh-4rem)] gap-4">
+      <div className="flex h-[calc(100vh-5rem)] md:h-[calc(100vh-4rem)] gap-0 md:gap-4">
         {/* Conversations List */}
         <Card className={cn(
-          "w-full md:w-96 flex flex-col",
+          "w-full md:w-80 lg:w-96 flex flex-col border-0 md:border rounded-none md:rounded-xl",
           selectedConversation && "hidden md:flex"
         )}>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
+          <CardHeader className="pb-3 px-3 md:px-6">
+            <CardTitle className="flex items-center gap-2 text-base md:text-lg">
+              <MessageSquare className="h-4 w-4 md:h-5 md:w-5" />
               Mensajes
             </CardTitle>
             <div className="relative mt-2">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar conversaciones..."
+                placeholder="Buscar..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
+                className="pl-9 text-sm"
               />
             </div>
           </CardHeader>
           <CardContent className="flex-1 p-0 overflow-hidden">
             <ScrollArea className="h-full">
               {loadingConversations ? (
-                <div className="space-y-2 p-4">
+                <div className="space-y-2 p-3 md:p-4">
                   {[...Array(5)].map((_, i) => (
                     <Skeleton key={i} className="h-16 w-full" />
                   ))}
@@ -264,7 +264,7 @@ export default function MessagesPage() {
               ) : filteredConversations?.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
                   <MessageSquare className="h-8 w-8 mb-2" />
-                  <p>No hay conversaciones</p>
+                  <p className="text-sm">No hay conversaciones</p>
                 </div>
               ) : (
                 <div className="divide-y">
@@ -282,11 +282,11 @@ export default function MessagesPage() {
                         key={conv.client_id || "unknown"}
                         onClick={() => setSelectedConversation(conv)}
                         className={cn(
-                          "w-full p-4 text-left hover:bg-muted/50 transition-colors relative",
+                          "w-full p-3 md:p-4 text-left hover:bg-muted/50 transition-colors relative touch-feedback",
                           selectedConversation?.client_id === conv.client_id && "bg-muted"
                         )}
                       >
-                        <div className="flex gap-3">
+                        <div className="flex gap-2.5 md:gap-3">
                           <div className="relative">
                             <Avatar className="h-10 w-10">
                               <AvatarFallback className="bg-primary/10 text-primary text-sm">
@@ -352,7 +352,7 @@ export default function MessagesPage() {
 
         {/* Messages Thread */}
         <Card className={cn(
-          "flex-1 flex flex-col",
+          "flex-1 flex flex-col border-0 md:border rounded-none md:rounded-xl",
           !selectedConversation && "hidden md:flex"
         )}>
           {selectedConversation ? (
@@ -502,76 +502,58 @@ export default function MessagesPage() {
               </CardContent>
 
               {/* Input with channel selector */}
-              <div className="p-4 border-t space-y-2">
-                {/* Channel selector */}
-                <div className="flex items-center gap-2 text-sm flex-wrap">
-                  <span className="text-muted-foreground">Enviar por:</span>
-                  <div className="flex gap-1 flex-wrap">
+              <div className="p-3 md:p-4 border-t space-y-2 safe-area-bottom">
+                {/* Channel selector - scroll on mobile */}
+                <div className="flex items-center gap-2 text-xs md:text-sm overflow-x-auto">
+                  <span className="text-muted-foreground shrink-0">Enviar:</span>
+                  <div className="flex gap-1">
                     <Button
                       type="button"
                       size="sm"
                       variant={selectedChannel === "whatsapp" ? "default" : "outline"}
                       className={cn(
-                        "gap-1.5 h-7",
+                        "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
                         selectedChannel === "whatsapp" && "bg-green-600 hover:bg-green-700"
                       )}
                       onClick={() => setSelectedChannel("whatsapp")}
                     >
-                      <MessageSquare className="h-3.5 w-3.5" />
-                      WhatsApp
+                      <MessageSquare className="h-3 w-3" />
+                      <span className="hidden sm:inline">WhatsApp</span>
+                      <span className="sm:hidden">WA</span>
                     </Button>
                     <Button
                       type="button"
                       size="sm"
                       variant={selectedChannel === "sms" ? "default" : "outline"}
                       className={cn(
-                        "gap-1.5 h-7",
+                        "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
                         selectedChannel === "sms" && "bg-blue-600 hover:bg-blue-700"
                       )}
                       onClick={() => setSelectedChannel("sms")}
                     >
-                      <Phone className="h-3.5 w-3.5" />
-                      SMS Twilio
+                      <Phone className="h-3 w-3" />
+                      SMS
                     </Button>
                     {canUseNativeSms && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={selectedChannel === "native" ? "default" : "outline"}
-                            className={cn(
-                              "gap-1.5 h-7",
-                              selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
-                            )}
-                            onClick={() => setSelectedChannel("native")}
-                          >
-                            <Smartphone className="h-3.5 w-3.5" />
-                            {platform === "ios" ? "iMessage" : platform === "android" ? "SMS Nativo" : "Mi Teléfono"}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Abre la app de Mensajes de tu dispositivo</p>
-                          <p className="text-xs text-muted-foreground">
-                            {platform === "ios" 
-                              ? "Se abrirá iMessage con el mensaje listo"
-                              : "Se abrirá la app de SMS con el mensaje listo"
-                            }
-                          </p>
-                        </TooltipContent>
-                      </Tooltip>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={selectedChannel === "native" ? "default" : "outline"}
+                        className={cn(
+                          "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
+                          selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
+                        )}
+                        onClick={() => setSelectedChannel("native")}
+                      >
+                        <Smartphone className="h-3 w-3" />
+                        {platform === "ios" ? "iMsg" : "Native"}
+                      </Button>
                     )}
                   </div>
                   {!windowOpen && selectedChannel === "whatsapp" && (
-                    <span className="text-xs text-amber-600 flex items-center gap-1">
+                    <span className="text-[10px] text-amber-600 flex items-center gap-0.5 shrink-0">
                       <AlertCircle className="h-3 w-3" />
-                      Requiere plantilla
-                    </span>
-                  )}
-                  {selectedChannel === "native" && (
-                    <span className="text-xs text-purple-600 flex items-center gap-1">
-                      <Smartphone className="h-3 w-3" />
-                      Se abrirá tu app de mensajes
+                      <span className="hidden sm:inline">Requiere plantilla</span>
                     </span>
                   )}
                 </div>

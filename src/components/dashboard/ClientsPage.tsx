@@ -124,145 +124,149 @@ export function ClientsPage() {
   }), [clients]);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      {/* Header - Responsive */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-            <Users className="h-8 w-8 text-primary" />
+          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+            <Users className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Clientes
           </h1>
-          <p className="text-muted-foreground mt-1">
+          <p className="text-xs md:text-sm text-muted-foreground mt-1">
             {totalCount} clientes en total
           </p>
         </div>
-        <Button onClick={() => setIsAddDialogOpen(true)} className="gap-2">
+        <Button onClick={() => setIsAddDialogOpen(true)} size="sm" className="gap-2 self-start sm:self-auto touch-feedback">
           <Users className="h-4 w-4" />
-          Agregar Cliente
+          <span className="hidden sm:inline">Agregar Cliente</span>
+          <span className="sm:hidden">Agregar</span>
         </Button>
       </div>
 
-      {/* Quick Filter Buttons */}
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant={statusFilter === 'all' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('all')}
-          className="gap-2"
-        >
-          <Users className="h-4 w-4" />
-          Todos
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.all}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'customer' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('customer')}
-          className="gap-2 border-emerald-500/30 hover:bg-emerald-500/10"
-        >
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          Clientes
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.customer}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'lead' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('lead')}
-          className="gap-2 border-gray-500/30 hover:bg-gray-500/10"
-        >
-          <span className="h-2 w-2 rounded-full bg-gray-400" />
-          Leads
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.lead}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'trial' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('trial')}
-          className="gap-2 border-purple-500/30 hover:bg-purple-500/10"
-        >
-          <span className="h-2 w-2 rounded-full bg-purple-500" />
-          Trial
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.trial}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'past_due' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('past_due')}
-          className="gap-2 border-orange-500/30 hover:bg-orange-500/10"
-        >
-          <AlertTriangle className="h-4 w-4 text-orange-500" />
-          Morosos
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.past_due}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'churn' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('churn')}
-          className="gap-2 border-red-500/30 hover:bg-red-500/10"
-        >
-          <LogOut className="h-4 w-4 text-red-500" />
-          Cancelados
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.churn}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'vip' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('vip')}
-          className="gap-2 border-yellow-500/30 hover:bg-yellow-500/10"
-        >
-          <Crown className="h-4 w-4 text-yellow-500" />
-          VIP
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.vip}</Badge>
-        </Button>
-        <Button
-          variant={statusFilter === 'no_phone' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setStatusFilter('no_phone')}
-          className="gap-2"
-        >
-          <Phone className="h-4 w-4 text-muted-foreground" />
-          Sin teléfono
-          <Badge variant="secondary" className="ml-1 text-xs">{filterCounts.no_phone}</Badge>
-        </Button>
-      </div>
-
-      {/* Search and Page Size */}
-      <div className="rounded-xl border border-border/50 bg-card p-4">
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Buscar por email, teléfono o nombre..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
-          </div>
-          
-          {/* Page Size Selector */}
-          <Select 
-            value={pageSize === 'all' ? 'all' : pageSize.toString()} 
-            onValueChange={(v) => setPageSize(v === 'all' ? 'all' : parseInt(v))}
+      {/* Quick Filter Buttons - Horizontal scroll on mobile */}
+      <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
+        <div className="flex gap-2 pb-2 md:pb-0 md:flex-wrap min-w-max md:min-w-0">
+          <Button
+            variant={statusFilter === 'all' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('all')}
+            className="gap-1.5 text-xs touch-feedback shrink-0"
           >
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="Por página" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="50">50 por página</SelectItem>
-              <SelectItem value="100">100 por página</SelectItem>
-              <SelectItem value="500">500 por página</SelectItem>
-              <SelectItem value="all">Ver todos</SelectItem>
-            </SelectContent>
-          </Select>
-          
-          <Badge variant="outline" className="text-muted-foreground">
-            {filteredClients.length} resultados
-          </Badge>
+            <Users className="h-3.5 w-3.5" />
+            Todos
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.all}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'customer' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('customer')}
+            className="gap-1.5 text-xs border-emerald-500/30 hover:bg-emerald-500/10 touch-feedback shrink-0"
+          >
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            Clientes
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.customer}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'lead' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('lead')}
+            className="gap-1.5 text-xs border-gray-500/30 hover:bg-gray-500/10 touch-feedback shrink-0"
+          >
+            <span className="h-2 w-2 rounded-full bg-gray-400" />
+            Leads
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.lead}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'trial' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('trial')}
+            className="gap-1.5 text-xs border-purple-500/30 hover:bg-purple-500/10 touch-feedback shrink-0"
+          >
+            <span className="h-2 w-2 rounded-full bg-purple-500" />
+            Trial
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.trial}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'past_due' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('past_due')}
+            className="gap-1.5 text-xs border-orange-500/30 hover:bg-orange-500/10 touch-feedback shrink-0"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
+            Morosos
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.past_due}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'churn' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('churn')}
+            className="gap-1.5 text-xs border-red-500/30 hover:bg-red-500/10 touch-feedback shrink-0"
+          >
+            <LogOut className="h-3.5 w-3.5 text-red-500" />
+            Cancel
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.churn}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'vip' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('vip')}
+            className="gap-1.5 text-xs border-yellow-500/30 hover:bg-yellow-500/10 touch-feedback shrink-0"
+          >
+            <Crown className="h-3.5 w-3.5 text-yellow-500" />
+            VIP
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.vip}</Badge>
+          </Button>
+          <Button
+            variant={statusFilter === 'no_phone' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setStatusFilter('no_phone')}
+            className="gap-1.5 text-xs touch-feedback shrink-0"
+          >
+            <Phone className="h-3.5 w-3.5 text-muted-foreground" />
+            Sin tel
+            <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.no_phone}</Badge>
+          </Button>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="rounded-xl border border-border/50 bg-card p-6">
+      {/* Search and Page Size - Stack on mobile */}
+      <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 text-sm"
+            />
+          </div>
+          
+          <div className="flex items-center gap-2 justify-between sm:justify-end">
+            <Select 
+              value={pageSize === 'all' ? 'all' : pageSize.toString()} 
+              onValueChange={(v) => setPageSize(v === 'all' ? 'all' : parseInt(v))}
+            >
+              <SelectTrigger className="w-[100px] md:w-[140px] text-xs md:text-sm">
+                <SelectValue placeholder="Por página" />
+              </SelectTrigger>
+              <SelectContent className="bg-popover border-border">
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+                <SelectItem value="500">500</SelectItem>
+                <SelectItem value="all">Todos</SelectItem>
+              </SelectContent>
+            </Select>
+            
+            <Badge variant="outline" className="text-muted-foreground text-xs">
+              {filteredClients.length} resultados
+            </Badge>
+          </div>
+        </div>
+      </div>
+
+      {/* Table - Horizontal scroll on mobile */}
+      <div className="rounded-xl border border-border/50 bg-card p-2 md:p-6 overflow-hidden">
         <ClientsTable
           clients={filteredClients}
           isLoading={isLoading}
