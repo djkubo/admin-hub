@@ -43,14 +43,14 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
   const now = new Date();
   const endISO = now.toISOString();
   let startISO: string;
+  // rangeParam must match the RPC function parameter values: 'today', '7d', 'month', 'all'
   let rangeParam: string;
 
   switch (filter) {
     case 'today':
-      // Today in UTC
       const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       startISO = todayStart.toISOString();
-      rangeParam = '1d';
+      rangeParam = 'today';
       break;
     case '7d':
       const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -60,20 +60,20 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
     case 'month':
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       startISO = monthStart.toISOString();
-      rangeParam = '30d';
+      rangeParam = 'month';
       break;
     case 'all':
       const tenYearsAgo = new Date(Date.UTC(now.getUTCFullYear() - 10, 0, 1));
       startISO = tenYearsAgo.toISOString();
-      rangeParam = '3650d'; // ~10 years
+      rangeParam = 'all';
       break;
     default:
       const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       startISO = defaultStart.toISOString();
-      rangeParam = '1d';
+      rangeParam = 'today';
   }
 
-  console.log(`📊 KPI date range (${filter}): ${startISO} to ${endISO}`);
+  console.log(`📊 KPI date range (${filter}): ${startISO} to ${endISO}, rangeParam: ${rangeParam}`);
   return { start: startISO, end: endISO, rangeParam };
 }
 
