@@ -678,44 +678,107 @@ export type Database = {
       invoices: {
         Row: {
           amount_due: number
+          amount_paid: number | null
+          amount_remaining: number | null
+          attempt_count: number | null
+          billing_reason: string | null
+          charge_id: string | null
+          collection_method: string | null
           created_at: string | null
           currency: string | null
           customer_email: string | null
+          customer_name: string | null
+          default_payment_method: string | null
+          description: string | null
+          due_date: string | null
           hosted_invoice_url: string | null
           id: string
+          invoice_number: string | null
+          last_finalization_error: string | null
+          lines: Json | null
           next_payment_attempt: string | null
+          payment_intent_id: string | null
+          pdf_url: string | null
           period_end: string | null
+          plan_interval: string | null
+          plan_name: string | null
+          product_name: string | null
           status: string
           stripe_customer_id: string | null
           stripe_invoice_id: string
+          subscription_id: string | null
+          subtotal: number | null
+          total: number | null
           updated_at: string | null
         }
         Insert: {
           amount_due: number
+          amount_paid?: number | null
+          amount_remaining?: number | null
+          attempt_count?: number | null
+          billing_reason?: string | null
+          charge_id?: string | null
+          collection_method?: string | null
           created_at?: string | null
           currency?: string | null
           customer_email?: string | null
+          customer_name?: string | null
+          default_payment_method?: string | null
+          description?: string | null
+          due_date?: string | null
           hosted_invoice_url?: string | null
           id?: string
+          invoice_number?: string | null
+          last_finalization_error?: string | null
+          lines?: Json | null
           next_payment_attempt?: string | null
+          payment_intent_id?: string | null
+          pdf_url?: string | null
           period_end?: string | null
+          plan_interval?: string | null
+          plan_name?: string | null
+          product_name?: string | null
           status: string
           stripe_customer_id?: string | null
           stripe_invoice_id: string
+          subscription_id?: string | null
+          subtotal?: number | null
+          total?: number | null
           updated_at?: string | null
         }
         Update: {
           amount_due?: number
+          amount_paid?: number | null
+          amount_remaining?: number | null
+          attempt_count?: number | null
+          billing_reason?: string | null
+          charge_id?: string | null
+          collection_method?: string | null
           created_at?: string | null
           currency?: string | null
           customer_email?: string | null
+          customer_name?: string | null
+          default_payment_method?: string | null
+          description?: string | null
+          due_date?: string | null
           hosted_invoice_url?: string | null
           id?: string
+          invoice_number?: string | null
+          last_finalization_error?: string | null
+          lines?: Json | null
           next_payment_attempt?: string | null
+          payment_intent_id?: string | null
+          pdf_url?: string | null
           period_end?: string | null
+          plan_interval?: string | null
+          plan_name?: string | null
+          product_name?: string | null
           status?: string
           stripe_customer_id?: string | null
           stripe_invoice_id?: string
+          subscription_id?: string | null
+          subtotal?: number | null
+          total?: number | null
           updated_at?: string | null
         }
         Relationships: []

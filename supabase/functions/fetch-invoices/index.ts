@@ -2,7 +2,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // More permissive CORS - accept all lovable domains
 function getCorsHeaders(origin: string | null) {
-  // Accept any lovable-related origin
   const isAllowed = origin && (
     origin.includes('lovable.app') ||
     origin.includes('lovable.dev') ||
@@ -17,20 +16,75 @@ function getCorsHeaders(origin: string | null) {
   };
 }
 
+interface StripeLineItem {
+  id: string;
+  amount: number;
+  currency: string;
+  description: string | null;
+  quantity: number;
+  price?: {
+    id: string;
+    nickname: string | null;
+    unit_amount: number | null;
+    recurring?: {
+      interval: string;
+      interval_count: number;
+    } | null;
+    product?: string | {
+      id: string;
+      name: string;
+    };
+  };
+}
+
 interface StripeInvoice {
   id: string;
+  number: string | null;
   customer_email: string | null;
+  customer_name: string | null;
   customer: string;
   amount_due: number;
+  amount_paid: number;
+  amount_remaining: number;
+  subtotal: number;
+  total: number;
   currency: string;
   status: string;
   period_end: number;
   next_payment_attempt: number | null;
+  due_date: number | null;
   hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
+  attempt_count: number;
+  billing_reason: string | null;
+  collection_method: string | null;
+  description: string | null;
+  payment_intent: string | { id: string } | null;
+  charge: string | null;
+  default_payment_method: string | { id: string } | null;
+  last_finalization_error: { message: string; code: string } | null;
   subscription?: {
     id: string;
     status: string;
+    items?: {
+      data: Array<{
+        price?: {
+          id: string;
+          nickname: string | null;
+          recurring?: {
+            interval: string;
+          } | null;
+          product?: string | {
+            id: string;
+            name: string;
+          };
+        };
+      }>;
+    };
   } | string | null;
+  lines?: {
+    data: StripeLineItem[];
+  };
 }
 
 const EXCLUDED_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired", "unpaid"];
@@ -38,6 +92,55 @@ const EXCLUDED_INVOICE_STATUSES = ["void", "uncollectible", "paid"];
 
 // Admin key for internal authentication
 const ADMIN_API_KEY = Deno.env.get("ADMIN_API_KEY");
+
+// Helper to extract plan info from subscription or lines
+function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; planInterval: string | null; productName: string | null } {
+  let planName: string | null = null;
+  let planInterval: string | null = null;
+  let productName: string | null = null;
+
+  // Try from subscription first (expanded)
+  if (invoice.subscription && typeof invoice.subscription === 'object') {
+    const sub = invoice.subscription;
+    if (sub.items?.data?.[0]?.price) {
+      const price = sub.items.data[0].price;
+      planName = price.nickname || null;
+      planInterval = price.recurring?.interval || null;
+      
+      if (price.product && typeof price.product === 'object') {
+        productName = price.product.name;
+      }
+    }
+  }
+
+  // Fallback: try from invoice lines
+  if (!planName && invoice.lines?.data?.length) {
+    const firstLine = invoice.lines.data[0];
+    if (firstLine.price) {
+      planName = firstLine.price.nickname || firstLine.description || null;
+      planInterval = firstLine.price.recurring?.interval || null;
+      
+      if (firstLine.price.product && typeof firstLine.price.product === 'object') {
+        productName = firstLine.price.product.name;
+      }
+    } else if (firstLine.description) {
+      planName = firstLine.description;
+    }
+  }
+
+  // Format interval to Spanish
+  if (planInterval) {
+    const intervalMap: Record<string, string> = {
+      'day': 'Diario',
+      'week': 'Semanal',
+      'month': 'Mensual',
+      'year': 'Anual',
+    };
+    planInterval = intervalMap[planInterval] || planInterval;
+  }
+
+  return { planName, planInterval, productName };
+}
 
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
@@ -48,7 +151,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify admin key authentication (same as other sync functions)
+    // SECURITY: Verify admin key authentication
     const providedAdminKey = req.headers.get("x-admin-key");
     
     console.log(`🔐 Admin key check - Configured: ${ADMIN_API_KEY ? 'YES' : 'NO'}, Provided: ${providedAdminKey ? 'YES' : 'NO'}`);
@@ -72,10 +175,17 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log("🧾 Starting Stripe Invoices fetch with subscription filter...");
+    console.log("🧾 Starting ENRICHED Stripe Invoices fetch...");
 
+    // Fetch draft invoices with full expansion
     const draftResponse = await fetch(
-      "https://api.stripe.com/v1/invoices?status=draft&limit=100&expand[]=data.subscription",
+      "https://api.stripe.com/v1/invoices?status=draft&limit=100" +
+      "&expand[]=data.subscription" +
+      "&expand[]=data.subscription.items.data.price.product" +
+      "&expand[]=data.lines.data.price.product" +
+      "&expand[]=data.customer" +
+      "&expand[]=data.payment_intent" +
+      "&expand[]=data.default_payment_method",
       {
         headers: {
           Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
@@ -92,8 +202,15 @@ Deno.serve(async (req) => {
     const draftData = await draftResponse.json();
     console.log(`📄 Found ${draftData.data.length} draft invoices (raw)`);
 
+    // Fetch open invoices with full expansion
     const openResponse = await fetch(
-      "https://api.stripe.com/v1/invoices?status=open&limit=100&expand[]=data.subscription",
+      "https://api.stripe.com/v1/invoices?status=open&limit=100" +
+      "&expand[]=data.subscription" +
+      "&expand[]=data.subscription.items.data.price.product" +
+      "&expand[]=data.lines.data.price.product" +
+      "&expand[]=data.customer" +
+      "&expand[]=data.payment_intent" +
+      "&expand[]=data.default_payment_method",
       {
         headers: {
           Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
@@ -113,6 +230,7 @@ Deno.serve(async (req) => {
     const allRawInvoices: StripeInvoice[] = [...draftData.data, ...openData.data];
     console.log(`📊 Total raw invoices: ${allRawInvoices.length}`);
 
+    // Filter out invoices from canceled subscriptions
     const filteredInvoices = allRawInvoices.filter((invoice) => {
       if (!invoice.subscription) {
         console.log(`✅ Invoice ${invoice.id}: No subscription, including`);
@@ -141,11 +259,51 @@ Deno.serve(async (req) => {
     let errorCount = 0;
 
     for (const invoice of filteredInvoices) {
+      // Extract enriched plan info
+      const { planName, planInterval, productName } = extractPlanInfo(invoice);
+      
+      // Get subscription ID
+      const subscriptionId = invoice.subscription 
+        ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
+        : null;
+
+      // Get payment intent ID
+      const paymentIntentId = invoice.payment_intent
+        ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
+        : null;
+
+      // Get default payment method ID  
+      const defaultPaymentMethod = invoice.default_payment_method
+        ? (typeof invoice.default_payment_method === 'object' ? invoice.default_payment_method.id : invoice.default_payment_method)
+        : null;
+
+      // Extract line items for storage
+      const lineItems = invoice.lines?.data?.map(line => ({
+        id: line.id,
+        amount: line.amount,
+        currency: line.currency,
+        description: line.description,
+        quantity: line.quantity,
+        price_id: line.price?.id,
+        price_nickname: line.price?.nickname,
+        unit_amount: line.price?.unit_amount,
+        interval: line.price?.recurring?.interval,
+        product_name: line.price?.product && typeof line.price.product === 'object' 
+          ? line.price.product.name 
+          : null,
+      })) || null;
+
       const invoiceRecord = {
         stripe_invoice_id: invoice.id,
+        invoice_number: invoice.number,
         customer_email: invoice.customer_email,
+        customer_name: invoice.customer_name,
         stripe_customer_id: invoice.customer,
         amount_due: invoice.amount_due,
+        amount_paid: invoice.amount_paid,
+        amount_remaining: invoice.amount_remaining,
+        subtotal: invoice.subtotal,
+        total: invoice.total,
         currency: invoice.currency,
         status: invoice.status,
         period_end: invoice.period_end 
@@ -154,7 +312,24 @@ Deno.serve(async (req) => {
         next_payment_attempt: invoice.next_payment_attempt
           ? new Date(invoice.next_payment_attempt * 1000).toISOString()
           : null,
+        due_date: invoice.due_date
+          ? new Date(invoice.due_date * 1000).toISOString()
+          : null,
         hosted_invoice_url: invoice.hosted_invoice_url,
+        pdf_url: invoice.invoice_pdf,
+        subscription_id: subscriptionId,
+        plan_name: planName,
+        plan_interval: planInterval,
+        product_name: productName,
+        attempt_count: invoice.attempt_count || 0,
+        billing_reason: invoice.billing_reason,
+        collection_method: invoice.collection_method,
+        description: invoice.description,
+        payment_intent_id: paymentIntentId,
+        charge_id: invoice.charge,
+        default_payment_method: defaultPaymentMethod,
+        last_finalization_error: invoice.last_finalization_error?.message || null,
+        lines: lineItems,
         updated_at: new Date().toISOString(),
       };
 
@@ -170,9 +345,11 @@ Deno.serve(async (req) => {
         errorCount++;
       } else {
         upsertedCount++;
+        console.log(`✅ Upserted: ${invoice.number || invoice.id} - ${invoice.customer_name || invoice.customer_email} - ${planName || 'N/A'} (${planInterval || 'N/A'})`);
       }
     }
 
+    // Cleanup old/settled invoices
     const currentValidInvoiceIds = filteredInvoices.map((i) => i.id);
     
     const { data: existingInvoices } = await supabase
@@ -208,18 +385,23 @@ Deno.serve(async (req) => {
 
     const totalPending = filteredInvoices.reduce((sum, inv) => sum + inv.amount_due, 0);
 
-    console.log(`✅ Sync complete: ${upsertedCount} upserted, ${errorCount} errors`);
+    console.log(`✅ ENRICHED Sync complete: ${upsertedCount} upserted, ${errorCount} errors`);
     console.log(`💰 Total pending amount (actionable): $${(totalPending / 100).toFixed(2)}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: `Synced ${upsertedCount} pending invoices`,
+        message: `Synced ${upsertedCount} pending invoices with enriched data`,
         draftCount: filteredInvoices.filter(i => i.status === "draft").length,
         openCount: filteredInvoices.filter(i => i.status === "open").length,
         excludedCount: allRawInvoices.length - filteredInvoices.length,
         totalPending: totalPending,
         errors: errorCount,
+        enrichedFields: [
+          'customer_name', 'invoice_number', 'plan_name', 'plan_interval', 
+          'product_name', 'attempt_count', 'billing_reason', 'pdf_url', 
+          'payment_intent_id', 'lines'
+        ],
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

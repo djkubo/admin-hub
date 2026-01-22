@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar } from 'lucide-react';
+import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar, Download, User, Package, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -299,19 +299,42 @@ export function InvoicesPage() {
         </div>
       ) : (
         <>
-          {/* Mobile Cards */}
+          {/* Mobile Cards - Enriched */}
           <div className="md:hidden space-y-3">
             {filteredInvoices.map((invoice) => (
               <div key={invoice.id} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
-                <div className="flex items-start justify-between mb-3">
+                <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-foreground text-sm truncate">{invoice.customer_email || 'Sin email'}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">{invoice.stripe_invoice_id}</p>
+                    <div className="flex items-center gap-1.5">
+                      <User className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                      <p className="font-medium text-foreground text-sm truncate">
+                        {invoice.customer_name || invoice.customer_email || 'Sin nombre'}
+                      </p>
+                    </div>
+                    {invoice.customer_name && invoice.customer_email && (
+                      <p className="text-[10px] text-muted-foreground truncate ml-5">{invoice.customer_email}</p>
+                    )}
                   </div>
                   <span className="text-lg font-bold text-foreground ml-2">
                     ${(invoice.amount_due / 100).toFixed(2)}
                   </span>
                 </div>
+
+                {/* Plan info */}
+                {(invoice.plan_name || invoice.product_name || invoice.plan_interval) && (
+                  <div className="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground">
+                    <Package className="h-3 w-3 flex-shrink-0" />
+                    <span className="truncate">
+                      {invoice.product_name || invoice.plan_name || 'Plan'}
+                      {invoice.plan_interval && ` · ${invoice.plan_interval}`}
+                    </span>
+                  </div>
+                )}
+
+                {/* Invoice number */}
+                <p className="text-[10px] text-muted-foreground truncate mb-2">
+                  {invoice.invoice_number || invoice.stripe_invoice_id}
+                </p>
                 
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <Badge variant="outline" className={`text-xs ${
@@ -321,8 +344,19 @@ export function InvoicesPage() {
                       ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
                       : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
                   }`}>
-                    {invoice.status}
+                    {invoice.status === 'draft' ? 'Borrador' : invoice.status === 'open' ? 'Abierta' : invoice.status}
                   </Badge>
+                  {invoice.plan_interval && (
+                    <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                      {invoice.plan_interval}
+                    </Badge>
+                  )}
+                  {invoice.attempt_count && invoice.attempt_count > 0 && (
+                    <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+                      <RefreshCw className="h-2.5 w-2.5 mr-1" />
+                      {invoice.attempt_count}
+                    </Badge>
+                  )}
                   {invoice.next_payment_attempt && (
                     <span className="text-xs text-muted-foreground flex items-center gap-1">
                       <Clock className="h-3 w-3" />
@@ -330,6 +364,13 @@ export function InvoicesPage() {
                     </span>
                   )}
                 </div>
+
+                {/* Error message if any */}
+                {invoice.last_finalization_error && (
+                  <p className="text-[10px] text-red-400 mb-2 truncate">
+                    ⚠️ {invoice.last_finalization_error}
+                  </p>
+                )}
 
                 <div className="flex items-center gap-2">
                   <Button
@@ -345,6 +386,17 @@ export function InvoicesPage() {
                     )}
                     Cobrar
                   </Button>
+                  {invoice.pdf_url && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.open(invoice.pdf_url!, '_blank')}
+                      className="h-8 touch-feedback"
+                      title="Descargar PDF"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                   {invoice.hosted_invoice_url && (
                     <Button
                       size="sm"
@@ -360,17 +412,22 @@ export function InvoicesPage() {
             ))}
           </div>
 
-          {/* Desktop Table */}
+          {/* Desktop Table - Enriched */}
           <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="border-border/50 hover:bg-transparent">
-                    <TableHead className="text-muted-foreground">Cliente</TableHead>
                     <TableHead className="text-muted-foreground">Monto</TableHead>
+                    <TableHead className="text-muted-foreground">Moneda</TableHead>
                     <TableHead className="text-muted-foreground">Estado</TableHead>
+                    <TableHead className="text-muted-foreground">Plan</TableHead>
+                    <TableHead className="text-muted-foreground">Factura</TableHead>
+                    <TableHead className="text-muted-foreground">Cliente</TableHead>
+                    <TableHead className="text-muted-foreground">Email</TableHead>
+                    <TableHead className="text-muted-foreground">Intentos</TableHead>
+                    <TableHead className="text-muted-foreground">Creada</TableHead>
                     <TableHead className="text-muted-foreground">Próximo intento</TableHead>
-                    <TableHead className="text-muted-foreground">Período</TableHead>
                     <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -378,16 +435,12 @@ export function InvoicesPage() {
                   {filteredInvoices.map((invoice) => (
                     <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
                       <TableCell>
-                        <p className="font-medium text-foreground">{invoice.customer_email || 'Sin email'}</p>
-                        <p className="text-xs text-muted-foreground truncate max-w-[200px]">
-                          {invoice.stripe_invoice_id}
-                        </p>
-                      </TableCell>
-                      <TableCell>
                         <span className="text-lg font-semibold text-foreground">
                           ${(invoice.amount_due / 100).toFixed(2)}
                         </span>
-                        <span className="text-xs text-muted-foreground ml-1 uppercase">
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground uppercase">
                           {invoice.currency}
                         </span>
                       </TableCell>
@@ -399,27 +452,64 @@ export function InvoicesPage() {
                             ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
                             : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
                         }>
-                          {invoice.status}
+                          {invoice.status === 'draft' ? 'Borrador' : invoice.status === 'open' ? 'Abierta' : invoice.status}
                         </Badge>
                       </TableCell>
                       <TableCell>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-foreground">
+                            {invoice.plan_interval || 'N/A'}
+                          </span>
+                          <span className="text-xs text-muted-foreground truncate max-w-[120px]">
+                            {invoice.product_name || invoice.plan_name || '—'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {invoice.invoice_number || invoice.stripe_invoice_id.substring(0, 12)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <p className="font-medium text-foreground truncate max-w-[150px]">
+                          {invoice.customer_name || '—'}
+                        </p>
+                      </TableCell>
+                      <TableCell>
+                        <p className="text-sm text-muted-foreground truncate max-w-[180px]">
+                          {invoice.customer_email || '—'}
+                        </p>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.attempt_count && invoice.attempt_count > 0 ? (
+                          <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+                            <RefreshCw className="h-2.5 w-2.5 mr-1" />
+                            {invoice.attempt_count}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {invoice.created_at ? (
+                          <span className="text-xs text-muted-foreground">
+                            {format(new Date(invoice.created_at), 'dd MMM HH:mm', { locale: es })}
+                          </span>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
                         {invoice.next_payment_attempt ? (
-                          <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-muted-foreground">
+                              {format(new Date(invoice.next_payment_attempt), 'dd MMM HH:mm', { locale: es })}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground/60">
                               {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
                             </span>
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">Sin programar</span>
                         )}
-                      </TableCell>
-                      <TableCell>
-                        {invoice.period_end ? (
-                          <span className="text-sm text-muted-foreground">
-                            {format(new Date(invoice.period_end), 'dd MMM yyyy', { locale: es })}
-                          </span>
-                        ) : '-'}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -436,6 +526,16 @@ export function InvoicesPage() {
                             )}
                             Cobrar
                           </Button>
+                          {invoice.pdf_url && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => window.open(invoice.pdf_url!, '_blank')}
+                              title="Descargar PDF"
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          )}
                           {invoice.hosted_invoice_url && (
                             <Button
                               size="sm"
