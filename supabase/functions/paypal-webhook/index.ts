@@ -41,10 +41,6 @@ async function verifyWebhookSignature(
   const certUrl = headers.get('paypal-cert-url');
   const authAlgo = headers.get('paypal-auth-algo');
 
-  console.log(`🔍 PayPal headers: id=${transmissionId ? 'present' : 'MISSING'}, time=${transmissionTime ? 'present' : 'MISSING'}, sig=${transmissionSig ? 'present' : 'MISSING'}, cert=${certUrl ? 'present' : 'MISSING'}, algo=${authAlgo ? 'present' : 'MISSING'}`);
-  console.log(`🔍 Webhook ID being used: ${webhookId}`);
-  console.log(`🔍 Environment: ${isSandbox ? 'SANDBOX' : 'LIVE'}`);
-
   if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) {
     console.error('❌ Missing PayPal signature headers');
     return false;
@@ -61,7 +57,6 @@ async function verifyWebhookSignature(
   };
 
   const baseUrl = isSandbox ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
-  console.log(`📤 Calling PayPal verify-webhook-signature API at ${baseUrl}...`);
 
   const response = await fetch(`${baseUrl}/v1/notifications/verify-webhook-signature`, {
     method: 'POST',
@@ -73,22 +68,47 @@ async function verifyWebhookSignature(
   });
 
   const responseText = await response.text();
-  console.log(`📥 PayPal verify response: status=${response.status}, body=${responseText}`);
-
   if (!response.ok) {
-    console.error(`❌ PayPal verification request failed: ${response.status} - ${responseText}`);
+    console.error(`❌ PayPal verification failed: ${response.status} - ${responseText}`);
     return false;
   }
 
   const result = JSON.parse(responseText);
-  console.log(`🔐 Verification result: ${result.verification_status}`);
   return result.verification_status === 'SUCCESS';
 }
 
-// Detect if event is from sandbox based on cert_url
 function isSandboxEvent(headers: Headers): boolean {
   const certUrl = headers.get('paypal-cert-url') || '';
   return certUrl.includes('sandbox');
+}
+
+// Extract payer info from PayPal resource
+function extractPayerInfo(resource: any): {
+  email: string | null;
+  name: string | null;
+  payerId: string | null;
+} {
+  // Try different locations where PayPal puts payer info
+  const payer = resource.payer || resource.subscriber || {};
+  
+  let email = payer.email_address || payer.email || null;
+  let name = null;
+  let payerId = payer.payer_id || null;
+  
+  if (payer.name) {
+    if (typeof payer.name === 'string') {
+      name = payer.name;
+    } else {
+      name = [payer.name.given_name, payer.name.surname].filter(Boolean).join(' ');
+    }
+  }
+  
+  // Also check shipping info for name
+  if (!name && resource.shipping?.name?.full_name) {
+    name = resource.shipping.name.full_name;
+  }
+  
+  return { email, name, payerId };
 }
 
 Deno.serve(async (req) => {
@@ -101,7 +121,7 @@ Deno.serve(async (req) => {
   const webhookId = Deno.env.get('PAYPAL_WEBHOOK_ID');
 
   if (!clientId || !secret || !webhookId) {
-    console.error('❌ paypal-webhook: Missing PAYPAL_CLIENT_ID, PAYPAL_SECRET, or PAYPAL_WEBHOOK_ID');
+    console.error('❌ paypal-webhook: Missing credentials');
     return new Response(
       JSON.stringify({ error: 'Webhook not configured' }),
       { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -109,12 +129,9 @@ Deno.serve(async (req) => {
   }
 
   const body = await req.text();
-  
-  // Auto-detect sandbox vs live based on cert_url
   const isSandbox = isSandboxEvent(req.headers);
   
   try {
-    // Get access token and verify signature
     const accessToken = await getPayPalAccessToken(clientId, secret, isSandbox);
     const isValid = await verifyWebhookSignature(accessToken, webhookId, req.headers, body, isSandbox);
 
@@ -142,14 +159,14 @@ Deno.serve(async (req) => {
       .single();
 
     if (existing) {
-      console.log(`⚠️ paypal-webhook: Event ${event.id} already processed, skipping`);
+      console.log(`⚠️ paypal-webhook: Event ${event.id} already processed`);
       return new Response(JSON.stringify({ received: true, duplicate: true }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // Log event for idempotency
+    // Log event
     await supabase.from('webhook_events').insert({
       event_id: event.id,
       event_type: event.event_type,
@@ -163,23 +180,30 @@ Deno.serve(async (req) => {
         await handlePaymentCompleted(supabase, event.resource);
         break;
       case 'PAYMENT.CAPTURE.DENIED':
+      case 'PAYMENT.CAPTURE.DECLINED':
         await handlePaymentDenied(supabase, event.resource);
         break;
       case 'PAYMENT.CAPTURE.REFUNDED':
         await handlePaymentRefunded(supabase, event.resource);
         break;
       case 'BILLING.SUBSCRIPTION.CREATED':
+      case 'BILLING.SUBSCRIPTION.ACTIVATED':
       case 'BILLING.SUBSCRIPTION.UPDATED':
         await handleSubscriptionUpdate(supabase, event.resource);
         break;
       case 'BILLING.SUBSCRIPTION.CANCELLED':
-        await handleSubscriptionCancelled(supabase, event.resource);
+      case 'BILLING.SUBSCRIPTION.SUSPENDED':
+      case 'BILLING.SUBSCRIPTION.EXPIRED':
+        await handleSubscriptionCancelled(supabase, event.resource, event.event_type);
         break;
       case 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
         await handleSubscriptionPaymentFailed(supabase, event.resource);
         break;
+      case 'PAYMENT.SALE.COMPLETED':
+        await handleSaleCompleted(supabase, event.resource);
+        break;
       default:
-        console.log(`ℹ️ paypal-webhook: Unhandled event type ${event.event_type}`);
+        console.log(`ℹ️ paypal-webhook: Unhandled event ${event.event_type}`);
     }
 
     return new Response(JSON.stringify({ received: true }), {
@@ -197,96 +221,279 @@ Deno.serve(async (req) => {
   }
 });
 
+// ============================================
+// HELPER: Upsert client
+// ============================================
+async function upsertClient(supabase: any, data: {
+  email: string;
+  name?: string | null;
+  paypalPayerId?: string | null;
+  isPaying?: boolean;
+  paymentAmount?: number;
+}) {
+  const email = data.email.toLowerCase().trim();
+  
+  const { data: existing } = await supabase
+    .from('clients')
+    .select('id, total_paid, lifecycle_stage, full_name')
+    .eq('email', email)
+    .single();
+  
+  const updateData: any = {
+    email,
+    last_sync: new Date().toISOString(),
+  };
+  
+  if (data.name && !existing?.full_name) {
+    updateData.full_name = data.name;
+  }
+  
+  if (data.isPaying) {
+    updateData.lifecycle_stage = 'CUSTOMER';
+    updateData.total_paid = (existing?.total_paid || 0) + (data.paymentAmount || 0);
+    if (!existing?.first_payment_at) {
+      updateData.first_payment_at = new Date().toISOString();
+    }
+  }
+  
+  // Store PayPal payer ID in metadata
+  if (data.paypalPayerId) {
+    updateData.customer_metadata = {
+      ...(existing?.customer_metadata || {}),
+      paypal_payer_id: data.paypalPayerId
+    };
+  }
+  
+  const { error } = await supabase
+    .from('clients')
+    .upsert(updateData, { onConflict: 'email' });
+  
+  if (error) console.error('Error upserting client:', error);
+}
+
+// ============================================
+// HANDLER: Payment Completed - ENHANCED
+// ============================================
 async function handlePaymentCompleted(supabase: any, resource: any) {
   console.log(`💰 Processing PAYMENT.CAPTURE.COMPLETED: ${resource.id}`);
   
   const amount = parseFloat(resource.amount?.value || '0');
   const currency = resource.amount?.currency_code || 'USD';
+  const fee = parseFloat(resource.seller_receivable_breakdown?.paypal_fee?.value || '0');
+  const netAmount = parseFloat(resource.seller_receivable_breakdown?.net_amount?.value || amount.toString());
+  
+  const payerInfo = extractPayerInfo(resource);
+
+  const enrichedMetadata = {
+    paypal_transaction_id: resource.id,
+    paypal_payer_id: payerInfo.payerId,
+    customer_name: payerInfo.name,
+    gross_amount: amount,
+    fee_amount: fee,
+    net_amount: netAmount,
+    invoice_id: resource.invoice_id || null,
+  };
 
   const { error } = await supabase.from('transactions').upsert({
     stripe_payment_intent_id: `paypal_${resource.id}`,
-    payment_key: `paypal_${resource.id}`,
-    amount: amount,
-    currency: currency,
-    status: 'succeeded',
+    payment_key: resource.id,
+    amount: Math.round(amount * 100), // Convert to cents
+    currency: currency.toLowerCase(),
+    status: 'paid',
     source: 'paypal',
+    external_transaction_id: resource.id,
+    customer_email: payerInfo.email?.toLowerCase(),
     stripe_created_at: resource.create_time || new Date().toISOString(),
+    metadata: enrichedMetadata,
   }, { onConflict: 'stripe_payment_intent_id' });
 
-  if (error) console.error('Error upserting PayPal transaction:', error);
-  else console.log(`✅ PayPal transaction upserted: ${resource.id}`);
+  if (error) {
+    console.error('Error upserting PayPal transaction:', error);
+  } else {
+    console.log(`✅ PayPal transaction: ${resource.id} - ${payerInfo.name || payerInfo.email} - $${amount}`);
+    
+    if (payerInfo.email) {
+      await upsertClient(supabase, {
+        email: payerInfo.email,
+        name: payerInfo.name,
+        paypalPayerId: payerInfo.payerId,
+        isPaying: true,
+        paymentAmount: Math.round(amount * 100),
+      });
+    }
+  }
 }
 
+// ============================================
+// HANDLER: Payment Denied
+// ============================================
 async function handlePaymentDenied(supabase: any, resource: any) {
   console.log(`❌ Processing PAYMENT.CAPTURE.DENIED: ${resource.id}`);
   
   const amount = parseFloat(resource.amount?.value || '0');
   const currency = resource.amount?.currency_code || 'USD';
+  const payerInfo = extractPayerInfo(resource);
+  
+  const failureReason = resource.status_details?.reason || 'Payment denied';
 
   const { error } = await supabase.from('transactions').upsert({
     stripe_payment_intent_id: `paypal_${resource.id}`,
-    payment_key: `paypal_${resource.id}`,
-    amount: amount,
-    currency: currency,
+    payment_key: resource.id,
+    amount: Math.round(amount * 100),
+    currency: currency.toLowerCase(),
     status: 'failed',
     source: 'paypal',
-    failure_message: resource.status_details?.reason || 'Payment denied',
+    external_transaction_id: resource.id,
+    customer_email: payerInfo.email?.toLowerCase(),
+    failure_code: 'DENIED',
+    failure_message: failureReason,
     stripe_created_at: resource.create_time || new Date().toISOString(),
+    metadata: {
+      customer_name: payerInfo.name,
+      paypal_payer_id: payerInfo.payerId,
+    },
   }, { onConflict: 'stripe_payment_intent_id' });
 
   if (error) console.error('Error upserting denied PayPal transaction:', error);
+  
+  if (payerInfo.email) {
+    await upsertClient(supabase, {
+      email: payerInfo.email,
+      name: payerInfo.name,
+      paypalPayerId: payerInfo.payerId,
+    });
+  }
 }
 
+// ============================================
+// HANDLER: Payment Refunded
+// ============================================
 async function handlePaymentRefunded(supabase: any, resource: any) {
   console.log(`💸 Processing PAYMENT.CAPTURE.REFUNDED: ${resource.id}`);
   
   const { error } = await supabase
     .from('transactions')
-    .update({ status: 'refunded' })
+    .update({ 
+      status: 'refunded',
+      metadata: { refunded_at: new Date().toISOString() }
+    })
     .eq('stripe_payment_intent_id', `paypal_${resource.id}`);
 
   if (error) console.error('Error updating refunded PayPal transaction:', error);
-  else console.log(`✅ PayPal transaction marked as refunded: ${resource.id}`);
+  else console.log(`✅ PayPal refund processed: ${resource.id}`);
 }
 
+// ============================================
+// HANDLER: Sale Completed (recurring payment)
+// ============================================
+async function handleSaleCompleted(supabase: any, resource: any) {
+  console.log(`💰 Processing PAYMENT.SALE.COMPLETED: ${resource.id}`);
+  
+  const amount = parseFloat(resource.amount?.total || '0');
+  const currency = resource.amount?.currency || 'USD';
+  const payerInfo = extractPayerInfo(resource);
+
+  const { error } = await supabase.from('transactions').upsert({
+    stripe_payment_intent_id: `paypal_sale_${resource.id}`,
+    payment_key: resource.id,
+    payment_type: 'renewal',
+    subscription_id: resource.billing_agreement_id || null,
+    amount: Math.round(amount * 100),
+    currency: currency.toLowerCase(),
+    status: 'paid',
+    source: 'paypal',
+    external_transaction_id: resource.id,
+    customer_email: payerInfo.email?.toLowerCase(),
+    stripe_created_at: resource.create_time || new Date().toISOString(),
+    metadata: {
+      customer_name: payerInfo.name,
+      paypal_payer_id: payerInfo.payerId,
+      billing_agreement_id: resource.billing_agreement_id,
+    },
+  }, { onConflict: 'stripe_payment_intent_id' });
+
+  if (error) console.error('Error upserting PayPal sale:', error);
+  else console.log(`✅ PayPal recurring sale: ${resource.id}`);
+  
+  if (payerInfo.email) {
+    await upsertClient(supabase, {
+      email: payerInfo.email,
+      name: payerInfo.name,
+      paypalPayerId: payerInfo.payerId,
+      isPaying: true,
+      paymentAmount: Math.round(amount * 100),
+    });
+  }
+}
+
+// ============================================
+// HANDLER: Subscription Update - ENHANCED
+// ============================================
 async function handleSubscriptionUpdate(supabase: any, resource: any) {
-  console.log(`📦 Processing subscription update: ${resource.id} (${resource.status})`);
+  console.log(`📦 Processing subscription: ${resource.id} (${resource.status})`);
   
   const billingInfo = resource.billing_info || {};
   const amount = parseFloat(billingInfo.last_payment?.amount?.value || '0');
   const currency = billingInfo.last_payment?.amount?.currency_code || 'USD';
+  const payerInfo = extractPayerInfo(resource);
 
   const { error } = await supabase.from('subscriptions').upsert({
     stripe_subscription_id: `paypal_${resource.id}`,
+    customer_email: payerInfo.email?.toLowerCase(),
+    customer_name: payerInfo.name,
     status: resource.status?.toLowerCase() || 'active',
     plan_name: resource.plan_id || 'PayPal Plan',
     plan_id: resource.plan_id,
-    amount: amount,
-    currency: currency,
+    amount: Math.round(amount * 100),
+    currency: currency.toLowerCase(),
     current_period_start: resource.start_time,
     current_period_end: billingInfo.next_billing_time,
     provider: 'paypal',
+    metadata: {
+      paypal_payer_id: payerInfo.payerId,
+      billing_cycles: billingInfo.cycle_executions,
+    },
   }, { onConflict: 'stripe_subscription_id' });
 
   if (error) console.error('Error upserting PayPal subscription:', error);
-  else console.log(`✅ PayPal subscription upserted: ${resource.id}`);
+  else console.log(`✅ PayPal subscription: ${resource.id} - ${payerInfo.name || payerInfo.email}`);
+  
+  if (payerInfo.email) {
+    await upsertClient(supabase, {
+      email: payerInfo.email,
+      name: payerInfo.name,
+      paypalPayerId: payerInfo.payerId,
+    });
+  }
 }
 
-async function handleSubscriptionCancelled(supabase: any, resource: any) {
-  console.log(`🗑️ Processing subscription.cancelled: ${resource.id}`);
+// ============================================
+// HANDLER: Subscription Cancelled
+// ============================================
+async function handleSubscriptionCancelled(supabase: any, resource: any, eventType: string) {
+  console.log(`🗑️ Processing ${eventType}: ${resource.id}`);
+  
+  const statusMap: Record<string, string> = {
+    'BILLING.SUBSCRIPTION.CANCELLED': 'canceled',
+    'BILLING.SUBSCRIPTION.SUSPENDED': 'suspended',
+    'BILLING.SUBSCRIPTION.EXPIRED': 'expired',
+  };
   
   const { error } = await supabase
     .from('subscriptions')
     .update({ 
-      status: 'canceled',
+      status: statusMap[eventType] || 'canceled',
       canceled_at: new Date().toISOString()
     })
     .eq('stripe_subscription_id', `paypal_${resource.id}`);
 
-  if (error) console.error('Error updating cancelled PayPal subscription:', error);
-  else console.log(`✅ PayPal subscription marked as canceled: ${resource.id}`);
+  if (error) console.error('Error updating PayPal subscription:', error);
+  else console.log(`✅ PayPal subscription ${statusMap[eventType]}: ${resource.id}`);
 }
 
+// ============================================
+// HANDLER: Subscription Payment Failed
+// ============================================
 async function handleSubscriptionPaymentFailed(supabase: any, resource: any) {
   console.log(`❌ Processing subscription.payment.failed: ${resource.id}`);
   
@@ -295,5 +502,5 @@ async function handleSubscriptionPaymentFailed(supabase: any, resource: any) {
     .update({ status: 'past_due' })
     .eq('stripe_subscription_id', `paypal_${resource.id}`);
 
-  if (error) console.error('Error updating PayPal subscription payment failed:', error);
+  if (error) console.error('Error updating PayPal subscription:', error);
 }

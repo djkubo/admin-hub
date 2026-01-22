@@ -49,7 +49,19 @@ interface Movement {
   stripe_created_at: string | null;
   source: string | null;
   external_transaction_id: string | null;
-  metadata: any;
+  subscription_id: string | null;
+  metadata: {
+    card_last4?: string;
+    card_brand?: string;
+    customer_name?: string;
+    product_name?: string;
+    invoice_number?: string;
+    decline_reason_es?: string;
+    fee_amount?: number;
+    net_amount?: number;
+    paypal_payer_id?: string;
+    [key: string]: any;
+  } | null;
 }
 
 const formatAmount = (amount: number, currency: string | null) => {
@@ -417,22 +429,43 @@ export function MovementsPage() {
                     {/* Customer */}
                     <td className="px-4 py-3">
                       <div className="max-w-[200px]">
+                        {/* Customer name from metadata or email */}
+                        {m.metadata?.customer_name ? (
+                          <span className="text-sm font-medium text-foreground truncate block">
+                            {m.metadata.customer_name}
+                          </span>
+                        ) : null}
                         {m.customer_email ? (
-                          <span className="text-sm text-foreground truncate block">
+                          <span className={cn(
+                            "text-sm truncate block",
+                            m.metadata?.customer_name ? "text-muted-foreground" : "text-foreground"
+                          )}>
                             {m.customer_email}
                           </span>
                         ) : (
                           <span className="text-sm text-muted-foreground/50">Sin email</span>
                         )}
+                        {/* Card info for Stripe */}
+                        {m.metadata?.card_last4 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            •••• {m.metadata.card_last4} {m.metadata.card_brand && `(${m.metadata.card_brand})`}
+                          </span>
+                        )}
+                        {/* Transaction ID */}
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <code className="text-[10px] text-muted-foreground block truncate cursor-help">
-                                {m.external_transaction_id || m.stripe_payment_intent_id?.slice(0, 20)}
+                              <code className="text-[10px] text-muted-foreground/60 block truncate cursor-help">
+                                {m.metadata?.invoice_number || m.external_transaction_id || m.stripe_payment_intent_id?.slice(0, 16)}
                               </code>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p className="font-mono text-xs">{m.external_transaction_id || m.stripe_payment_intent_id}</p>
+                              <div className="text-xs space-y-1">
+                                <p className="font-mono">{m.external_transaction_id || m.stripe_payment_intent_id}</p>
+                                {m.metadata?.product_name && (
+                                  <p className="text-muted-foreground">{m.metadata.product_name}</p>
+                                )}
+                              </div>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -467,7 +500,7 @@ export function MovementsPage() {
                       </Badge>
                     </td>
                     
-                    {/* Error */}
+                    {/* Error / Product */}
                     <td className="px-4 py-3">
                       {m.failure_code ? (
                         <TooltipProvider>
@@ -475,16 +508,21 @@ export function MovementsPage() {
                             <TooltipTrigger asChild>
                               <div className="flex items-center gap-1.5 cursor-help">
                                 <AlertCircle className="h-3.5 w-3.5 text-destructive" />
-                                <span className="text-xs text-destructive font-mono truncate max-w-[100px]">
-                                  {m.failure_code}
+                                <span className="text-xs text-destructive truncate max-w-[120px]">
+                                  {m.metadata?.decline_reason_es || m.failure_message || m.failure_code}
                                 </span>
                               </div>
                             </TooltipTrigger>
                             <TooltipContent className="max-w-xs">
-                              <p>{m.failure_message || "Sin mensaje de error"}</p>
+                              <p className="font-semibold">{m.failure_code}</p>
+                              <p>{m.failure_message || "Sin detalles"}</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
+                      ) : m.metadata?.product_name ? (
+                        <span className="text-xs text-muted-foreground truncate block max-w-[120px]">
+                          {m.metadata.product_name}
+                        </span>
                       ) : (
                         <span className="text-sm text-muted-foreground/50">—</span>
                       )}
