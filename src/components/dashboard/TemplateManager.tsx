@@ -113,14 +113,19 @@ export function TemplateManager() {
     try {
       if (editingTemplate) {
         // Save version history
-        await supabase.from('template_versions').insert({
+        const { error: versionError } = await supabase.from('template_versions').insert({
           template_id: editingTemplate.id,
           version: editingTemplate.version,
           content: editingTemplate.content,
           subject: editingTemplate.subject,
         });
+        
+        if (versionError) {
+          console.error('Error saving version history:', versionError);
+          // Continue anyway, version history is not critical
+        }
 
-        await supabase.from('message_templates').update({
+        const { error: updateError } = await supabase.from('message_templates').update({
           name: form.name,
           channel: form.channel,
           subject: form.subject || null,
@@ -130,29 +135,38 @@ export function TemplateManager() {
           updated_at: new Date().toISOString(),
         }).eq('id', editingTemplate.id);
         
+        if (updateError) throw updateError;
         toast.success('Plantilla actualizada');
       } else {
-        await supabase.from('message_templates').insert({
+        const { error: insertError } = await supabase.from('message_templates').insert({
           name: form.name,
           channel: form.channel,
           subject: form.subject || null,
           content: form.content,
           variables,
         });
+        
+        if (insertError) throw insertError;
         toast.success('Plantilla creada');
       }
       
       setDialogOpen(false);
       loadTemplates();
-    } catch (error) {
-      toast.error('Error guardando plantilla');
+    } catch (error: any) {
+      console.error('Error saving template:', error);
+      toast.error(error?.message || 'Error guardando plantilla');
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('¿Eliminar esta plantilla?')) return;
     
-    await supabase.from('message_templates').delete().eq('id', id);
+    const { error } = await supabase.from('message_templates').delete().eq('id', id);
+    if (error) {
+      console.error('Error deleting template:', error);
+      toast.error('Error eliminando plantilla: ' + error.message);
+      return;
+    }
     toast.success('Plantilla eliminada');
     loadTemplates();
   };

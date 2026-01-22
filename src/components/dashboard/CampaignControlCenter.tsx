@@ -278,7 +278,12 @@ export function CampaignControlCenter() {
   };
 
   const handleDeleteTemplate = async (id: string) => {
-    await supabase.from('message_templates').delete().eq('id', id);
+    const { error } = await supabase.from('message_templates').delete().eq('id', id);
+    if (error) {
+      console.error('Error deleting template:', error);
+      toast.error('Error eliminando plantilla: ' + error.message);
+      return;
+    }
     toast.success('Plantilla eliminada');
     loadData();
   };
@@ -377,8 +382,15 @@ export function CampaignControlCenter() {
         status: 'pending' as const,
       }));
 
-      await supabase.from('campaign_recipients').insert(recipients);
-      await supabase.from('campaigns').update({ total_recipients: clients.length }).eq('id', campaignId);
+      const { error: insertError } = await supabase.from('campaign_recipients').insert(recipients);
+      if (insertError) {
+        console.error('Error inserting campaign recipients:', insertError);
+      }
+      
+      const { error: updateError } = await supabase.from('campaigns').update({ total_recipients: clients.length }).eq('id', campaignId);
+      if (updateError) {
+        console.error('Error updating campaign recipient count:', updateError);
+      }
     }
   };
 
@@ -429,7 +441,12 @@ export function CampaignControlCenter() {
   };
 
   const handleDeleteCampaign = async (id: string) => {
-    await supabase.from('campaigns').delete().eq('id', id);
+    const { error } = await supabase.from('campaigns').delete().eq('id', id);
+    if (error) {
+      console.error('Error deleting campaign:', error);
+      toast.error('Error eliminando campaña: ' + error.message);
+      return;
+    }
     toast.success('Campaña eliminada');
     loadData();
   };

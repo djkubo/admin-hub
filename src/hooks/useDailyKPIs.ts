@@ -131,6 +131,15 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
           .lte('created_at', end)
       ]);
 
+      // Log any errors from RPC calls (non-blocking)
+      if (newCustomersResult.error) console.error('KPI new_customers error:', newCustomersResult.error);
+      if (salesResult.error) console.error('KPI sales error:', salesResult.error);
+      if (failedResult.error) console.error('KPI failed_payments error:', failedResult.error);
+      if (cancellationsResult.error) console.error('KPI cancellations error:', cancellationsResult.error);
+      if (trialsResult.error) console.error('KPI trials query error:', trialsResult.error);
+      if (trialConversionsResult.error) console.error('KPI trial_to_paid error:', trialConversionsResult.error);
+      if (clientsResult.error) console.error('KPI clients query error:', clientsResult.error);
+
       // Parse results with null safety
       const newCustomers = (newCustomersResult.data as Array<{
         new_customer_count: number;
