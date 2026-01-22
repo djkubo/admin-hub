@@ -359,6 +359,36 @@ export type Database = {
           },
         ]
       }
+      chat_events: {
+        Row: {
+          contact_id: string
+          created_at: string
+          id: number
+          message: string | null
+          meta: Json | null
+          platform: string
+          sender: string
+        }
+        Insert: {
+          contact_id: string
+          created_at?: string
+          id?: number
+          message?: string | null
+          meta?: Json | null
+          platform: string
+          sender: string
+        }
+        Update: {
+          contact_id?: string
+          created_at?: string
+          id?: number
+          message?: string | null
+          meta?: Json | null
+          platform?: string
+          sender?: string
+        }
+        Relationships: []
+      }
       client_events: {
         Row: {
           client_id: string
@@ -1729,6 +1759,27 @@ export type Database = {
         }
         Relationships: []
       }
+      vrp_knowledge: {
+        Row: {
+          content: string | null
+          embedding: string | null
+          id: number
+          metadata: Json | null
+        }
+        Insert: {
+          content?: string | null
+          embedding?: string | null
+          id?: number
+          metadata?: Json | null
+        }
+        Update: {
+          content?: string | null
+          embedding?: string | null
+          id?: number
+          metadata?: Json | null
+        }
+        Relationships: []
+      }
       webhook_events: {
         Row: {
           event_id: string
@@ -1844,6 +1895,18 @@ export type Database = {
           conversion_count: number
           conversion_rate: number
           total_revenue: number
+        }[]
+      }
+      match_knowledge: {
+        Args: {
+          match_count: number
+          match_threshold: number
+          query_embedding: string
+        }
+        Returns: {
+          content: string
+          id: number
+          similarity: number
         }[]
       }
       merge_contact: {
