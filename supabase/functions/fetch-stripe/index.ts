@@ -159,8 +159,30 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   }
 }
 
-// Max pages per invocation to avoid timeout (Deno limit ~5 mins)
-const MAX_PAGES_PER_INVOCATION = 10;
+// INCREASED: Process more pages per invocation (Deno limit ~5 mins, but we can do more)
+const MAX_PAGES_PER_INVOCATION = 15;
+
+// Background worker that continues processing
+async function continueSync(
+  supabaseUrl: string,
+  adminKey: string,
+  continuationBody: Record<string, unknown>
+) {
+  try {
+    console.log(`🔄 Background: Starting continuation...`);
+    const response = await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': adminKey,
+      },
+      body: JSON.stringify(continuationBody)
+    });
+    console.log(`🔄 Background: Continuation response status: ${response.status}`);
+  } catch (err) {
+    console.error('🔄 Background: Continuation error:', err);
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -214,7 +236,7 @@ Deno.serve(async (req) => {
         endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
       }
       if (typeof body.maxPages === 'number' && body.maxPages > 0) {
-        requestedMaxPages = Math.min(body.maxPages, 1000);
+        requestedMaxPages = Math.min(body.maxPages, 2000); // Allow more pages for 3yr sync
       }
       // Continuation params from auto-continue
       if (body._continuation) {
@@ -239,7 +261,7 @@ Deno.serve(async (req) => {
         .insert({
           source: 'stripe',
           status: 'running',
-          metadata: { fetchAll, startDate, endDate }
+          metadata: { fetchAll, startDate, endDate, requestedMaxPages }
         })
         .select('id')
         .single();
@@ -286,7 +308,25 @@ Deno.serve(async (req) => {
       if (!response.ok) {
         const errorText = await response.text();
         console.error("Stripe API error:", errorText);
-        break;
+        
+        // Mark sync as failed
+        if (syncRunId) {
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              error_message: `Stripe API error: ${response.status}`,
+              total_fetched: totalSynced + skippedNoEmail,
+              total_inserted: totalSynced
+            })
+            .eq('id', syncRunId);
+        }
+        
+        return new Response(
+          JSON.stringify({ error: "Stripe API error", details: errorText }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
       const data: StripeListResponse = await response.json();
@@ -494,7 +534,6 @@ Deno.serve(async (req) => {
     if (needsContinuation && syncRunId && adminKey) {
       console.log(`🔄 Auto-continuing: ${pageCount}/${maxPages} pages done, scheduling next batch...`);
       
-      // Self-invoke to continue (fire and forget)
       const continuationBody = {
         fetchAll,
         startDate: startDate ? new Date(startDate * 1000).toISOString() : undefined,
@@ -509,15 +548,24 @@ Deno.serve(async (req) => {
         }
       };
 
-      // Use fetch to call ourselves
-      fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminKey,
-        },
-        body: JSON.stringify(continuationBody)
-      }).catch(err => console.error('Continuation invoke error:', err));
+      // Use EdgeRuntime.waitUntil for reliable background continuation
+      // @ts-ignore - EdgeRuntime is available in Deno Deploy
+      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+        console.log(`🔄 Using EdgeRuntime.waitUntil for continuation`);
+        // @ts-ignore
+        EdgeRuntime.waitUntil(continueSync(supabaseUrl, adminKey, continuationBody));
+      } else {
+        // Fallback: direct fetch (less reliable but works)
+        console.log(`🔄 Using direct fetch for continuation (fallback)`);
+        fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-key': adminKey,
+          },
+          body: JSON.stringify(continuationBody)
+        }).catch(err => console.error('Continuation error:', err));
+      }
 
       return new Response(
         JSON.stringify({
