@@ -720,6 +720,33 @@ export type Database = {
         }
         Relationships: []
       }
+      knowledge_base: {
+        Row: {
+          content: string
+          created_at: string
+          embedding: string | null
+          id: number
+          metadata: Json | null
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          embedding?: string | null
+          id?: number
+          metadata?: Json | null
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          embedding?: string | null
+          id?: number
+          metadata?: Json | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       lead_events: {
         Row: {
           client_id: string | null
