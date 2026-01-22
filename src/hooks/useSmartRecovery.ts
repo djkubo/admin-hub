@@ -235,6 +235,7 @@ export function useSmartRecovery() {
               variant: "destructive",
             });
             setProgress(null);
+            setBackgroundSyncId(null);
             return;
           }
           
