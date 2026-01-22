@@ -177,15 +177,12 @@ Deno.serve(async (req) => {
 
     console.log("🧾 Starting ENRICHED Stripe Invoices fetch...");
 
-    // Fetch draft invoices with full expansion
+    // Fetch draft invoices with valid expansion (max 4 levels)
     const draftResponse = await fetch(
       "https://api.stripe.com/v1/invoices?status=draft&limit=100" +
       "&expand[]=data.subscription" +
-      "&expand[]=data.subscription.items.data.price.product" +
-      "&expand[]=data.lines.data.price.product" +
-      "&expand[]=data.customer" +
-      "&expand[]=data.payment_intent" +
-      "&expand[]=data.default_payment_method",
+      "&expand[]=data.lines.data.price" +
+      "&expand[]=data.customer",
       {
         headers: {
           Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
@@ -202,15 +199,12 @@ Deno.serve(async (req) => {
     const draftData = await draftResponse.json();
     console.log(`📄 Found ${draftData.data.length} draft invoices (raw)`);
 
-    // Fetch open invoices with full expansion
+    // Fetch open invoices with valid expansion (max 4 levels)
     const openResponse = await fetch(
       "https://api.stripe.com/v1/invoices?status=open&limit=100" +
       "&expand[]=data.subscription" +
-      "&expand[]=data.subscription.items.data.price.product" +
-      "&expand[]=data.lines.data.price.product" +
-      "&expand[]=data.customer" +
-      "&expand[]=data.payment_intent" +
-      "&expand[]=data.default_payment_method",
+      "&expand[]=data.lines.data.price" +
+      "&expand[]=data.customer",
       {
         headers: {
           Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
