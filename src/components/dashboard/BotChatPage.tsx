@@ -99,33 +99,40 @@ export default function BotChatPage() {
     return format(date, "EEEE, d 'de' MMMM", { locale: es });
   };
 
-  // Handle sending reply (to GoHighLevel or webhook)
+  // Handle sending reply via Python server -> GoHighLevel
   const handleSendReply = async () => {
     if (!replyMessage.trim() || !selectedContact) return;
     
     setSendingReply(true);
     try {
-      // Option 1: Call notify-ghl edge function
-      const { error } = await supabase.functions.invoke("notify-ghl", {
-        body: {
-          type: "manual_message",
+      const response = await fetch("https://vrp-bot-2.onrender.com/send/ghl", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           contact_id: selectedContact.contact_id,
           message: replyMessage,
-        },
+          channel: "WhatsApp",
+        }),
       });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
 
       toast({
         title: "Mensaje enviado",
-        description: "El mensaje fue enviado al contacto",
+        description: "El mensaje fue enviado por WhatsApp al contacto",
       });
       setReplyMessage("");
+      // El mensaje aparecerá automáticamente via realtime subscription
     } catch (error) {
       console.error("Error sending reply:", error);
       toast({
         title: "Error",
-        description: "No se pudo enviar el mensaje. Verifica la configuración de GHL.",
+        description: error instanceof Error ? error.message : "No se pudo enviar el mensaje",
         variant: "destructive",
       });
     } finally {
