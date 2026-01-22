@@ -109,7 +109,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     setSyncProgress('');
     
     const { startDate, endDate, fetchAll, maxPages } = getSyncDateRange(range);
-    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
+    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0, background: false };
 
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
@@ -121,9 +121,15 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           fetchAll, 
           startDate: startDate.toISOString(), 
           endDate: endDate.toISOString(),
-          maxPages
+          maxPages,
+          background: maxPages > 5 // Enable background for large syncs
         });
-        results.stripe = stripeData?.synced_transactions || 0;
+        if (stripeData?.background) {
+          results.background = true;
+          toast.info('⏳ Stripe sync en background - revisa el banner de estado');
+        } else {
+          results.stripe = stripeData?.synced_transactions || 0;
+        }
       } catch (e) {
         console.error('Stripe sync error:', e);
         results.errors++;
@@ -167,8 +173,11 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('');
 
       const totalTx = results.stripe + results.paypal;
-      toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
-      
+      if (results.background) {
+        toast.success(`⏳ Sync iniciado - ${results.subs} subs, ${results.invoices} facturas (Stripe en background)${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      } else {
+        toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      }
       // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
