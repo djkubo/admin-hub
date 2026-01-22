@@ -383,6 +383,38 @@ Deno.serve(async (req) => {
           }
         });
 
+        // Determine payment_type: 'new', 'trial_conversion', or 'renewal'
+        let paymentType = 'unknown';
+        if (mappedStatus === 'paid') {
+          // Check if this customer has paid before
+          const { data: previousPayments, error: prevError } = await supabase
+            .from('transactions')
+            .select('id, stripe_created_at')
+            .eq('customer_email', email)
+            .eq('status', 'paid')
+            .order('stripe_created_at', { ascending: true })
+            .limit(1);
+          
+          if (!prevError && previousPayments && previousPayments.length > 0) {
+            // Customer has paid before - this is a renewal
+            paymentType = 'renewal';
+          } else {
+            // First payment - check if they had a trial
+            const { data: trialSub } = await supabase
+              .from('subscriptions')
+              .select('id, trial_start, trial_end')
+              .eq('customer_email', email)
+              .not('trial_start', 'is', null)
+              .limit(1);
+            
+            if (trialSub && trialSub.length > 0) {
+              paymentType = 'trial_conversion';
+            } else {
+              paymentType = 'new';
+            }
+          }
+        }
+
         transactions.push({
           stripe_payment_intent_id: pi.id,
           payment_key: pi.id,
@@ -397,6 +429,7 @@ Deno.serve(async (req) => {
           metadata: enrichedMetadata,
           source: "stripe",
           subscription_id: subscriptionId,
+          payment_type: paymentType,
         });
 
         // Build client data with enriched info

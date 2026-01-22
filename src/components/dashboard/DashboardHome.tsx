@@ -235,11 +235,11 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       subtitle: `$${kpis.newRevenue.toFixed(0)}`,
     },
     {
-      title: 'Renovaciones',
-      value: kpis.renewalsToday,
-      icon: RefreshCw,
-      color: 'green',
-      subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
+      title: 'Trials',
+      value: kpis.trialsStartedToday,
+      icon: Clock,
+      color: 'blue',
+      subtitle: 'iniciados',
     },
     {
       title: 'Trial→Paid',
@@ -247,6 +247,13 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       icon: ArrowRightCircle,
       color: 'purple',
       subtitle: `$${kpis.conversionRevenue.toFixed(0)}`,
+    },
+    {
+      title: 'Renovaciones',
+      value: kpis.renewalsToday,
+      icon: RefreshCw,
+      color: 'green',
+      subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
     },
     {
       title: 'Fallos',
@@ -270,6 +277,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     const colors: Record<string, { bg: string; text: string; icon: string; border: string }> = {
       emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: 'text-emerald-500', border: 'border-emerald-500/30' },
       cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', icon: 'text-cyan-500', border: 'border-cyan-500/30' },
+      blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', icon: 'text-blue-500', border: 'border-blue-500/30' },
       green: { bg: 'bg-green-500/10', text: 'text-green-400', icon: 'text-green-500', border: 'border-green-500/30' },
       purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', icon: 'text-purple-500', border: 'border-purple-500/30' },
       amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', icon: 'text-amber-500', border: 'border-amber-500/30' },
@@ -371,7 +379,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       </div>
 
       {/* B) 6 KPI Cards - 2 cols on mobile, 3 on tablet, 6 on desktop */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 md:gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-4">
         {cards.map((card, index) => {
           const colors = getColorClasses(card.color);
           const Icon = card.icon;
