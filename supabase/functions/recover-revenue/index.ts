@@ -554,6 +554,12 @@ serve(async (req) => {
       console.log(`📍 Resuming from invoice: ${starting_after}`);
     }
 
+    // Get recently processed invoices to exclude (same as background mode)
+    let excludedInvoices = new Set<string>();
+    if (exclude_recent_hours && exclude_recent_hours > 0) {
+      excludedInvoices = await getRecentlyProcessedInvoices(supabaseServiceClient, exclude_recent_hours);
+    }
+
     const startTime = Date.now();
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
     console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
@@ -568,10 +574,15 @@ serve(async (req) => {
 
     await sleep(API_DELAY_MS);
     const response = await stripe.invoices.list(params);
-    const invoices = response.data;
+    let invoices = response.data;
     const hasMore = response.has_more;
 
-    console.log(`📄 Fetched ${invoices.length} open invoices (hasMore: ${hasMore})`);
+    // Filter out already processed invoices
+    const originalCount = invoices.length;
+    invoices = invoices.filter((inv: Stripe.Invoice) => !excludedInvoices.has(inv.id));
+    const excludedCount = originalCount - invoices.length;
+
+    console.log(`📄 Fetched ${originalCount} open invoices, excluded ${excludedCount}, processing ${invoices.length} (hasMore: ${hasMore})`);
 
     const result: RecoveryResult = {
       succeeded: [],
