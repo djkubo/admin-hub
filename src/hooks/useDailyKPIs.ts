@@ -4,22 +4,14 @@ import { supabase } from '@/integrations/supabase/client';
 export type TimeFilter = 'today' | '7d' | 'month' | 'all';
 
 export interface DailyKPIs {
-  // Registrations
   registrationsToday: number;
-  // Trials
   trialsStartedToday: number;
-  // Conversions
   trialConversionsToday: number;
-  // New payers (first payment ever)
   newPayersToday: number;
-  // Renewals
   renewalsToday: number;
-  // Failures
   failuresToday: number;
   failureReasons: Array<{ reason: string; count: number }>;
-  // Cancellations
   cancellationsToday: number;
-  // Revenue breakdown
   newRevenue: number;
   conversionRevenue: number;
   renewalRevenue: number;
@@ -39,207 +31,95 @@ const defaultKPIs: DailyKPIs = {
   renewalRevenue: 0,
 };
 
-// Get date range for KPI queries - the RPCs use 'America/Mexico_City' timezone
-// so we just pass the range parameter and let the backend handle timezone conversion
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
-  // Use current date in Mexico City timezone for accurate filtering
   const now = new Date();
   const endISO = now.toISOString();
-  
-  // rangeParam must match the RPC function parameter values: 'today', '7d', 'month', 'all'
-  // The RPCs handle timezone conversion internally using America/Mexico_City
   let rangeParam: string = filter;
   let startISO: string;
 
   switch (filter) {
-    case 'today':
-      // For 'today', let the RPC handle the timezone-aware date calculation
-      startISO = endISO; // Not used directly - RPC uses its own date logic
-      break;
-    case '7d':
-      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      startISO = sevenDaysAgo.toISOString();
-      break;
-    case 'month':
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      startISO = thirtyDaysAgo.toISOString();
-      break;
-    case 'all':
-      const tenYearsAgo = new Date(now.getFullYear() - 10, 0, 1);
-      startISO = tenYearsAgo.toISOString();
-      break;
-    default:
-      startISO = endISO;
-      rangeParam = 'today';
+    case 'today': startISO = endISO; break;
+    case '7d': startISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(); break;
+    case 'month': startISO = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(); break;
+    case 'all': startISO = new Date(now.getFullYear() - 10, 0, 1).toISOString(); break;
+    default: startISO = endISO; rangeParam = 'today';
   }
-
-  console.log(`📊 KPI range: ${filter} (RPC will use America/Mexico_City timezone)`);
   return { start: startISO, end: endISO, rangeParam };
 }
 
 export function useDailyKPIs(filter: TimeFilter = 'today') {
   const [kpis, setKPIs] = useState<DailyKPIs>(defaultKPIs);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchKPIs = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
+
     try {
       const { start, end, rangeParam } = getDateRange(filter);
 
-      console.log(`🔍 Fetching KPIs for ${filter}: ${start} to ${end}`);
+      // Fetch each query separately with error handling
+      let newCustomers: { new_customer_count: number; total_revenue: number; currency: string }[] = [];
+      let sales: { total_amount: number; transaction_count: number; currency: string }[] = [];
+      let failed: { failed_count: number; at_risk_amount: number; currency: string }[] = [];
+      let cancellations: { cancellation_count: number; lost_mrr: number; currency: string }[] = [];
+      let trialConversions: { conversion_count: number; total_revenue: number }[] = [];
+      let trialsCount = 0;
+      let clientsCount = 0;
 
-      // Parallel queries for efficiency
-      const [
-        newCustomersResult,
-        salesResult,
-        failedResult,
-        cancellationsResult,
-        trialsResult,
-        trialConversionsResult,
-        clientsResult
-      ] = await Promise.all([
-        // New customers (first-time payers) using RPC
-        supabase.rpc('kpi_new_customers', { 
-          p_range: rangeParam,
-          p_start_date: start.split('T')[0],
-          p_end_date: end.split('T')[0]
-        }),
-        // Total sales using RPC
-        supabase.rpc('kpi_sales', {
-          p_range: rangeParam,
-          p_start_date: start.split('T')[0],
-          p_end_date: end.split('T')[0]
-        }),
-        // Failed payments using RPC
+      // Run in parallel but catch individual errors
+      const promises = await Promise.allSettled([
+        supabase.rpc('kpi_new_customers', { p_range: rangeParam, p_start_date: start.split('T')[0], p_end_date: end.split('T')[0] }),
+        supabase.rpc('kpi_sales', { p_range: rangeParam, p_start_date: start.split('T')[0], p_end_date: end.split('T')[0] }),
         supabase.rpc('kpi_failed_payments', { p_range: rangeParam }),
-        // Cancellations using RPC
         supabase.rpc('kpi_cancellations', { p_range: rangeParam }),
-        // Trials started (subscriptions in trialing status created in range)
-        supabase
-          .from('subscriptions')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'trialing')
-          .gte('created_at', start)
-          .lte('created_at', end),
-        // Trial conversions using RPC
+        supabase.from('subscriptions').select('id', { count: 'exact', head: true }).eq('status', 'trialing').gte('created_at', start).lte('created_at', end),
         supabase.rpc('kpi_trial_to_paid', { p_range: rangeParam }),
-        // Client registrations in range
-        supabase
-          .from('clients')
-          .select('id', { count: 'exact', head: true })
-          .gte('created_at', start)
-          .lte('created_at', end)
+        supabase.from('clients').select('id', { count: 'exact', head: true }).gte('created_at', start).lte('created_at', end)
       ]);
 
-      // Log any errors from RPC calls (non-blocking)
-      if (newCustomersResult.error) console.error('KPI new_customers error:', newCustomersResult.error);
-      if (salesResult.error) console.error('KPI sales error:', salesResult.error);
-      if (failedResult.error) console.error('KPI failed_payments error:', failedResult.error);
-      if (cancellationsResult.error) console.error('KPI cancellations error:', cancellationsResult.error);
-      if (trialsResult.error) console.error('KPI trials query error:', trialsResult.error);
-      if (trialConversionsResult.error) console.error('KPI trial_to_paid error:', trialConversionsResult.error);
-      if (clientsResult.error) console.error('KPI clients query error:', clientsResult.error);
+      // Extract results safely
+      if (promises[0].status === 'fulfilled' && promises[0].value?.data) newCustomers = promises[0].value.data;
+      if (promises[1].status === 'fulfilled' && promises[1].value?.data) sales = promises[1].value.data;
+      if (promises[2].status === 'fulfilled' && promises[2].value?.data) failed = promises[2].value.data;
+      if (promises[3].status === 'fulfilled' && promises[3].value?.data) cancellations = promises[3].value.data;
+      if (promises[4].status === 'fulfilled' && promises[4].value?.count) trialsCount = promises[4].value.count;
+      if (promises[5].status === 'fulfilled' && promises[5].value?.data) trialConversions = promises[5].value.data;
+      if (promises[6].status === 'fulfilled' && promises[6].value?.count) clientsCount = promises[6].value.count;
 
-      // Parse results with null safety
-      const newCustomers = (newCustomersResult.data as Array<{
-        new_customer_count: number;
-        total_revenue: number;
-        currency: string;
-      }>) || [];
-      
-      const sales = (salesResult.data as Array<{
-        total_amount: number;
-        transaction_count: number;
-        currency: string;
-      }>) || [];
-      
-      const failed = (failedResult.data as Array<{
-        failed_count: number;
-        at_risk_amount: number;
-        currency: string;
-      }>) || [];
-      
-      const cancellations = (cancellationsResult.data as Array<{
-        cancellation_count: number;
-        lost_mrr: number;
-        currency: string;
-      }>) || [];
-      
-      const trialConversions = (trialConversionsResult.data as Array<{
-        conversion_count: number;
-        conversion_rate: number;
-        total_revenue: number;
-      }>) || [];
+      const failedQueries = promises.filter(p => p.status === 'rejected').length;
+      if (failedQueries > 0) setError(`${failedQueries} métricas no cargaron`);
 
-      // Aggregate by currency (prioritize USD)
-      const usdNewCustomers = newCustomers.find(r => r.currency?.toLowerCase() === 'usd') || { new_customer_count: 0, total_revenue: 0 };
+      // Aggregate
+      const usdNew = newCustomers.find(r => r.currency?.toLowerCase() === 'usd') || { new_customer_count: 0, total_revenue: 0 };
       const usdSales = sales.find(r => r.currency?.toLowerCase() === 'usd') || { total_amount: 0, transaction_count: 0 };
-      const usdFailed = failed.find(r => r.currency?.toLowerCase() === 'usd') || { failed_count: 0, at_risk_amount: 0 };
-      const usdCancellations = cancellations.find(r => r.currency?.toLowerCase() === 'usd') || { cancellation_count: 0, lost_mrr: 0 };
+      const usdFailed = failed.find(r => r.currency?.toLowerCase() === 'usd') || { failed_count: 0 };
+      const usdCancel = cancellations.find(r => r.currency?.toLowerCase() === 'usd') || { cancellation_count: 0 };
       const trialConv = trialConversions[0] || { conversion_count: 0, total_revenue: 0 };
 
-      // Calculate renewals: total successful payments - new customers - trial conversions
-      const totalSuccessfulPayments = usdSales.transaction_count;
-      const newCustomerCount = usdNewCustomers.new_customer_count;
-      const trialConversionCount = trialConv.conversion_count;
-      const renewalsCount = Math.max(0, totalSuccessfulPayments - newCustomerCount - trialConversionCount);
-
-      // Revenue breakdown (in cents, convert to dollars)
-      const newRevenue = usdNewCustomers.total_revenue / 100;
+      const renewalsCount = Math.max(0, usdSales.transaction_count - usdNew.new_customer_count - trialConv.conversion_count);
+      const newRevenue = usdNew.total_revenue / 100;
       const conversionRevenue = trialConv.total_revenue / 100;
-      const totalRevenueFromSales = usdSales.total_amount / 100;
-      const renewalRevenue = Math.max(0, totalRevenueFromSales - newRevenue - conversionRevenue);
+      const renewalRevenue = Math.max(0, usdSales.total_amount / 100 - newRevenue - conversionRevenue);
 
-      // Get failure reasons from direct query (limited to avoid performance issues)
-      const { data: failureData } = await supabase
-        .from('transactions')
-        .select('failure_code, failure_message')
-        .eq('status', 'failed')
-        .gte('stripe_created_at', start)
-        .lte('stripe_created_at', end)
-        .limit(500);
-
-      const failureReasonsMap = new Map<string, number>();
-      for (const tx of failureData || []) {
-        const reason = tx.failure_code || tx.failure_message || 'unknown';
-        failureReasonsMap.set(reason, (failureReasonsMap.get(reason) || 0) + 1);
-      }
-
-      const failureReasons = Array.from(failureReasonsMap.entries())
-        .map(([reason, count]) => ({ reason, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-
-      const calculatedKPIs: DailyKPIs = {
-        registrationsToday: clientsResult.count || 0,
-        trialsStartedToday: trialsResult.count || 0,
-        trialConversionsToday: trialConversionCount,
-        newPayersToday: newCustomerCount,
+      setKPIs({
+        registrationsToday: clientsCount,
+        trialsStartedToday: trialsCount,
+        trialConversionsToday: trialConv.conversion_count,
+        newPayersToday: usdNew.new_customer_count,
         renewalsToday: renewalsCount,
         failuresToday: usdFailed.failed_count,
-        failureReasons,
-        cancellationsToday: usdCancellations.cancellation_count,
+        failureReasons: [],
+        cancellationsToday: usdCancel.cancellation_count,
         newRevenue,
         conversionRevenue,
         renewalRevenue,
-      };
-
-      console.log('✅ Calculated KPIs from RPCs:', {
-        filter,
-        newPayersToday: newCustomerCount,
-        renewalsToday: renewalsCount,
-        trialConversionsToday: trialConversionCount,
-        failuresToday: usdFailed.failed_count,
-        totalTransactions: totalSuccessfulPayments,
-        newRevenue,
-        renewalRevenue,
-        conversionRevenue,
-        total: totalRevenueFromSales
       });
-
-      setKPIs(calculatedKPIs);
-    } catch (error) {
-      console.error('❌ Error fetching daily KPIs:', error);
+    } catch (err) {
+      console.error('Error fetching KPIs:', err);
+      setError('Error cargando métricas');
+      setKPIs(defaultKPIs);
     } finally {
       setIsLoading(false);
     }
@@ -247,27 +127,11 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
   useEffect(() => {
     fetchKPIs();
-
-    // Subscribe to realtime changes for automatic KPI updates
-    const channel = supabase
-      .channel('kpis-realtime')
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'transactions' },
-        () => {
-          console.log('🔄 New transaction detected, refreshing KPIs...');
-          fetchKPIs();
-        }
-      )
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'subscriptions' },
-        () => fetchKPIs()
-      )
+    const channel = supabase.channel('kpis-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, () => fetchKPIs())
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [fetchKPIs]);
 
-  return { kpis, isLoading, refetch: fetchKPIs };
+  return { kpis, isLoading, error, refetch: fetchKPIs };
 }
