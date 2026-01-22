@@ -14,6 +14,7 @@ import SyncCenter from "@/components/dashboard/SyncCenter";
 import DiagnosticsPanel from "@/components/dashboard/DiagnosticsPanel";
 import MessagesPageWrapper from "@/components/dashboard/MessagesPageWrapper";
 import { SyncStatusBanner } from "@/components/dashboard/SyncStatusBanner";
+import { MovementsPage } from "@/components/dashboard/MovementsPage";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useAuth } from "@/hooks/useAuth";
@@ -82,6 +83,8 @@ const Index = () => {
     switch (activeMenuItem) {
       case "dashboard":
         return <DashboardHome lastSync={lastSync} onNavigate={setActiveMenuItem} />;
+      case "movements":
+        return <MovementsPage />;
       case "messages":
         return <MessagesPageWrapper />;
       case "recovery":

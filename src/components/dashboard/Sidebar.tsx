@@ -14,7 +14,8 @@ import {
   MessageSquare,
   Shield,
   Menu,
-  X
+  X,
+  Activity
 } from "lucide-react";
 
 interface SidebarProps {
@@ -24,6 +25,7 @@ interface SidebarProps {
 
 const menuItems = [
   { id: "dashboard", label: "Command Center", shortLabel: "Home", icon: LayoutDashboard },
+  { id: "movements", label: "Movimientos", shortLabel: "Movs", icon: Activity },
   { id: "messages", label: "Mensajes", shortLabel: "Msgs", icon: MessageSquare },
   { id: "recovery", label: "Recovery", shortLabel: "Recovery", icon: AlertTriangle },
   { id: "invoices", label: "Facturas", shortLabel: "Facturas", icon: FileText },
