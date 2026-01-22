@@ -13,7 +13,18 @@ interface ChatEvent {
   sender: string;
   message: string | null;
   created_at: string;
-  meta: { name?: string; email?: string } | null;
+  meta: { name?: string; email?: string; phone?: string } | null;
+}
+
+interface Client {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  phone_e164: string | null;
+  full_name: string | null;
+  total_spend: number | null;
+  lifecycle_stage: string | null;
+  status: string | null;
 }
 
 serve(async (req) => {
@@ -38,7 +49,7 @@ serve(async (req) => {
     const body = await req.json();
     const { timeRange } = body; // '24h' | '7d' | '30d' | 'all'
 
-    console.log(`📊 Generating chat summary for range: ${timeRange}`);
+    console.log(`📊 Generating SALES INTELLIGENCE report for range: ${timeRange}`);
 
     // Calculate date filter
     let dateFilter: string | null = null;
@@ -60,19 +71,19 @@ serve(async (req) => {
     }
 
     // Fetch chat events
-    let query = supabase
+    let eventsQuery = supabase
       .from("chat_events")
       .select("*")
       .order("created_at", { ascending: true });
 
     if (dateFilter) {
-      query = query.gte("created_at", dateFilter);
+      eventsQuery = eventsQuery.gte("created_at", dateFilter);
     }
 
-    const { data: events, error } = await query.limit(2000);
+    const { data: events, error: eventsError } = await eventsQuery.limit(3000);
 
-    if (error) {
-      console.error("Error fetching chat_events:", error);
+    if (eventsError) {
+      console.error("Error fetching chat_events:", eventsError);
       return new Response(
         JSON.stringify({ error: "Failed to fetch chat data" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -83,7 +94,7 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ 
           summary: "## 📭 Sin datos\n\nNo hay conversaciones en el período seleccionado.",
-          stats: { totalMessages: 0, totalContacts: 0 }
+          stats: { totalMessages: 0, totalContacts: 0, leads: 0, customers: 0 }
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -91,78 +102,252 @@ serve(async (req) => {
 
     console.log(`📬 Found ${events.length} chat events`);
 
-    // Group messages by contact_id for context
-    const contactConversations: Record<string, { 
-      name: string | null; 
+    // Fetch ALL clients to cross-reference spending data
+    const { data: clients, error: clientsError } = await supabase
+      .from("clients")
+      .select("id, email, phone, phone_e164, full_name, total_spend, lifecycle_stage, status")
+      .limit(10000);
+
+    if (clientsError) {
+      console.error("Error fetching clients:", clientsError);
+    }
+
+    console.log(`👥 Found ${clients?.length || 0} clients for cross-reference`);
+
+    // Build lookup maps for clients by email and phone
+    const clientByEmail: Record<string, Client> = {};
+    const clientByPhone: Record<string, Client> = {};
+
+    for (const client of (clients || []) as Client[]) {
+      if (client.email) {
+        clientByEmail[client.email.toLowerCase().trim()] = client;
+      }
+      if (client.phone_e164) {
+        clientByPhone[client.phone_e164] = client;
+      }
+      if (client.phone) {
+        // Normalize phone for matching
+        const normalizedPhone = client.phone.replace(/\D/g, "");
+        if (normalizedPhone.length >= 10) {
+          clientByPhone[normalizedPhone] = client;
+        }
+      }
+    }
+
+    // Group messages by contact_id and enrich with client data
+    interface ConversationData {
+      contactId: string;
+      name: string | null;
       email: string | null;
-      messages: string[];
-    }> = {};
+      phone: string | null;
+      messages: { sender: string; text: string; timestamp: string }[];
+      client: Client | null;
+      totalSpend: number;
+      isLead: boolean;
+      isCustomer: boolean;
+      lastUserMessage: string | null;
+      lastBotMessage: string | null;
+      userStoppedResponding: boolean;
+    }
+
+    const conversations: Record<string, ConversationData> = {};
 
     for (const event of events as ChatEvent[]) {
-      if (!event.message) continue;
+      const contactId = event.contact_id;
       
-      if (!contactConversations[event.contact_id]) {
-        contactConversations[event.contact_id] = {
-          name: event.meta?.name || null,
-          email: event.meta?.email || null,
-          messages: []
+      if (!conversations[contactId]) {
+        // Try to find matching client
+        let matchedClient: Client | null = null;
+        
+        const eventEmail = event.meta?.email?.toLowerCase().trim();
+        const eventPhone = event.meta?.phone?.replace(/\D/g, "");
+        
+        if (eventEmail && clientByEmail[eventEmail]) {
+          matchedClient = clientByEmail[eventEmail];
+        } else if (eventPhone && clientByPhone[eventPhone]) {
+          matchedClient = clientByPhone[eventPhone];
+        }
+
+        const totalSpend = matchedClient?.total_spend || 0;
+        
+        conversations[contactId] = {
+          contactId,
+          name: event.meta?.name || matchedClient?.full_name || null,
+          email: eventEmail || matchedClient?.email || null,
+          phone: event.meta?.phone || matchedClient?.phone || null,
+          messages: [],
+          client: matchedClient,
+          totalSpend,
+          isLead: totalSpend === 0,
+          isCustomer: totalSpend > 0,
+          lastUserMessage: null,
+          lastBotMessage: null,
+          userStoppedResponding: false
         };
       }
-      
-      const prefix = event.sender === "user" ? "👤 Usuario" : "🤖 Bot";
-      contactConversations[event.contact_id].messages.push(`${prefix}: ${event.message}`);
-    }
 
-    // Build context for AI
-    const conversationSummaries: string[] = [];
-    let totalUserMessages = 0;
+      if (event.message) {
+        conversations[contactId].messages.push({
+          sender: event.sender,
+          text: event.message,
+          timestamp: event.created_at
+        });
 
-    for (const [contactId, conv] of Object.entries(contactConversations)) {
-      const contactName = conv.name || conv.email || contactId.substring(0, 8);
-      const userMessages = conv.messages.filter(m => m.startsWith("👤")).length;
-      totalUserMessages += userMessages;
-      
-      if (conv.messages.length > 0) {
-        conversationSummaries.push(
-          `--- Contacto: ${contactName} ---\n${conv.messages.slice(-10).join("\n")}`
-        );
+        if (event.sender === "user") {
+          conversations[contactId].lastUserMessage = event.message;
+        } else {
+          conversations[contactId].lastBotMessage = event.message;
+        }
       }
     }
 
-    // Limit context to avoid token overflow
-    const contextText = conversationSummaries.slice(0, 50).join("\n\n");
-    const totalContacts = Object.keys(contactConversations).length;
+    // Analyze conversation patterns
+    const allConvos = Object.values(conversations);
+    
+    // Detect "stopped responding" - last message was from bot
+    for (const conv of allConvos) {
+      if (conv.messages.length > 0) {
+        const lastMsg = conv.messages[conv.messages.length - 1];
+        conv.userStoppedResponding = lastMsg.sender === "bot";
+      }
+    }
 
-    console.log(`📝 Preparing AI analysis for ${totalContacts} contacts, ${totalUserMessages} user messages`);
+    // Segment conversations
+    const leadConvos = allConvos.filter(c => c.isLead && c.messages.length > 2);
+    const customerConvos = allConvos.filter(c => c.isCustomer && c.messages.length > 2);
+    const abandonedLeads = leadConvos.filter(c => c.userStoppedResponding);
 
-    // Call Lovable AI for analysis
-    const systemPrompt = `Eres un analista de negocios experto en CRM y atención al cliente. 
-Analiza las siguientes conversaciones de chat y genera un reporte ejecutivo en español.
+    console.log(`📈 Segmentation: ${leadConvos.length} leads, ${customerConvos.length} customers, ${abandonedLeads.length} abandoned`);
 
-FORMATO DE RESPUESTA (usa Markdown):
+    // Build context for AI - SALES INTELLIGENCE focused
+    const buildConversationText = (conv: ConversationData, limit = 15) => {
+      const msgs = conv.messages.slice(-limit);
+      const header = `[${conv.name || conv.email || conv.contactId.substring(0, 8)}] (Gasto: $${conv.totalSpend})`;
+      const body = msgs.map(m => `${m.sender === "user" ? "👤" : "🤖"}: ${m.text}`).join("\n");
+      return `${header}\n${body}`;
+    };
 
-## 📊 Resumen Ejecutivo
-Describe brevemente de qué habló la mayoría de usuarios. Ejemplo: "El 80% preguntó por disponibilidad de USB-C".
+    // Prepare segmented data for AI
+    const abandonedLeadsText = abandonedLeads
+      .slice(0, 25)
+      .map(c => buildConversationText(c))
+      .join("\n\n---\n\n");
 
-## 😊 Análisis de Sentimiento
-- Positivo: X%
-- Neutral: X%
-- Negativo: X%
-Incluye una breve explicación del tono general.
+    const customerConvosText = customerConvos
+      .slice(0, 25)
+      .map(c => buildConversationText(c))
+      .join("\n\n---\n\n");
 
-## 💰 Top Leads (Alta Intención de Compra)
-Lista los nombres/contactos que mostraron intención clara de compra con detalles:
-1. **[Nombre]** - [Producto/servicio mencionado] - [Señal de compra]
+    const allConvosText = allConvos
+      .slice(0, 30)
+      .map(c => buildConversationText(c, 10))
+      .join("\n\n---\n\n");
 
-## ⚠️ Problemas Detectados
-Lista cualquier queja, error técnico o problema reportado:
-- [Problema] - Frecuencia: [alta/media/baja]
+    // Stats
+    const totalContacts = allConvos.length;
+    const totalUserMessages = events.filter((e: ChatEvent) => e.sender === "user").length;
+    const totalRevenue = customerConvos.reduce((sum, c) => sum + c.totalSpend, 0);
 
-## 💡 Recomendaciones
-2-3 acciones concretas para mejorar ventas o servicio.
+    console.log(`💰 Total revenue from chatters: $${totalRevenue}`);
+
+    // SALES INTELLIGENCE PROMPT
+    const systemPrompt = `Eres un analista de ventas experto especializado en conversión de leads y optimización de chatbots de venta.
+
+Tu misión es analizar conversaciones de chat y generar INTELIGENCIA DE VENTAS ACCIONABLE.
+
+CONTEXTO DE NEGOCIO:
+- Total de contactos en período: ${totalContacts}
+- Leads (gasto = $0): ${leadConvos.length}
+- Clientes (gasto > $0): ${customerConvos.length}  
+- Leads que abandonaron chat: ${abandonedLeads.length}
+- Revenue total de usuarios del chat: $${totalRevenue.toLocaleString()}
+
+GENERA EL SIGUIENTE REPORTE EN ESPAÑOL:
 
 ---
-Estadísticas: ${totalContacts} contactos, ${totalUserMessages} mensajes de usuarios, ${events.length} mensajes totales.`;
+
+## 📊 Resumen Ejecutivo
+Breve resumen de 2-3 líneas sobre el estado de las conversaciones.
+
+## 😊 Análisis de Sentimiento General
+- Positivo: X%
+- Neutral: X%  
+- Negativo: X%
+
+---
+
+## 🛑 TOP 3 OBJECIONES DE VENTA (¿Por qué pierdo dinero?)
+
+Analiza los chats de LEADS (Gasto = $0) que dejaron de contestar.
+Identifica patrones y excusas comunes.
+
+**Objeción #1: [NOMBRE]** (X% de los casos)
+- Ejemplo real: "[cita del chat]"
+- Impacto estimado: [alto/medio/bajo]
+
+**Objeción #2: [NOMBRE]** (X% de los casos)
+- Ejemplo real: "[cita del chat]"
+
+**Objeción #3: [NOMBRE]** (X% de los casos)
+- Ejemplo real: "[cita del chat]"
+
+---
+
+## 🏆 PATRONES DE ÉXITO (¿Cómo gano dinero?)
+
+Analiza los chats de CLIENTES (Gasto > $0).
+¿Qué argumento o tema apareció JUSTO ANTES de la compra?
+
+**Patrón Ganador #1:** [descripción]
+- 💬 Frase Ganadora sugerida: "[frase para entrenar al bot]"
+
+**Patrón Ganador #2:** [descripción]
+- 💬 Frase Ganadora sugerida: "[frase]"
+
+---
+
+## 💡 OPORTUNIDADES OCULTAS (Dinero en la mesa)
+
+Busca menciones de productos/géneros que el bot NO supo responder o que NO tenemos.
+
+1. **[Producto/Género pedido]** - Mencionado por X usuarios
+   - Ejemplo: "[cita donde lo piden]"
+   - Acción sugerida: [crear producto / agregar respuesta]
+
+2. **[Producto/Género]** - X menciones
+   - Ejemplo: "[cita]"
+
+---
+
+## 💰 Leads Prioritarios para Seguimiento
+
+Lista de 3-5 leads con nombre/contacto que mostraron alta intención pero no compraron:
+
+1. **[Nombre]** - Interesado en: [producto] - Última actividad: [fecha aprox]
+2. ...
+
+---
+
+IMPORTANTE:
+- Sé específico con ejemplos reales de los chats
+- Los porcentajes pueden ser estimaciones basadas en lo que ves
+- Si no hay suficientes datos para una sección, indícalo
+- Usa íconos para hacer el reporte visualmente escaneable`;
+
+    const userPrompt = `DATOS PARA ANALIZAR:
+
+=== LEADS QUE ABANDONARON (Gasto = $0, dejaron de responder) ===
+${abandonedLeadsText || "No hay datos suficientes de leads abandonados."}
+
+=== CONVERSACIONES DE CLIENTES (Gasto > $0) ===
+${customerConvosText || "No hay datos suficientes de clientes."}
+
+=== MUESTRA GENERAL DE TODAS LAS CONVERSACIONES ===
+${allConvosText}
+
+Genera el reporte de INTELIGENCIA DE VENTAS siguiendo el formato especificado.`;
+
+    console.log(`🤖 Calling AI for sales intelligence analysis...`);
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -174,9 +359,9 @@ Estadísticas: ${totalContacts} contactos, ${totalUserMessages} mensajes de usua
         model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Analiza estas conversaciones:\n\n${contextText}` }
+          { role: "user", content: userPrompt }
         ],
-        max_tokens: 2000,
+        max_tokens: 3000,
         temperature: 0.7
       }),
     });
@@ -201,7 +386,7 @@ Estadísticas: ${totalContacts} contactos, ${totalUserMessages} mensajes de usua
     const aiData = await aiResponse.json();
     const summary = aiData.choices?.[0]?.message?.content || "No se pudo generar el resumen.";
 
-    console.log("✅ AI summary generated successfully");
+    console.log("✅ Sales intelligence report generated successfully");
 
     return new Response(
       JSON.stringify({
@@ -210,6 +395,10 @@ Estadísticas: ${totalContacts} contactos, ${totalUserMessages} mensajes de usua
           totalMessages: events.length,
           totalContacts,
           totalUserMessages,
+          leads: leadConvos.length,
+          customers: customerConvos.length,
+          abandonedLeads: abandonedLeads.length,
+          totalRevenue,
           timeRange
         }
       }),
