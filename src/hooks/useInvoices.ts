@@ -22,7 +22,7 @@ export function useInvoices() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Fetch pending invoices (draft + open)
+  // Fetch pending invoices (draft + open) with realtime updates
   const { data: invoices = [], isLoading, refetch } = useQuery({
     queryKey: ["invoices"],
     queryFn: async () => {
@@ -35,6 +35,7 @@ export function useInvoices() {
       if (error) throw error;
       return data as Invoice[];
     },
+    refetchInterval: 60000, // Refetch every minute for near-realtime updates
   });
 
   // Sync invoices from Stripe

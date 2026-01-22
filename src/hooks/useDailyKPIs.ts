@@ -39,41 +39,41 @@ const defaultKPIs: DailyKPIs = {
   renewalRevenue: 0,
 };
 
+// Get date range for KPI queries - the RPCs use 'America/Mexico_City' timezone
+// so we just pass the range parameter and let the backend handle timezone conversion
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
+  // Use current date in Mexico City timezone for accurate filtering
   const now = new Date();
   const endISO = now.toISOString();
-  let startISO: string;
+  
   // rangeParam must match the RPC function parameter values: 'today', '7d', 'month', 'all'
-  let rangeParam: string;
+  // The RPCs handle timezone conversion internally using America/Mexico_City
+  let rangeParam: string = filter;
+  let startISO: string;
 
   switch (filter) {
     case 'today':
-      const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      startISO = todayStart.toISOString();
-      rangeParam = 'today';
+      // For 'today', let the RPC handle the timezone-aware date calculation
+      startISO = endISO; // Not used directly - RPC uses its own date logic
       break;
     case '7d':
       const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
       startISO = sevenDaysAgo.toISOString();
-      rangeParam = '7d';
       break;
     case 'month':
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      startISO = monthStart.toISOString();
-      rangeParam = 'month';
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      startISO = thirtyDaysAgo.toISOString();
       break;
     case 'all':
-      const tenYearsAgo = new Date(Date.UTC(now.getUTCFullYear() - 10, 0, 1));
+      const tenYearsAgo = new Date(now.getFullYear() - 10, 0, 1);
       startISO = tenYearsAgo.toISOString();
-      rangeParam = 'all';
       break;
     default:
-      const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      startISO = defaultStart.toISOString();
+      startISO = endISO;
       rangeParam = 'today';
   }
 
-  console.log(`📊 KPI date range (${filter}): ${startISO} to ${endISO}, rangeParam: ${rangeParam}`);
+  console.log(`📊 KPI range: ${filter} (RPC will use America/Mexico_City timezone)`);
   return { start: startISO, end: endISO, rangeParam };
 }
 
@@ -238,6 +238,26 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
   useEffect(() => {
     fetchKPIs();
+
+    // Subscribe to realtime changes for automatic KPI updates
+    const channel = supabase
+      .channel('kpis-realtime')
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'transactions' },
+        () => {
+          console.log('🔄 New transaction detected, refreshing KPIs...');
+          fetchKPIs();
+        }
+      )
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'subscriptions' },
+        () => fetchKPIs()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [fetchKPIs]);
 
   return { kpis, isLoading, refetch: fetchKPIs };

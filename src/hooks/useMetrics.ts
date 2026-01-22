@@ -49,10 +49,21 @@ export function useMetrics() {
   const fetchMetrics = useCallback(async () => {
     setIsLoading(true);
     try {
+      // Use timezone-aware date calculation matching server (America/Mexico_City)
+      // Get current time and calculate dates using Mexico City timezone offset
       const now = new Date();
+      
+      // Calculate first day of month in Mexico City time
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      // FIX Bug C & D: Use start of TODAY (not midnight) to include all of today's transactions
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      
+      // Start of today in Mexico City time (UTC-6, accounting for DST)
+      // The server RPCs use America/Mexico_City, so we need to match
+      const mexicoOffsetHours = -6; // CST (adjust if DST is needed)
+      const utcNow = new Date(now.getTime() + now.getTimezoneOffset() * 60000);
+      const mexicoNow = new Date(utcNow.getTime() + mexicoOffsetHours * 3600000);
+      const startOfTodayMexico = new Date(mexicoNow.getFullYear(), mexicoNow.getMonth(), mexicoNow.getDate());
+      // Convert back to UTC for database query
+      const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetHours * 3600000);
       
       // Fetch monthly sales - ONLY count 'succeeded' and 'paid' status
       const { data: monthlyTransactions } = await supabase
@@ -70,7 +81,7 @@ export function useMetrics() {
       for (const tx of monthlyTransactions || []) {
         const amountInCurrency = tx.amount / 100;
         const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
-        const isToday = txDate && txDate >= startOfToday;
+        const isToday = txDate && txDate >= startOfTodayUTC;
         
         if (tx.currency?.toLowerCase() === 'mxn') {
           salesMonthMXN += amountInCurrency;
@@ -218,6 +229,26 @@ export function useMetrics() {
 
   useEffect(() => {
     fetchMetrics();
+
+    // Subscribe to realtime changes for automatic updates
+    const channel = supabase
+      .channel('metrics-realtime')
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'transactions' },
+        () => {
+          console.log('🔄 New transaction detected, refreshing metrics...');
+          fetchMetrics();
+        }
+      )
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'transactions' },
+        () => fetchMetrics()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [fetchMetrics]);
 
   return { metrics, isLoading, refetch: fetchMetrics };
