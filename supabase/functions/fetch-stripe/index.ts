@@ -192,6 +192,7 @@ Deno.serve(async (req) => {
     let fetchAll = false;
     let startDate: number | null = null;
     let endDate: number | null = null;
+    let requestedMaxPages = 50; // Default max pages
     
     try {
       const body = await req.json();
@@ -203,11 +204,14 @@ Deno.serve(async (req) => {
       if (body.endDate) {
         endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
       }
+      if (typeof body.maxPages === 'number' && body.maxPages > 0) {
+        requestedMaxPages = Math.min(body.maxPages, 1000); // Cap at 1000 pages max
+      }
     } catch {
       // No body
     }
 
-    console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, startDate: ${startDate}, endDate: ${endDate}`);
+    console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, startDate: ${startDate}, endDate: ${endDate}, maxPages: ${requestedMaxPages}`);
 
     // Create sync_run record
     const { data: syncRun } = await supabase
@@ -230,7 +234,7 @@ Deno.serve(async (req) => {
     let hasMore = true;
     let cursor: string | null = null;
     let pageCount = 0;
-    const maxPages = fetchAll ? 50 : 1;
+    const maxPages = fetchAll ? requestedMaxPages : 1;
 
     while (hasMore && pageCount < maxPages) {
       const url = new URL("https://api.stripe.com/v1/payment_intents");
@@ -383,37 +387,9 @@ Deno.serve(async (req) => {
           }
         });
 
-        // Determine payment_type: 'new', 'trial_conversion', or 'renewal'
-        let paymentType = 'unknown';
-        if (mappedStatus === 'paid') {
-          // Check if this customer has paid before
-          const { data: previousPayments, error: prevError } = await supabase
-            .from('transactions')
-            .select('id, stripe_created_at')
-            .eq('customer_email', email)
-            .eq('status', 'paid')
-            .order('stripe_created_at', { ascending: true })
-            .limit(1);
-          
-          if (!prevError && previousPayments && previousPayments.length > 0) {
-            // Customer has paid before - this is a renewal
-            paymentType = 'renewal';
-          } else {
-            // First payment - check if they had a trial
-            const { data: trialSub } = await supabase
-              .from('subscriptions')
-              .select('id, trial_start, trial_end')
-              .eq('customer_email', email)
-              .not('trial_start', 'is', null)
-              .limit(1);
-            
-            if (trialSub && trialSub.length > 0) {
-              paymentType = 'trial_conversion';
-            } else {
-              paymentType = 'new';
-            }
-          }
-        }
+        // payment_type will be classified by a separate backfill or webhook
+        // For sync, we default to 'unknown' to avoid slow per-transaction queries
+        const paymentType = 'unknown';
 
         transactions.push({
           stripe_payment_intent_id: pi.id,
@@ -531,6 +507,37 @@ Deno.serve(async (req) => {
     );
   } catch (error) {
     console.error("Error:", error);
+    
+    // Try to mark sync as failed if we have a syncRunId
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      
+      // Find the most recent running sync for stripe and mark it failed
+      const { data: runningSync } = await supabase
+        .from('sync_runs')
+        .select('id')
+        .eq('source', 'stripe')
+        .eq('status', 'running')
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .single();
+      
+      if (runningSync) {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: String(error)
+          })
+          .eq('id', runningSync.id);
+      }
+    } catch (cleanupError) {
+      console.error("Error marking sync as failed:", cleanupError);
+    }
+    
     return new Response(
       JSON.stringify({ error: String(error) }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
