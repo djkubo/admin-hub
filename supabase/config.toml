@@ -90,3 +90,9 @@ verify_jwt = false
 # ============================================
 [functions.unify-identity]
 verify_jwt = false
+
+# ============================================
+# AI CHAT INSIGHTS
+# ============================================
+[functions.generate-chat-summary]
+verify_jwt = false
