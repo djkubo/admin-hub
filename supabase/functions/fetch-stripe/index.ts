@@ -25,9 +25,82 @@ function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
   return { valid: true };
 }
 
+// Mapeo de decline codes a español
+const DECLINE_REASONS_ES: Record<string, string> = {
+  'insufficient_funds': 'Fondos insuficientes',
+  'lost_card': 'Tarjeta perdida',
+  'stolen_card': 'Tarjeta robada',
+  'expired_card': 'Tarjeta expirada',
+  'incorrect_cvc': 'CVC incorrecto',
+  'processing_error': 'Error de procesamiento',
+  'incorrect_number': 'Número incorrecto',
+  'card_velocity_exceeded': 'Límite de transacciones excedido',
+  'do_not_honor': 'Transacción rechazada por el banco',
+  'generic_decline': 'Rechazo genérico',
+  'card_declined': 'Tarjeta rechazada',
+  'fraudulent': 'Transacción sospechosa',
+  'blocked': 'Tarjeta bloqueada',
+  'withdrawal_count_limit_exceeded': 'Límite de retiros excedido',
+  'invalid_account': 'Cuenta inválida',
+  'new_account_information_available': 'Datos de cuenta nuevos disponibles',
+  'try_again_later': 'Intentar más tarde',
+  'not_permitted': 'Transacción no permitida',
+  'revocation_of_all_authorizations': 'Revocación de autorizaciones',
+  'revocation_of_authorization': 'Autorización revocada',
+  'stop_payment_order': 'Orden de detener pago',
+  'call_issuer': 'Contactar al banco emisor',
+  'currency_not_supported': 'Moneda no soportada',
+  'duplicate_transaction': 'Transacción duplicada',
+  'reenter_transaction': 'Reingresar transacción',
+  'merchant_blacklist': 'Comercio en lista negra',
+  'security_violation': 'Violación de seguridad',
+  'service_not_allowed': 'Servicio no permitido',
+  'testmode_decline': 'Rechazo en modo prueba',
+  'transaction_not_allowed': 'Transacción no permitida',
+};
+
 interface StripeCustomer {
   id: string;
   email: string | null;
+  name: string | null;
+  phone: string | null;
+}
+
+interface StripeCharge {
+  id: string;
+  payment_method_details?: {
+    card?: {
+      brand?: string;
+      last4?: string;
+      exp_month?: number;
+      exp_year?: number;
+    };
+  };
+  outcome?: {
+    network_status?: string;
+    reason?: string;
+    seller_message?: string;
+    type?: string;
+  };
+  failure_code?: string;
+  failure_message?: string;
+}
+
+interface StripeInvoice {
+  id: string;
+  number: string | null;
+  subscription?: string | null;
+  lines?: {
+    data: Array<{
+      description?: string;
+      price?: {
+        product?: string | {
+          id: string;
+          name: string;
+        };
+      };
+    }>;
+  };
 }
 
 interface StripePaymentIntent {
@@ -39,10 +112,14 @@ interface StripePaymentIntent {
   last_payment_error?: {
     code?: string;
     message?: string;
+    decline_code?: string;
   } | null;
   created: number;
   metadata: Record<string, string>;
   receipt_email?: string | null;
+  latest_charge?: string | StripeCharge | null;
+  invoice?: string | StripeInvoice | null;
+  description?: string | null;
 }
 
 interface StripeListResponse {
@@ -50,11 +127,11 @@ interface StripeListResponse {
   has_more: boolean;
 }
 
-const customerEmailCache = new Map<string, string | null>();
+const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 
-async function getCustomerEmail(customerId: string, stripeSecretKey: string): Promise<string | null> {
+async function getCustomerInfo(customerId: string, stripeSecretKey: string): Promise<{ email: string | null; name: string | null; phone: string | null }> {
   if (customerEmailCache.has(customerId)) {
-    return customerEmailCache.get(customerId) || null;
+    return customerEmailCache.get(customerId)!;
   }
 
   try {
@@ -68,16 +145,17 @@ async function getCustomerEmail(customerId: string, stripeSecretKey: string): Pr
     );
 
     if (!response.ok) {
-      customerEmailCache.set(customerId, null);
-      return null;
+      customerEmailCache.set(customerId, { email: null, name: null, phone: null });
+      return { email: null, name: null, phone: null };
     }
 
     const customer: StripeCustomer = await response.json();
-    customerEmailCache.set(customerId, customer.email);
-    return customer.email || null;
+    const info = { email: customer.email || null, name: customer.name || null, phone: customer.phone || null };
+    customerEmailCache.set(customerId, info);
+    return info;
   } catch {
-    customerEmailCache.set(customerId, null);
-    return null;
+    customerEmailCache.set(customerId, { email: null, name: null, phone: null });
+    return { email: null, name: null, phone: null };
   }
 }
 
@@ -157,7 +235,10 @@ Deno.serve(async (req) => {
     while (hasMore && pageCount < maxPages) {
       const url = new URL("https://api.stripe.com/v1/payment_intents");
       url.searchParams.set("limit", "100");
+      // Expand customer, latest_charge, and invoice for enriched data
       url.searchParams.append("expand[]", "data.customer");
+      url.searchParams.append("expand[]", "data.latest_charge");
+      url.searchParams.append("expand[]", "data.invoice");
       
       if (startDate) {
         url.searchParams.set("created[gte]", startDate.toString());
@@ -191,12 +272,22 @@ Deno.serve(async (req) => {
 
       for (const pi of data.data) {
         let email = pi.receipt_email || null;
+        let customerName: string | null = null;
+        let customerPhone: string | null = null;
+        let customerId: string | null = null;
 
-        if (!email && pi.customer) {
+        if (pi.customer) {
           if (typeof pi.customer === 'object' && pi.customer !== null) {
-            email = pi.customer.email || null;
+            email = email || pi.customer.email || null;
+            customerName = pi.customer.name || null;
+            customerPhone = pi.customer.phone || null;
+            customerId = pi.customer.id;
           } else if (typeof pi.customer === 'string') {
-            email = await getCustomerEmail(pi.customer, stripeSecretKey);
+            customerId = pi.customer;
+            const info = await getCustomerInfo(pi.customer, stripeSecretKey);
+            email = email || info.email;
+            customerName = info.name;
+            customerPhone = info.phone;
           }
         }
 
@@ -205,36 +296,119 @@ Deno.serve(async (req) => {
           continue;
         }
 
+        // Extract card info from latest_charge
+        let cardLast4: string | null = null;
+        let cardBrand: string | null = null;
+        let chargeFailureCode: string | null = null;
+        let chargeFailureMessage: string | null = null;
+        let chargeOutcomeReason: string | null = null;
+
+        if (pi.latest_charge && typeof pi.latest_charge === 'object') {
+          const charge = pi.latest_charge as StripeCharge;
+          cardLast4 = charge.payment_method_details?.card?.last4 || null;
+          cardBrand = charge.payment_method_details?.card?.brand || null;
+          chargeFailureCode = charge.failure_code || null;
+          chargeFailureMessage = charge.failure_message || null;
+          chargeOutcomeReason = charge.outcome?.reason || null;
+        }
+
+        // Extract product/invoice info
+        let productName: string | null = null;
+        let invoiceNumber: string | null = null;
+        let subscriptionId: string | null = null;
+
+        if (pi.invoice && typeof pi.invoice === 'object') {
+          const invoice = pi.invoice as StripeInvoice;
+          invoiceNumber = invoice.number || null;
+          subscriptionId = invoice.subscription || null;
+
+          // Get product name from invoice lines
+          if (invoice.lines?.data?.[0]) {
+            const firstLine = invoice.lines.data[0];
+            productName = firstLine.description || null;
+            if (!productName && firstLine.price?.product) {
+              if (typeof firstLine.price.product === 'object') {
+                productName = firstLine.price.product.name || null;
+              }
+            }
+          }
+        }
+
+        // Fallback to description if no product name
+        if (!productName && pi.description) {
+          productName = pi.description;
+        }
+
+        // Determine status and failure reason
         let mappedStatus: string;
+        let failureCode = pi.last_payment_error?.code || pi.last_payment_error?.decline_code || chargeFailureCode || null;
+        let failureMessage = pi.last_payment_error?.message || chargeFailureMessage || null;
+        let declineReasonEs: string | null = null;
+
         if (pi.status === "succeeded") {
           mappedStatus = "paid";
           paidCount++;
         } else {
           mappedStatus = "failed";
           failedCount++;
+          
+          // Use outcome reason or decline code for Spanish translation
+          const codeForTranslation = chargeOutcomeReason || pi.last_payment_error?.decline_code || failureCode;
+          if (codeForTranslation) {
+            declineReasonEs = DECLINE_REASONS_ES[codeForTranslation] || codeForTranslation;
+          }
+          
+          if (!failureCode && pi.status) {
+            failureCode = pi.status;
+          }
         }
+
+        // Build enriched metadata
+        const enrichedMetadata = {
+          ...pi.metadata,
+          customer_name: customerName,
+          customer_phone: customerPhone,
+          card_last4: cardLast4,
+          card_brand: cardBrand,
+          product_name: productName,
+          invoice_number: invoiceNumber,
+          decline_reason_es: declineReasonEs,
+          outcome_reason: chargeOutcomeReason,
+        };
+
+        // Remove null values from metadata
+        Object.keys(enrichedMetadata).forEach(key => {
+          if (enrichedMetadata[key as keyof typeof enrichedMetadata] === null) {
+            delete enrichedMetadata[key as keyof typeof enrichedMetadata];
+          }
+        });
 
         transactions.push({
           stripe_payment_intent_id: pi.id,
           payment_key: pi.id,
-          stripe_customer_id: typeof pi.customer === 'string' ? pi.customer : (pi.customer as StripeCustomer)?.id || null,
+          stripe_customer_id: customerId,
           customer_email: email,
           amount: pi.amount,
           currency: pi.currency.toLowerCase(),
           status: mappedStatus,
-          failure_code: pi.last_payment_error?.code || (mappedStatus === "failed" ? pi.status : null),
-          failure_message: pi.last_payment_error?.message || null,
+          failure_code: failureCode,
+          failure_message: failureMessage,
           stripe_created_at: new Date(pi.created * 1000).toISOString(),
-          metadata: pi.metadata || {},
+          metadata: enrichedMetadata,
           source: "stripe",
+          subscription_id: subscriptionId,
         });
 
+        // Build client data with enriched info
         const existing = clientsMap.get(email) || { 
           email, 
           payment_status: 'none', 
           total_paid: 0,
           status: 'active',
-          last_sync: new Date().toISOString()
+          last_sync: new Date().toISOString(),
+          full_name: null,
+          phone: null,
+          stripe_customer_id: null,
         };
         
         if (mappedStatus === 'paid') {
@@ -243,6 +417,18 @@ Deno.serve(async (req) => {
         } else if (existing.payment_status !== 'paid') {
           existing.payment_status = 'failed';
         }
+
+        // Update client with enriched data (only if not already set)
+        if (customerName && !existing.full_name) {
+          existing.full_name = customerName;
+        }
+        if (customerPhone && !existing.phone) {
+          existing.phone = customerPhone;
+        }
+        if (customerId && !existing.stripe_customer_id) {
+          existing.stripe_customer_id = customerId;
+        }
+
         clientsMap.set(email, existing);
       }
 

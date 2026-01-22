@@ -25,6 +25,13 @@ interface PayPalTokenResponse {
   expires_in: number;
 }
 
+interface PayPalFeeInfo {
+  paypal_fee?: {
+    currency_code?: string;
+    value?: string;
+  };
+}
+
 interface PayPalTransaction {
   transaction_info: {
     transaction_id: string;
@@ -35,21 +42,40 @@ interface PayPalTransaction {
       currency_code: string;
       value: string;
     };
+    fee_amount?: {
+      currency_code?: string;
+      value?: string;
+    };
     transaction_status: string;
     payer_info?: {
       email_address?: string;
+      account_id?: string;
       payer_name?: {
         given_name?: string;
         surname?: string;
       };
     };
+    transaction_note?: string;
+    transaction_subject?: string;
   };
   payer_info?: {
     email_address?: string;
+    account_id?: string;
     payer_name?: {
       given_name?: string;
       surname?: string;
     };
+  };
+  cart_info?: {
+    item_details?: Array<{
+      item_name?: string;
+      item_description?: string;
+      item_quantity?: string;
+      item_unit_price?: {
+        currency_code?: string;
+        value?: string;
+      };
+    }>;
   };
 }
 
@@ -100,6 +126,25 @@ function mapPayPalStatus(status: string, eventCode: string): string {
   return 'pending';
 }
 
+// Mapeo de códigos de evento PayPal a descripciones legibles
+const PAYPAL_EVENT_DESCRIPTIONS: Record<string, string> = {
+  'T0000': 'General: PayPal account to PayPal account payment',
+  'T0001': 'Mass payment',
+  'T0002': 'Subscription payment',
+  'T0003': 'Pre-approved payment',
+  'T0004': 'eBay auction payment',
+  'T0005': 'Direct payment',
+  'T0006': 'Express Checkout payment',
+  'T0007': 'Website payment',
+  'T0008': 'Postage payment',
+  'T0009': 'Gift certificate',
+  'T0010': 'Third-party auction payment',
+  'T0011': 'Mobile payment',
+  'T0012': 'Virtual terminal payment',
+  'T1107': 'Payment refund',
+  'T1201': 'Chargeback',
+};
+
 // Generate 31-day chunks for PayPal API (which has 31-day max range limit)
 function generateDateChunks(startDate: Date, endDate: Date): Array<{start: Date, end: Date}> {
   const chunks: Array<{start: Date, end: Date}> = [];
@@ -139,7 +184,7 @@ async function fetchPayPalChunk(
     url.searchParams.set("end_date", endDate);
     url.searchParams.set("page_size", "100");
     url.searchParams.set("page", String(currentPage));
-    url.searchParams.set("fields", "transaction_info,payer_info");
+    url.searchParams.set("fields", "transaction_info,payer_info,cart_info");
 
     const response = await fetch(url.toString(), {
       headers: {
@@ -306,6 +351,7 @@ Deno.serve(async (req) => {
     const clientsMap = new Map<string, {
       email: string;
       full_name: string | null;
+      phone: string | null;
       payment_status: string;
       total_paid: number;
     }>();
@@ -329,13 +375,32 @@ Deno.serve(async (req) => {
 
       const paymentIntentId = `paypal_${transactionId}`;
 
-      const amount = parseFloat(info.transaction_amount?.value || '0');
+      const grossAmount = parseFloat(info.transaction_amount?.value || '0');
+      const feeAmount = parseFloat(info.fee_amount?.value || '0');
+      const netAmount = grossAmount - Math.abs(feeAmount);
       const currency = info.transaction_amount?.currency_code || 'USD';
       const status = mapPayPalStatus(info.transaction_status, info.transaction_event_code);
       
       const fullName = payer?.payer_name 
         ? `${payer.payer_name.given_name || ''} ${payer.payer_name.surname || ''}`.trim()
         : null;
+      
+      const payerId = payer?.account_id || null;
+
+      // Get product info from cart
+      let productName: string | null = null;
+      if (tx.cart_info?.item_details?.[0]) {
+        productName = tx.cart_info.item_details[0].item_name || 
+                      tx.cart_info.item_details[0].item_description || null;
+      }
+      
+      // Fallback to transaction subject/note
+      if (!productName) {
+        productName = info.transaction_subject || info.transaction_note || null;
+      }
+
+      // Get event description
+      const eventDescription = PAYPAL_EVENT_DESCRIPTIONS[info.transaction_event_code] || null;
 
       if (status === 'paid') {
         paidCount++;
@@ -343,34 +408,52 @@ Deno.serve(async (req) => {
         failedCount++;
       }
 
+      // Build enriched metadata
+      const enrichedMetadata: Record<string, unknown> = { 
+        event_code: info.transaction_event_code,
+        event_description: eventDescription,
+        original_status: info.transaction_status,
+        customer_name: fullName,
+        paypal_payer_id: payerId,
+        gross_amount: Math.round(Math.abs(grossAmount) * 100),
+        fee_amount: Math.round(Math.abs(feeAmount) * 100),
+        net_amount: Math.round(Math.abs(netAmount) * 100),
+        product_name: productName,
+      };
+
+      // Remove null values from metadata
+      Object.keys(enrichedMetadata).forEach(key => {
+        if (enrichedMetadata[key] === null || enrichedMetadata[key] === undefined) {
+          delete enrichedMetadata[key];
+        }
+      });
+
       transactionsMap.set(transactionId, {
         stripe_payment_intent_id: paymentIntentId,
         payment_key: transactionId,
         external_transaction_id: transactionId,
         customer_email: email,
-        amount: Math.round(Math.abs(amount) * 100),
+        amount: Math.round(Math.abs(grossAmount) * 100),
         currency: currency.toLowerCase(),
         status,
         failure_code: status === 'failed' ? info.transaction_status : null,
         failure_message: status === 'failed' ? `PayPal status: ${info.transaction_status}` : null,
         stripe_created_at: info.transaction_initiation_date,
         source: 'paypal',
-        metadata: { 
-          event_code: info.transaction_event_code,
-          original_status: info.transaction_status 
-        },
+        metadata: enrichedMetadata,
       });
 
       const existing = clientsMap.get(email) || { 
         email, 
         full_name: fullName,
+        phone: null as string | null,
         payment_status: 'none', 
         total_paid: 0 
       };
       
-      if (status === 'paid' && amount > 0) {
+      if (status === 'paid' && grossAmount > 0) {
         existing.payment_status = 'paid';
-        existing.total_paid += Math.abs(amount);
+        existing.total_paid += Math.abs(grossAmount);
       } else if (status === 'failed' && existing.payment_status !== 'paid') {
         existing.payment_status = 'failed';
       }
@@ -406,6 +489,7 @@ Deno.serve(async (req) => {
     const clientsToUpsert = Array.from(clientsMap.values()).map(c => ({
       email: c.email,
       full_name: c.full_name,
+      phone: c.phone,
       payment_status: c.payment_status,
       total_paid: c.total_paid,
       last_sync: new Date().toISOString(),
