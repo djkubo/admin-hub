@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { 
   DollarSign, AlertTriangle, Clock, UserX, MessageCircle, 
-  Smartphone, Facebook, ExternalLink, Send, CheckCircle, 
-  XCircle, Filter, RefreshCw, TrendingUp, Users, Zap, Phone
+  Smartphone, MessageSquare, ExternalLink, Send, CheckCircle, 
+  RefreshCw, TrendingUp, Zap, Phone
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,8 +32,6 @@ import {
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
@@ -642,7 +640,7 @@ export function RevenueOpsPipeline() {
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button size="sm" className="h-7 px-2 shrink-0 bg-[#0084FF]/15 hover:bg-[#0084FF]/25 text-[#0084FF] text-[10px] gap-1">
-                            <Facebook className="h-3 w-3" />
+                            <MessageSquare className="h-3 w-3" />
                             FB
                           </Button>
                         </DropdownMenuTrigger>
@@ -798,7 +796,7 @@ export function RevenueOpsPipeline() {
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button size="icon" variant="outline" className="h-8 w-8 border-[#0084FF]/30 text-[#0084FF]">
-                                    <Facebook className="h-4 w-4" />
+                                    <MessageSquare className="h-4 w-4" />
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">

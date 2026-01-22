@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { DashboardHome } from "@/components/dashboard/DashboardHome";
-import { RecoveryPage } from "@/components/dashboard/RecoveryPage";
+
 import { InvoicesPage } from "@/components/dashboard/InvoicesPage";
 import { ClientsPage } from "@/components/dashboard/ClientsPage";
 import { SubscriptionsPage } from "@/components/dashboard/SubscriptionsPage";
