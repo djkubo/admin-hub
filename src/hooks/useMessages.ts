@@ -191,7 +191,7 @@ export function useSendMessage() {
       const adminKey = settings?.value;
       if (!adminKey) throw new Error("Admin API key not configured");
 
-      const functionName = channel === "whatsapp" ? "send-sms" : "send-sms";
+      const functionName = "send-sms"; // Single function handles both SMS and WhatsApp
       const payload = channel === "whatsapp" 
         ? { to: `whatsapp:${to}`, message: body, client_id: clientId }
         : { to, message: body, client_id: clientId };
