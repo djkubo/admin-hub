@@ -437,6 +437,7 @@ export type Database = {
           ghl_contact_id: string | null
           id: string
           is_delinquent: boolean | null
+          last_attribution_at: string | null
           last_lead_at: string | null
           last_sync: string | null
           lead_status: string | null
@@ -444,7 +445,9 @@ export type Database = {
           manychat_subscriber_id: string | null
           needs_review: boolean | null
           payment_status: string | null
+          paypal_customer_id: string | null
           phone: string | null
+          phone_e164: string | null
           revenue_score: number | null
           review_reason: string | null
           sms_opt_in: boolean | null
@@ -453,6 +456,7 @@ export type Database = {
           tags: string[] | null
           total_paid: number | null
           total_spend: number | null
+          tracking_data: Json | null
           trial_started_at: string | null
           utm_campaign: string | null
           utm_content: string | null
@@ -476,6 +480,7 @@ export type Database = {
           ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
+          last_attribution_at?: string | null
           last_lead_at?: string | null
           last_sync?: string | null
           lead_status?: string | null
@@ -483,7 +488,9 @@ export type Database = {
           manychat_subscriber_id?: string | null
           needs_review?: boolean | null
           payment_status?: string | null
+          paypal_customer_id?: string | null
           phone?: string | null
+          phone_e164?: string | null
           revenue_score?: number | null
           review_reason?: string | null
           sms_opt_in?: boolean | null
@@ -492,6 +499,7 @@ export type Database = {
           tags?: string[] | null
           total_paid?: number | null
           total_spend?: number | null
+          tracking_data?: Json | null
           trial_started_at?: string | null
           utm_campaign?: string | null
           utm_content?: string | null
@@ -515,6 +523,7 @@ export type Database = {
           ghl_contact_id?: string | null
           id?: string
           is_delinquent?: boolean | null
+          last_attribution_at?: string | null
           last_lead_at?: string | null
           last_sync?: string | null
           lead_status?: string | null
@@ -522,7 +531,9 @@ export type Database = {
           manychat_subscriber_id?: string | null
           needs_review?: boolean | null
           payment_status?: string | null
+          paypal_customer_id?: string | null
           phone?: string | null
+          phone_e164?: string | null
           revenue_score?: number | null
           review_reason?: string | null
           sms_opt_in?: boolean | null
@@ -531,6 +542,7 @@ export type Database = {
           tags?: string[] | null
           total_paid?: number | null
           total_spend?: number | null
+          tracking_data?: Json | null
           trial_started_at?: string | null
           utm_campaign?: string | null
           utm_content?: string | null
@@ -2023,6 +2035,22 @@ export type Database = {
       normalize_phone_e164: { Args: { phone: string }; Returns: string }
       promote_metrics_staging: { Args: never; Returns: boolean }
       rebuild_metrics_staging: { Args: never; Returns: Json }
+      unify_identity: {
+        Args: {
+          p_email?: string
+          p_full_name?: string
+          p_ghl_contact_id?: string
+          p_manychat_subscriber_id?: string
+          p_opt_in?: Json
+          p_paypal_customer_id?: string
+          p_phone?: string
+          p_source: string
+          p_stripe_customer_id?: string
+          p_tags?: string[]
+          p_tracking_data?: Json
+        }
+        Returns: Json
+      }
     }
     Enums: {
       app_role: "admin" | "user"

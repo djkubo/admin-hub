@@ -84,3 +84,9 @@ verify_jwt = false
 
 [functions.twilio-templates]
 verify_jwt = false
+
+# ============================================
+# CROSS-PLATFORM IDENTITY UNIFICATION
+# ============================================
+[functions.unify-identity]
+verify_jwt = false
