@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { DashboardHome } from "@/components/dashboard/DashboardHome";
 import { RecoveryPage } from "@/components/dashboard/RecoveryPage";
@@ -20,6 +20,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { BarChart3, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+
 const Index = () => {
   const [activeMenuItem, setActiveMenuItem] = useState("dashboard");
   const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -28,6 +30,42 @@ const Index = () => {
   const { transactions } = useTransactions();
   const { signOut, user } = useAuth();
   const { toast } = useToast();
+
+  // Fetch last sync on mount and subscribe to changes
+  useEffect(() => {
+    const fetchLastSync = async () => {
+      const { data } = await supabase
+        .from('sync_runs')
+        .select('completed_at')
+        .eq('status', 'completed')
+        .order('completed_at', { ascending: false })
+        .limit(1)
+        .single();
+      
+      if (data?.completed_at) {
+        setLastSync(new Date(data.completed_at));
+      }
+    };
+
+    fetchLastSync();
+
+    // Subscribe to sync_runs changes for real-time updates
+    const channel = supabase
+      .channel('sync-status')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'sync_runs' },
+        (payload) => {
+          if (payload.eventType === 'UPDATE' && (payload.new as any).status === 'completed') {
+            setLastSync(new Date((payload.new as any).completed_at));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const handleLogout = async () => {
     const { error } = await signOut();

@@ -123,6 +123,7 @@ export function useSubscriptions() {
       if (error) throw error;
       return data as Subscription[];
     },
+    refetchInterval: 60000, // Refetch every minute for near-realtime updates
   });
 
   // Calculate revenue by plan with Pareto analysis
