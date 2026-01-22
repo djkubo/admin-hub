@@ -30,7 +30,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { formatDistanceToNow, addDays, addHours, subDays, subMonths, subYears } from 'date-fns';
+import { formatDistanceToNow, addHours, subDays, subMonths, subYears } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
@@ -89,7 +89,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const [filter, setFilter] = useState<TimeFilter>('today');
   const { kpis, isLoading, refetch } = useDailyKPIs(filter);
   const { metrics } = useMetrics();
-  const { invoices, invoicesNext72h } = useInvoices();
+  const { invoicesNext72h } = useInvoices();
   const { subscriptions } = useSubscriptions();
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<string>('');

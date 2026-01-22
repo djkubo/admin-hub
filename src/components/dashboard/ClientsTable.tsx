@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
-import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Copy, Check, Send, ChevronLeft, ChevronRight, Smartphone } from "lucide-react";
+import { MoreHorizontal, Mail, Phone, MessageCircle, Activity, Link, Crown, AlertTriangle, Check, Send, ChevronLeft, ChevronRight, Smartphone } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,7 +23,7 @@ import {
 import { openWhatsApp, openNativeSms, getGreetingMessage, getRecoveryMessage } from "./RecoveryTable";
 import { supportsNativeSms } from "@/lib/nativeSms";
 import { ClientEventsTimeline } from "./ClientEventsTimeline";
-import { supabase } from "@/integrations/supabase/client";
+
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import { useToast } from "@/hooks/use-toast";
 import type { Client } from "@/hooks/useClients";

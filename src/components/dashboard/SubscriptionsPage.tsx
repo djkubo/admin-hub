@@ -3,7 +3,7 @@ import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, Ref
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useSubscriptions, Subscription } from '@/hooks/useSubscriptions';
-import { formatDistanceToNow, addDays, format, isAfter, isBefore } from 'date-fns';
+import { formatDistanceToNow, addDays, isAfter, isBefore } from 'date-fns';
 import { es } from 'date-fns/locale';
 
 export function SubscriptionsPage() {
