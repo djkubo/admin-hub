@@ -137,30 +137,56 @@ serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify JWT authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
+    // SECURITY: Dual authentication - JWT or x-admin-key
+    const authHeader = req.headers.get("Authorization");
+    const adminKeyHeader = req.headers.get("x-admin-key");
+    
+    let isAuthenticated = false;
+    let authMethod = "";
+
+    // Method 1: Check x-admin-key header
+    if (adminKeyHeader) {
+      const serviceClient = createClient(supabaseUrl, serviceRoleKey);
+      const { data: settings } = await serviceClient
+        .from("system_settings")
+        .select("value")
+        .eq("key", "admin_api_key")
+        .single();
+
+      if (settings?.value && adminKeyHeader === settings.value) {
+        isAuthenticated = true;
+        authMethod = "admin-key";
+        console.log("✅ Authenticated via admin key");
+      }
+    }
+
+    // Method 2: Check JWT Bearer token
+    if (!isAuthenticated && authHeader?.startsWith("Bearer ")) {
+      const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } }
+      });
+      
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (!userError && user) {
+        isAuthenticated = true;
+        authMethod = "jwt";
+        console.log("✅ User authenticated:", user.email);
+      }
+    }
+
+    if (!isAuthenticated) {
+      console.log("❌ Authentication failed");
       return new Response(
         JSON.stringify({ error: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("✅ User authenticated:", user.email);
+    console.log(`✅ Auth method: ${authMethod}`);
 
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeSecretKey) {
@@ -169,10 +195,7 @@ serve(async (req) => {
 
     const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
 
-    const serviceClient = createClient(
-      supabaseUrl,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+    const serviceClient = createClient(supabaseUrl, serviceRoleKey);
 
     // Check if there's already a running sync
     const { data: runningSyncs } = await serviceClient
