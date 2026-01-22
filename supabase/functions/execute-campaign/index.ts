@@ -130,7 +130,7 @@ serve(async (req) => {
 
     if (optOut && optOut.length > 0) {
       console.log('Client opted out:', client.id);
-      await supabase.from('campaign_executions').insert({
+      const { error: execError } = await supabase.from('campaign_executions').insert({
         rule_id: rule.id,
         client_id: client.id,
         trigger_event: payload.trigger_event,
@@ -138,6 +138,7 @@ serve(async (req) => {
         revenue_at_risk: payload.revenue_at_risk || 0,
         metadata: payload.metadata,
       });
+      if (execError) console.error('Error logging opted_out execution:', execError);
       return new Response(
         JSON.stringify({ message: 'Client opted out' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -342,9 +343,10 @@ serve(async (req) => {
       metadata: payload.metadata,
     };
 
-    await supabase.from('campaign_executions').insert(execution);
+    const { error: execInsertError } = await supabase.from('campaign_executions').insert(execution);
+    if (execInsertError) console.error('Error inserting campaign execution:', execInsertError);
 
-    await supabase.from('client_events').insert({
+    const { error: eventInsertError } = await supabase.from('client_events').insert({
       client_id: client.id,
       event_type: successChannel ? 'email_sent' : 'custom',
       metadata: {
@@ -354,12 +356,14 @@ serve(async (req) => {
         campaign_rule: rule.name,
       }
     });
+    if (eventInsertError) console.error('Error inserting client event:', eventInsertError);
 
     const newScore = (client.revenue_score || 0) + (payload.revenue_at_risk ? 1 : 0);
-    await supabase
+    const { error: scoreUpdateError } = await supabase
       .from('clients')
       .update({ revenue_score: newScore })
       .eq('id', client.id);
+    if (scoreUpdateError) console.error('Error updating revenue score:', scoreUpdateError);
 
     return new Response(
       JSON.stringify({ 
