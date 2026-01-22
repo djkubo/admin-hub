@@ -65,7 +65,12 @@ export function useInvoices() {
         .order("next_payment_attempt", { ascending: true, nullsFirst: false });
 
       if (error) throw error;
-      return data as Invoice[];
+      
+      // Map data with proper type casting for lines field
+      return (data || []).map(row => ({
+        ...row,
+        lines: row.lines as unknown as Invoice['lines']
+      })) as Invoice[];
     },
     refetchInterval: 60000, // Refetch every minute for near-realtime updates
   });
