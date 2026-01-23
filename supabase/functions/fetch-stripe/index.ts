@@ -11,8 +11,6 @@ function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
   const adminKey = Deno.env.get("ADMIN_API_KEY");
   const providedKey = req.headers.get("x-admin-key");
   
-  console.log(`🔐 Admin key check - Configured: ${adminKey ? 'YES' : 'NO'}, Provided: ${providedKey ? 'YES' : 'NO'}`);
-  
   if (!adminKey) {
     return { valid: false, error: "ADMIN_API_KEY not configured on server" };
   }
@@ -72,15 +70,10 @@ interface StripeCharge {
     card?: {
       brand?: string;
       last4?: string;
-      exp_month?: number;
-      exp_year?: number;
     };
   };
   outcome?: {
-    network_status?: string;
     reason?: string;
-    seller_message?: string;
-    type?: string;
   };
   failure_code?: string;
   failure_message?: string;
@@ -94,10 +87,7 @@ interface StripeInvoice {
     data: Array<{
       description?: string;
       price?: {
-        product?: string | {
-          id: string;
-          name: string;
-        };
+        product?: string | { id: string; name: string };
       };
     }>;
   };
@@ -137,11 +127,7 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   try {
     const response = await fetch(
       `https://api.stripe.com/v1/customers/${customerId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${stripeSecretKey}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${stripeSecretKey}` } }
     );
 
     if (!response.ok) {
@@ -159,28 +145,76 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   }
 }
 
-// INCREASED: Process more pages per invocation (Deno limit ~5 mins, but we can do more)
-const MAX_PAGES_PER_INVOCATION = 15;
+// TUNED: Process more pages per invocation but stay safe under Deno's ~5 min limit
+const MAX_PAGES_PER_INVOCATION = 20;
+const CONTINUATION_DELAY_MS = 500;
 
-// Background worker that continues processing
+// Helper: delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Background worker that continues processing with retry logic
 async function continueSync(
   supabaseUrl: string,
   adminKey: string,
-  continuationBody: Record<string, unknown>
+  continuationBody: Record<string, unknown>,
+  retryCount = 0
 ) {
+  const maxRetries = 3;
+  
   try {
-    console.log(`🔄 Background: Starting continuation...`);
+    await delay(CONTINUATION_DELAY_MS);
+    
+    console.log(`🔄 Background: Starting continuation (attempt ${retryCount + 1})...`);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 280000);
+    
     const response = await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-admin-key': adminKey,
       },
-      body: JSON.stringify(continuationBody)
+      body: JSON.stringify(continuationBody),
+      signal: controller.signal
     });
+    
+    clearTimeout(timeoutId);
     console.log(`🔄 Background: Continuation response status: ${response.status}`);
+    
+    if (!response.ok && retryCount < maxRetries) {
+      console.log(`🔄 Background: Retrying after error...`);
+      await delay(2000 * (retryCount + 1));
+      return continueSync(supabaseUrl, adminKey, continuationBody, retryCount + 1);
+    }
   } catch (err) {
     console.error('🔄 Background: Continuation error:', err);
+    
+    if (retryCount < maxRetries) {
+      console.log(`🔄 Background: Retrying after exception...`);
+      await delay(2000 * (retryCount + 1));
+      return continueSync(supabaseUrl, adminKey, continuationBody, retryCount + 1);
+    }
+    
+    // Mark sync as failed after all retries exhausted
+    try {
+      const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      const cont = continuationBody._continuation as Record<string, unknown> | undefined;
+      const syncRunId = cont?.syncRunId as string | undefined;
+      
+      if (syncRunId) {
+        await (supabase.from('sync_runs') as any)
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: `Auto-continuation failed after ${maxRetries} retries: ${err}`
+          })
+          .eq('id', syncRunId);
+      }
+    } catch (updateErr) {
+      console.error('🔄 Background: Failed to update sync status:', updateErr);
+    }
   }
 }
 
@@ -188,6 +222,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  let syncRunId: string | null = null;
+  let supabase: ReturnType<typeof createClient> | null = null;
 
   try {
     // SECURITY: Verify x-admin-key
@@ -200,8 +237,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log("✅ Admin key verified");
-
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     const adminKey = Deno.env.get("ADMIN_API_KEY");
     if (!stripeSecretKey) {
@@ -213,8 +248,9 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Parse request body
     let fetchAll = false;
     let startDate: number | null = null;
     let endDate: number | null = null;
@@ -236,28 +272,26 @@ Deno.serve(async (req) => {
         endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
       }
       if (typeof body.maxPages === 'number' && body.maxPages > 0) {
-        requestedMaxPages = Math.min(body.maxPages, 2000); // Allow more pages for 3yr sync
+        requestedMaxPages = Math.min(body.maxPages, 5000);
       }
-      // Continuation params from auto-continue
       if (body._continuation) {
         continuationCursor = body._continuation.cursor || null;
         continuationSyncRunId = body._continuation.syncRunId || null;
         continuationPageCount = body._continuation.pageCount || 0;
         continuationTotalSynced = body._continuation.totalSynced || 0;
         continuationTotalClients = body._continuation.totalClients || 0;
-        console.log(`🔄 CONTINUATION from page ${continuationPageCount}, cursor: ${continuationCursor?.substring(0, 20)}...`);
+        console.log(`🔄 CONTINUATION from page ${continuationPageCount}, synced: ${continuationTotalSynced}`);
       }
     } catch {
-      // No body
+      // No body or parse error
     }
 
     console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, maxPages: ${requestedMaxPages}, continuation: ${!!continuationCursor}`);
 
     // Create or reuse sync_run record
-    let syncRunId = continuationSyncRunId;
+    syncRunId = continuationSyncRunId;
     if (!syncRunId) {
-      const { data: syncRun } = await supabase
-        .from('sync_runs')
+      const { data: syncRun, error: syncError } = await (supabase.from('sync_runs') as any)
         .insert({
           source: 'stripe',
           status: 'running',
@@ -265,6 +299,14 @@ Deno.serve(async (req) => {
         })
         .select('id')
         .single();
+      
+      if (syncError) {
+        console.error("Failed to create sync_run:", syncError);
+        return new Response(
+          JSON.stringify({ error: "Failed to create sync record", details: syncError.message }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       syncRunId = syncRun?.id;
     }
 
@@ -300,31 +342,25 @@ Deno.serve(async (req) => {
       }
 
       const response = await fetch(url.toString(), {
-        headers: {
-          Authorization: `Bearer ${stripeSecretKey}`,
-        },
+        headers: { Authorization: `Bearer ${stripeSecretKey}` },
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("Stripe API error:", errorText);
+        console.error("Stripe API error:", response.status, errorText);
         
-        // Mark sync as failed
-        if (syncRunId) {
-          await supabase
-            .from('sync_runs')
-            .update({
-              status: 'failed',
-              completed_at: new Date().toISOString(),
-              error_message: `Stripe API error: ${response.status}`,
-              total_fetched: totalSynced + skippedNoEmail,
-              total_inserted: totalSynced
-            })
-            .eq('id', syncRunId);
-        }
+        await (supabase.from('sync_runs') as any)
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: `Stripe API error: ${response.status} - ${errorText.substring(0, 200)}`,
+            total_fetched: totalSynced + skippedNoEmail,
+            total_inserted: totalSynced
+          })
+          .eq('id', syncRunId);
         
         return new Response(
-          JSON.stringify({ error: "Stripe API error", details: errorText }),
+          JSON.stringify({ error: "Stripe API error", status: response.status }),
           { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -362,7 +398,6 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // Extract card info from latest_charge
         let cardLast4: string | null = null;
         let cardBrand: string | null = null;
         let chargeFailureCode: string | null = null;
@@ -378,7 +413,6 @@ Deno.serve(async (req) => {
           chargeOutcomeReason = charge.outcome?.reason || null;
         }
 
-        // Extract product/invoice info
         let productName: string | null = null;
         let invoiceNumber: string | null = null;
         let subscriptionId: string | null = null;
@@ -403,7 +437,6 @@ Deno.serve(async (req) => {
           productName = pi.description;
         }
 
-        // Determine status and failure reason
         let mappedStatus: string;
         let failureCode = pi.last_payment_error?.code || pi.last_payment_error?.decline_code || chargeFailureCode || null;
         let failureMessage = pi.last_payment_error?.message || chargeFailureMessage || null;
@@ -417,13 +450,9 @@ Deno.serve(async (req) => {
           case "requires_payment_method":
             mappedStatus = "requires_payment_method";
             failedCount++;
-            if (failureCode && DECLINE_REASONS_ES[failureCode]) {
-              declineReasonEs = DECLINE_REASONS_ES[failureCode];
-            } else if (chargeOutcomeReason && DECLINE_REASONS_ES[chargeOutcomeReason]) {
-              declineReasonEs = DECLINE_REASONS_ES[chargeOutcomeReason];
-            } else {
-              declineReasonEs = "Pago rechazado";
-            }
+            declineReasonEs = (failureCode && DECLINE_REASONS_ES[failureCode]) 
+              || (chargeOutcomeReason && DECLINE_REASONS_ES[chargeOutcomeReason])
+              || "Pago rechazado";
             break;
           case "requires_action":
           case "requires_confirmation":
@@ -438,7 +467,6 @@ Deno.serve(async (req) => {
             failedCount++;
         }
 
-        // Build enriched metadata
         const metadata: Record<string, unknown> = {
           ...(pi.metadata || {}),
           card_last4: cardLast4,
@@ -483,8 +511,7 @@ Deno.serve(async (req) => {
 
       // Save transactions
       if (transactions.length > 0) {
-        const { error: txError, data: txData } = await supabase
-          .from("transactions")
+        const { error: txError, data: txData } = await (supabase.from("transactions") as any)
           .upsert(transactions, { onConflict: "stripe_payment_intent_id", ignoreDuplicates: false })
           .select("id");
 
@@ -498,8 +525,7 @@ Deno.serve(async (req) => {
       // Save clients
       const clientsToSave = Array.from(clientsMap.values());
       if (clientsToSave.length > 0) {
-        const { error: clientError, data: clientData } = await supabase
-          .from("clients")
+        const { error: clientError, data: clientData } = await (supabase.from("clients") as any)
           .upsert(clientsToSave, { onConflict: "email", ignoreDuplicates: false })
           .select("id");
 
@@ -513,25 +539,22 @@ Deno.serve(async (req) => {
       pageCount++;
       pagesThisInvocation++;
       
-      console.log(`📄 Page ${pageCount}: saved ${transactions.length} tx (total: ${totalSynced})`);
+      console.log(`📄 Page ${pageCount}: ${transactions.length} tx (total: ${totalSynced})`);
 
       // Update checkpoint every page
-      if (syncRunId) {
-        await supabase
-          .from('sync_runs')
-          .update({
-            total_fetched: totalSynced + skippedNoEmail,
-            total_inserted: totalSynced,
-            checkpoint: { last_cursor: cursor, page: pageCount }
-          })
-          .eq('id', syncRunId);
-      }
+      await (supabase.from('sync_runs') as any)
+        .update({
+          total_fetched: totalSynced + skippedNoEmail,
+          total_inserted: totalSynced,
+          checkpoint: { last_cursor: cursor, page: pageCount }
+        })
+        .eq('id', syncRunId);
     }
 
     // Check if we need to auto-continue
     const needsContinuation = hasMore && pageCount < maxPages;
 
-    if (needsContinuation && syncRunId && adminKey) {
+    if (needsContinuation && adminKey) {
       console.log(`🔄 Auto-continuing: ${pageCount}/${maxPages} pages done, scheduling next batch...`);
       
       const continuationBody = {
@@ -551,26 +574,16 @@ Deno.serve(async (req) => {
       // Use EdgeRuntime.waitUntil for reliable background continuation
       // @ts-ignore - EdgeRuntime is available in Deno Deploy
       if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
-        console.log(`🔄 Using EdgeRuntime.waitUntil for continuation`);
         // @ts-ignore
         EdgeRuntime.waitUntil(continueSync(supabaseUrl, adminKey, continuationBody));
       } else {
-        // Fallback: direct fetch (less reliable but works)
-        console.log(`🔄 Using direct fetch for continuation (fallback)`);
-        fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-key': adminKey,
-          },
-          body: JSON.stringify(continuationBody)
-        }).catch(err => console.error('Continuation error:', err));
+        continueSync(supabaseUrl, adminKey, continuationBody).catch(console.error);
       }
 
       return new Response(
         JSON.stringify({
           status: 'continuing',
-          message: `Processed ${pagesThisInvocation} pages (${totalSynced} total). Continuing in background...`,
+          message: `Processed ${pagesThisInvocation} pages. Continuing in background...`,
           syncRunId,
           pagesCompleted: pageCount,
           totalSynced,
@@ -580,19 +593,16 @@ Deno.serve(async (req) => {
     }
 
     // Mark completed
-    if (syncRunId) {
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          total_fetched: totalSynced + skippedNoEmail,
-          total_inserted: totalSynced,
-          total_skipped: skippedNoEmail,
-          metadata: { fetchAll, startDate, endDate, paidCount, failedCount, pages: pageCount }
-        })
-        .eq('id', syncRunId);
-    }
+    await (supabase.from('sync_runs') as any)
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        total_fetched: totalSynced + skippedNoEmail,
+        total_inserted: totalSynced,
+        total_skipped: skippedNoEmail,
+        metadata: { fetchAll, startDate, endDate, paidCount, failedCount, pages: pageCount }
+      })
+      .eq('id', syncRunId);
 
     console.log(`✅ COMPLETE: ${totalSynced} transactions, ${totalClients} clients, ${pageCount} pages`);
 
@@ -610,7 +620,22 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    console.error("Error:", error);
+    console.error("Fatal error:", error);
+    
+    if (syncRunId && supabase) {
+      try {
+        await (supabase.from('sync_runs') as any)
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: `Fatal error: ${error instanceof Error ? error.message : String(error)}`
+          })
+          .eq('id', syncRunId);
+      } catch (updateErr) {
+        console.error("Failed to update sync status:", updateErr);
+      }
+    }
+    
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
