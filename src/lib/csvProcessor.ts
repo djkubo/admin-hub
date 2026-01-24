@@ -188,6 +188,54 @@ async function processBatches<T>(
   return { totalSuccess, allErrors };
 }
 
+// ============= CATCH-ALL: Capture unmapped columns into raw_data =============
+
+/**
+ * Known columns that are already mapped - anything else goes to raw_data.
+ * This ensures we NEVER lose information from CSV imports.
+ */
+const KNOWN_PAYPAL_COLUMNS = new Set([
+  'correo electrónico del remitente', 'from email address', 'correo electrónico del receptor',
+  'to email address', 'email', 'bruto', 'gross', 'neto', 'net', 'amount',
+  'estado', 'status', 'fecha y hora', 'date time', 'fecha', 'date',
+  'id. de transacción', 'transaction id', 'id de transacción'
+].map(c => c.toLowerCase()));
+
+const KNOWN_STRIPE_COLUMNS = new Set([
+  'customer email', 'customer_email', 'email', 'id', 'charge id', 
+  'paymentintent id', 'payment_intent', 'payment intent', 'amount',
+  'status', 'created date (utc)', 'created', 'date'
+].map(c => c.toLowerCase()));
+
+const KNOWN_GHL_COLUMNS = new Set([
+  'id', 'contact id', 'contactid', 'email', 'email address', 'emailaddress',
+  'phone', 'mobile', 'phonenumber', 'phone number', 'firstname', 'first name',
+  'first_name', 'lastname', 'last name', 'last_name', 'name', 'full name',
+  'fullname', 'tags', 'tag', 'source', 'lead source', 'leadsource',
+  'datecreated', 'date created', 'createdat', 'created at', 'dndsettings', 'dnd'
+].map(c => c.toLowerCase()));
+
+/**
+ * Extracts all unmapped columns into a raw_data object.
+ * This is the CATCH-ALL to never lose data from CSV imports.
+ */
+function extractRawData(
+  row: Record<string, string>, 
+  knownColumns: Set<string>
+): Record<string, string> {
+  const rawData: Record<string, string> = {};
+  
+  for (const [key, value] of Object.entries(row)) {
+    const keyLower = key.toLowerCase().trim();
+    // If column is not in known list and has a value, capture it
+    if (!knownColumns.has(keyLower) && value && value.trim()) {
+      rawData[key] = value.trim();
+    }
+  }
+  
+  return rawData;
+}
+
 // ============= TRIAL KEYWORDS =============
 const TRIAL_KEYWORDS = ['trial', 'prueba', 'gratis', 'demo', 'free'];
 const PAID_KEYWORDS = ['active', 'activo', 'paid', 'pagado', 'premium', 'pro', 'básico', 'basico'];
@@ -217,6 +265,7 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     transactionDate: Date;
     transactionId: string;
     currency: string;
+    rawData: Record<string, string>; // CATCH-ALL for unmapped columns
   }
 
   const parsedRowsMap = new Map<string, ParsedPayPalRow>();
@@ -270,12 +319,24 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    parsedRowsMap.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, transactionDate, transactionId: trimmedTxId, currency });
+    // CATCH-ALL: Capture all unmapped columns
+    const rawData = extractRawData(row, KNOWN_PAYPAL_COLUMNS);
+
+    parsedRowsMap.set(trimmedTxId, { 
+      email: trimmedEmail, 
+      amount: amountCents, 
+      status, 
+      transactionDate, 
+      transactionId: trimmedTxId, 
+      currency,
+      rawData // Store extra columns
+    });
     paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, date: transactionDate });
   }
 
   const parsedRows = Array.from(parsedRowsMap.values());
   console.log(`[PayPal CSV] Parsed ${parsedRows.length} valid rows`);
+  console.log(`[PayPal CSV] Sample raw_data keys: ${parsedRows[0]?.rawData ? Object.keys(parsedRows[0].rawData).slice(0, 5).join(', ') : 'none'}`);
 
   // Get unique emails - load in batches to avoid Supabase 1000 param limit
   const uniqueEmails = [...new Set(parsedRows.map(r => r.email))];
@@ -386,7 +447,9 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     stripe_created_at: row.transactionDate.toISOString(),
     currency: row.currency.toLowerCase(), // Normalize to lowercase
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
-    failure_message: row.status === 'failed' ? 'Pago rechazado por PayPal' : null
+    failure_message: row.status === 'failed' ? 'Pago rechazado por PayPal' : null,
+    // CATCH-ALL: Store extra columns in metadata
+    metadata: Object.keys(row.rawData).length > 0 ? { csv_raw: row.rawData } : null
   }));
 
   if (transactionsToUpsert.length > 0) {
