@@ -1,4 +1,5 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// deno-lint-ignore-file no-explicit-any
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,6 +12,52 @@ interface SyncConfig {
   startDate?: string;
   endDate?: string;
   includeContacts?: boolean;
+}
+
+// Response types for sub-function invocations
+interface StripeSyncResponse {
+  success: boolean;
+  error?: string;
+  synced_transactions?: number;
+  syncRunId?: string;
+  nextCursor?: string;
+  hasMore?: boolean;
+}
+
+interface GenericSyncResponse {
+  success: boolean;
+  error?: string;
+  synced?: number;
+  upserted?: number;
+  unified?: number;
+}
+
+interface PayPalSyncResponse {
+  success: boolean;
+  error?: string;
+  synced_transactions?: number;
+  syncRunId?: string;
+  nextPage?: number;
+  hasMore?: boolean;
+}
+
+// SECURITY: JWT-based admin verification using getUser()
+async function verifyAdmin(
+  supabase: any
+): Promise<{ valid: boolean; error?: string; email?: string }> {
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true, email: user.email };
 }
 
 Deno.serve(async (req: Request) => {
@@ -33,32 +80,32 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Verify JWT and admin status
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    // Client for auth verification - uses anon key with user's JWT
+    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } }
     });
     
-    const token = authHeader.replace('Bearer ', '');
-    const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+    const authCheck = await verifyAdmin(authClient);
     
-    if (claimsError || !claims?.claims?.sub) {
+    if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ success: false, error: "Invalid or expired token" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-    
-    if (adminError || !isAdmin) {
-      return new Response(
-        JSON.stringify({ success: false, error: "User is not an admin" }),
+        JSON.stringify({ success: false, error: authCheck.error }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const userEmail = (claims.claims as Record<string, unknown>).email as string || "";
+    const userEmail = authCheck.email || "";
     console.log("✅ Admin authenticated:", userEmail);
+
+    // ============ SEPARATE CLIENTS ============
+    // dbClient: For direct database operations (uses service role)
+    const dbClient = createClient(supabaseUrl, serviceRoleKey);
+    
+    // invokeClient: For invoking sub-functions (uses anon key + user's JWT)
+    // This ensures sub-functions receive the original JWT for their own auth checks
+    const invokeClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
 
     // ============ PARSE CONFIG ============
     let config: SyncConfig = { mode: 'today' };
@@ -98,10 +145,8 @@ Deno.serve(async (req: Request) => {
     if (config.startDate) startDate = new Date(config.startDate);
     if (config.endDate) endDate = new Date(config.endDate);
 
-    const serviceClient = createClient(supabaseUrl, serviceRoleKey);
-
     // ============ CREATE MASTER SYNC RUN ============
-    const { data: syncRun, error: syncRunError } = await serviceClient
+    const { data: syncRun, error: syncRunError } = await dbClient
       .from("sync_runs")
       .insert({
         source: "command-center",
@@ -131,7 +176,7 @@ Deno.serve(async (req: Request) => {
       const steps = (metadata.steps as string[]) || [];
       steps.push(`${step}: ${details}`);
       
-      await serviceClient
+      await dbClient
         .from("sync_runs")
         .update({
           metadata: { ...metadata, steps, currentStep: step, lastUpdate: new Date().toISOString() },
@@ -158,32 +203,33 @@ Deno.serve(async (req: Request) => {
       let stripeSyncId: string | null = null;
       
       while (hasMore) {
-        const response = await serviceClient.functions.invoke('fetch-stripe', {
+        const response = await invokeClient.functions.invoke('fetch-stripe', {
           body: {
             fetchAll: true,
             startDate: startDate.toISOString(),
             endDate: endDate.toISOString(),
             cursor,
             syncRunId: stripeSyncId,
-          },
-          headers: { Authorization: authHeader }
+          }
         });
         
-        const stripeData = response.data as Record<string, unknown> | null;
+        const stripeResp = response.data as StripeSyncResponse | null;
         if (response.error) throw response.error;
-        if (stripeData?.error === 'sync_already_running') {
+        if (stripeResp?.error === 'sync_already_running') {
           results["stripe"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalStripe += (stripeData?.synced_transactions as number) || 0;
-        stripeSyncId = (stripeData?.syncRunId as string) || stripeSyncId;
-        cursor = (stripeData?.nextCursor as string) || null;
-        hasMore = stripeData?.hasMore === true && cursor !== null;
+        totalStripe += stripeResp?.synced_transactions || 0;
+        stripeSyncId = stripeResp?.syncRunId || stripeSyncId;
+        cursor = stripeResp?.nextCursor || null;
+        hasMore = stripeResp?.hasMore === true && cursor !== null;
         
         await updateProgress("stripe-transactions", `${totalStripe} transacciones`);
       }
-      results["stripe"] = { success: true, count: totalStripe };
+      if (!results["stripe"]) {
+        results["stripe"] = { success: true, count: totalStripe };
+      }
     } catch (e) {
       console.error("Stripe sync error:", e);
       results["stripe"] = { success: false, count: 0, error: String(e) };
@@ -192,9 +238,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE SUBSCRIPTIONS ============
     try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
-      const { data: subsData, error: subsError } = await serviceClient.functions.invoke('fetch-subscriptions', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: subsData, error: subsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-subscriptions');
       if (subsError) throw subsError;
       results["subscriptions"] = { success: true, count: subsData?.synced || subsData?.upserted || 0 };
       await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
@@ -206,9 +250,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE INVOICES ============
     try {
       await updateProgress("stripe-invoices", "Iniciando...");
-      const { data: invData, error: invError } = await serviceClient.functions.invoke('fetch-invoices', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: invData, error: invError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-invoices');
       if (invError) throw invError;
       results["invoices"] = { success: true, count: invData?.synced || 0 };
       await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
@@ -220,9 +262,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE CUSTOMERS ============
     try {
       await updateProgress("stripe-customers", "Iniciando...");
-      const { data: custData, error: custError } = await serviceClient.functions.invoke('fetch-customers', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: custData, error: custError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-customers');
       if (custError) throw custError;
       results["customers"] = { success: true, count: custData?.synced || 0 };
       await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
@@ -234,9 +274,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PRODUCTS ============
     try {
       await updateProgress("stripe-products", "Iniciando...");
-      const { data: prodData, error: prodError } = await serviceClient.functions.invoke('fetch-products', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: prodData, error: prodError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-products');
       if (prodError) throw prodError;
       results["products"] = { success: true, count: prodData?.synced || 0 };
       await updateProgress("stripe-products", `${results["products"].count} productos`);
@@ -248,9 +286,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE DISPUTES ============
     try {
       await updateProgress("stripe-disputes", "Iniciando...");
-      const { data: dispData, error: dispError } = await serviceClient.functions.invoke('fetch-disputes', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: dispData, error: dispError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-disputes');
       if (dispError) throw dispError;
       results["disputes"] = { success: true, count: dispData?.synced || 0 };
       await updateProgress("stripe-disputes", `${results["disputes"].count} disputas`);
@@ -262,9 +298,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PAYOUTS ============
     try {
       await updateProgress("stripe-payouts", "Iniciando...");
-      const { data: payoutsData, error: payoutsError } = await serviceClient.functions.invoke('fetch-payouts', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: payoutsData, error: payoutsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-payouts');
       if (payoutsError) throw payoutsError;
       results["payouts"] = { success: true, count: payoutsData?.synced || 0 };
       await updateProgress("stripe-payouts", `${results["payouts"].count} payouts`);
@@ -276,9 +310,7 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE BALANCE ============
     try {
       await updateProgress("stripe-balance", "Iniciando...");
-      const { data: balData, error: balError } = await serviceClient.functions.invoke('fetch-balance', {
-        headers: { Authorization: authHeader }
-      });
+      const { error: balError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-balance');
       if (balError) throw balError;
       results["balance"] = { success: true, count: 1 };
       await updateProgress("stripe-balance", "Balance actualizado");
@@ -296,28 +328,27 @@ Deno.serve(async (req: Request) => {
       let paypalSyncId: string | null = null;
       
       while (hasMore && page <= 100) {
-        const ppResponse = await serviceClient.functions.invoke('fetch-paypal', {
+        const ppResponse = await invokeClient.functions.invoke('fetch-paypal', {
           body: {
             fetchAll: true,
             startDate: formatPayPalDate(startDate),
             endDate: formatPayPalDate(endDate),
             page,
             syncRunId: paypalSyncId,
-          },
-          headers: { Authorization: authHeader }
+          }
         });
         
-        const ppData = ppResponse.data as Record<string, unknown> | null;
+        const ppResp = ppResponse.data as PayPalSyncResponse | null;
         if (ppResponse.error) throw ppResponse.error;
-        if (ppData?.error === 'sync_already_running') {
+        if (ppResp?.error === 'sync_already_running') {
           results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalPaypal += (ppData?.synced_transactions as number) || 0;
-        paypalSyncId = (ppData?.syncRunId as string) || paypalSyncId;
-        hasMore = ppData?.hasMore === true;
-        page = (ppData?.nextPage as number) || page + 1;
+        totalPaypal += ppResp?.synced_transactions || 0;
+        paypalSyncId = ppResp?.syncRunId || paypalSyncId;
+        hasMore = ppResp?.hasMore === true;
+        page = ppResp?.nextPage || page + 1;
         
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
       }
@@ -332,9 +363,7 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL SUBSCRIPTIONS ============
     try {
       await updateProgress("paypal-subscriptions", "Iniciando...");
-      const { data: ppSubsData, error: ppSubsError } = await serviceClient.functions.invoke('fetch-paypal-subscriptions', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: ppSubsData, error: ppSubsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-subscriptions');
       if (ppSubsError) throw ppSubsError;
       results["paypal-subscriptions"] = { success: true, count: ppSubsData?.synced || 0 };
       await updateProgress("paypal-subscriptions", `${results["paypal-subscriptions"].count} suscripciones`);
@@ -346,9 +375,7 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL DISPUTES ============
     try {
       await updateProgress("paypal-disputes", "Iniciando...");
-      const { data: ppDispData, error: ppDispError } = await serviceClient.functions.invoke('fetch-paypal-disputes', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: ppDispData, error: ppDispError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-disputes');
       if (ppDispError) throw ppDispError;
       results["paypal-disputes"] = { success: true, count: ppDispData?.synced || 0 };
       await updateProgress("paypal-disputes", `${results["paypal-disputes"].count} disputas`);
@@ -360,9 +387,7 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL PRODUCTS ============
     try {
       await updateProgress("paypal-products", "Iniciando...");
-      const { data: ppProdData, error: ppProdError } = await serviceClient.functions.invoke('fetch-paypal-products', {
-        headers: { Authorization: authHeader }
-      });
+      const { data: ppProdData, error: ppProdError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-products');
       if (ppProdError) throw ppProdError;
       results["paypal-products"] = { success: true, count: ppProdData?.synced || 0 };
       await updateProgress("paypal-products", `${results["paypal-products"].count} productos`);
@@ -376,9 +401,7 @@ Deno.serve(async (req: Request) => {
       // GHL
       try {
         await updateProgress("ghl-contacts", "Iniciando...");
-        const { data: ghlData, error: ghlError } = await serviceClient.functions.invoke('sync-ghl', {
-          headers: { Authorization: authHeader }
-        });
+        const { data: ghlData, error: ghlError } = await invokeClient.functions.invoke<GenericSyncResponse>('sync-ghl');
         if (ghlError) throw ghlError;
         results["ghl"] = { success: true, count: ghlData?.synced || 0 };
         await updateProgress("ghl-contacts", `${results["ghl"].count} contactos`);
@@ -390,9 +413,7 @@ Deno.serve(async (req: Request) => {
       // ManyChat
       try {
         await updateProgress("manychat-contacts", "Iniciando...");
-        const { data: mcData, error: mcError } = await serviceClient.functions.invoke('sync-manychat', {
-          headers: { Authorization: authHeader }
-        });
+        const { data: mcData, error: mcError } = await invokeClient.functions.invoke<GenericSyncResponse>('sync-manychat');
         if (mcError) throw mcError;
         results["manychat"] = { success: true, count: mcData?.synced || 0 };
         await updateProgress("manychat-contacts", `${results["manychat"].count} contactos`);
@@ -404,9 +425,7 @@ Deno.serve(async (req: Request) => {
       // Unify identities
       try {
         await updateProgress("unify-identity", "Iniciando...");
-        const { data: unifyData, error: unifyError } = await serviceClient.functions.invoke('unify-identity', {
-          headers: { Authorization: authHeader }
-        });
+        const { data: unifyData, error: unifyError } = await invokeClient.functions.invoke<GenericSyncResponse>('unify-identity');
         if (unifyError) throw unifyError;
         results["unify"] = { success: true, count: unifyData?.unified || 0 };
         await updateProgress("unify-identity", `${results["unify"].count} identidades unificadas`);
@@ -420,7 +439,7 @@ Deno.serve(async (req: Request) => {
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
     
-    await serviceClient
+    await dbClient
       .from("sync_runs")
       .update({
         status: failedSteps.length > 0 ? "completed_with_errors" : "completed",
@@ -443,17 +462,17 @@ Deno.serve(async (req: Request) => {
         success: true,
         syncRunId,
         mode: config.mode,
-        totalFetched,
+        totalRecords: totalFetched,
         results,
-        failedSteps,
+        failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error) {
-    console.error("Command center sync error:", error);
+    console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ success: false, error: String(error) }),
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
