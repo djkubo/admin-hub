@@ -5,49 +5,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
 };
 
-interface SyncRequest {
-  dry_run?: boolean;
-  batch_size?: number;
-  max_pages?: number;
-  _continuation?: {
-    syncRunId: string;
-    offset: number;
-    pageNumber: number;
-    totalFetched: number;
-    totalInserted: number;
-    totalUpdated: number;
-    totalSkipped: number;
-    totalConflicts: number;
-  };
-}
-
 // ============ CONFIGURATION ============
 const CONTACTS_PER_PAGE = 100;
 const STALE_TIMEOUT_MINUTES = 30;
-
-// ============ TRIGGER NEXT PAGE (BLOCKING) ============
-async function triggerNextPage(
-  supabaseUrl: string,
-  adminKey: string,
-  body: SyncRequest
-): Promise<boolean> {
-  try {
-    console.log(`🚀 TRIGGERING GHL NEXT PAGE...`);
-    const response = await fetch(`${supabaseUrl}/functions/v1/sync-ghl`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-key': adminKey,
-      },
-      body: JSON.stringify(body),
-    });
-    console.log(`✅ GHL next page triggered: ${response.status}`);
-    return response.ok || response.status === 202;
-  } catch (err) {
-    console.error(`❌ Failed to trigger GHL next page:`, err);
-    return false;
-  }
-}
 
 // ============ PROCESS SINGLE PAGE ============
 async function processSinglePage(
@@ -236,7 +196,6 @@ Deno.serve(async (req) => {
     const providedKey = req.headers.get("x-admin-key");
     
     if (!adminKey || !providedKey || providedKey !== adminKey) {
-      console.error("❌ Auth failed");
       return new Response(
         JSON.stringify({ error: "Forbidden" }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -258,70 +217,81 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
     
     // Parse request
-    let body: SyncRequest = {};
+    let dryRun = false;
+    let offset = 0;
+    let syncRunId: string | null = null;
+    let cleanupStale = false;
+    
     try {
-      body = await req.json();
+      const body = await req.json();
+      dryRun = body.dry_run ?? false;
+      cleanupStale = body.cleanupStale === true;
+      offset = body.offset || 0;
+      syncRunId = body.syncRunId || null;
     } catch {
       // Empty body is OK
     }
-    
-    const dryRun = body.dry_run ?? false;
-    const maxPages = body.max_pages ?? 5000;
 
-    // Continuation state
-    let syncRunId: string | null = body._continuation?.syncRunId || null;
-    let offset = body._continuation?.offset || 0;
-    let pageNumber = body._continuation?.pageNumber || 0;
-    let totalFetched = body._continuation?.totalFetched || 0;
-    let totalInserted = body._continuation?.totalInserted || 0;
-    let totalUpdated = body._continuation?.totalUpdated || 0;
-    let totalSkipped = body._continuation?.totalSkipped || 0;
-    let totalConflicts = body._continuation?.totalConflicts || 0;
+    // ============ CLEANUP STALE SYNCS ============
+    if (cleanupStale) {
+      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+      
+      const { data: staleSyncs } = await supabase
+        .from('sync_runs')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: 'Timeout - sin actividad por 30 minutos'
+        })
+        .eq('source', 'ghl')
+        .in('status', ['running', 'continuing'])
+        .lt('started_at', staleThreshold)
+        .select('id');
+      
+      return new Response(
+        JSON.stringify({ success: true, cleaned: staleSyncs?.length || 0 }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-    // ============ CHECK FOR EXISTING RUNNING/CONTINUING SYNC ============
+    // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
       
+      // Mark stale syncs as failed
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: 'Timeout - sin actividad por 30 minutos'
+        })
+        .eq('source', 'ghl')
+        .in('status', ['running', 'continuing'])
+        .lt('started_at', staleThreshold);
+
       // Check for existing active sync
       const { data: existingRuns } = await supabase
         .from('sync_runs')
-        .select('id, status, started_at, checkpoint')
+        .select('id')
         .eq('source', 'ghl')
         .in('status', ['running', 'continuing'])
-        .order('started_at', { ascending: false })
         .limit(1);
 
       if (existingRuns && existingRuns.length > 0) {
-        const existingRun = existingRuns[0];
-        
-        // Check if stale
-        if (existingRun.started_at < staleThreshold) {
-          console.log(`⏰ Marking stale GHL sync ${existingRun.id} as failed`);
-          await supabase
-            .from('sync_runs')
-            .update({
-              status: 'failed',
-              completed_at: new Date().toISOString(),
-              error_message: 'Stale/timeout - no heartbeat for 30 minutes'
-            })
-            .eq('id', existingRun.id);
-        } else {
-          // Resume existing sync instead of creating new one
-          console.log(`📍 Resuming existing GHL sync ${existingRun.id}`);
-          const checkpoint = existingRun.checkpoint as Record<string, unknown> || {};
-          syncRunId = existingRun.id;
-          offset = (checkpoint.offset as number) || 0;
-          pageNumber = (checkpoint.page as number) || 0;
-          totalFetched = (checkpoint.totalFetched as number) || 0;
-          totalInserted = (checkpoint.totalInserted as number) || 0;
-          totalUpdated = (checkpoint.totalUpdated as number) || 0;
-          totalSkipped = (checkpoint.totalSkipped as number) || 0;
-          totalConflicts = (checkpoint.totalConflicts as number) || 0;
-        }
+        return new Response(
+          JSON.stringify({ 
+            success: false, 
+            error: 'sync_already_running',
+            message: 'Ya hay un sync de GHL en progreso',
+            existingSyncId: existingRuns[0].id
+          }),
+          { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
     }
 
-    // Create or reuse sync_run
+    // Create sync run if needed
     if (!syncRunId) {
       const { data: syncRun, error: syncError } = await supabase
         .from('sync_runs')
@@ -331,25 +301,31 @@ Deno.serve(async (req) => {
           dry_run: dryRun,
           checkpoint: { offset: 0 }
         })
-        .select()
+        .select('id')
         .single();
 
       if (syncError) {
-        console.error('Failed to create sync run:', syncError);
         return new Response(
           JSON.stringify({ error: 'Failed to create sync record' }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
-      syncRunId = syncRun.id;
+      syncRunId = syncRun?.id;
       console.log(`📊 NEW GHL SYNC RUN: ${syncRunId}`);
     } else {
-      console.log(`🔄 CONTINUATION: Page ${pageNumber}, offset: ${offset}`);
+      // Update activity
+      await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'running',
+          checkpoint: { offset, lastActivity: new Date().toISOString() }
+        })
+        .eq('id', syncRunId);
     }
 
     // ============ PROCESS SINGLE PAGE ============
-    console.log(`📄 Processing GHL page ${pageNumber + 1}...`);
+    console.log(`📄 Processing GHL page, offset: ${offset}...`);
 
     const pageResult = await processSinglePage(
       supabase as any,
@@ -360,175 +336,107 @@ Deno.serve(async (req) => {
       offset
     );
 
-    // Update totals
-    totalFetched += pageResult.contactsFetched;
-    totalInserted += pageResult.inserted;
-    totalUpdated += pageResult.updated;
-    totalSkipped += pageResult.skipped;
-    totalConflicts += pageResult.conflicts;
-    pageNumber++;
-
     // Handle errors
     if (pageResult.error) {
-      console.error(`❌ GHL Page ${pageNumber} failed:`, pageResult.error);
+      console.error(`❌ GHL sync failed:`, pageResult.error);
       
-      // Log error but DON'T stop - continue to next page if possible
-      await (supabase.from('sync_runs') as any)
+      await supabase
+        .from('sync_runs')
         .update({
-          checkpoint: { 
-            offset: pageResult.nextOffset, 
-            page: pageNumber,
-            totalFetched,
-            totalInserted,
-            totalUpdated,
-            totalSkipped,
-            totalConflicts,
-            last_error: pageResult.error,
-            lastHeartbeat: new Date().toISOString()
-          },
-          total_fetched: totalFetched,
-          total_inserted: totalInserted,
-          total_updated: totalUpdated,
-          total_skipped: totalSkipped,
-          total_conflicts: totalConflicts
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: pageResult.error
         })
         .eq('id', syncRunId);
       
-      // If it's a fatal API error, mark as failed
-      if (pageResult.error.includes('API error')) {
-        await (supabase.from('sync_runs') as any)
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: pageResult.error
-          })
-          .eq('id', syncRunId);
-        
-        return new Response(
-          JSON.stringify({ 
-            success: false, 
-            error: pageResult.error,
-            syncRunId,
-            page: pageNumber,
-            totalFetched 
-          }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: pageResult.error,
+          syncRunId
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    console.log(`✅ GHL Page ${pageNumber}: ${pageResult.contactsFetched} contacts, ${pageResult.inserted} inserted`);
+    console.log(`✅ GHL page: ${pageResult.contactsFetched} contacts, ${pageResult.inserted} inserted`);
 
-    // ============ DECIDE: CONTINUE OR COMPLETE ============
-    const needsContinuation = pageResult.hasMore && pageNumber < maxPages;
+    // ============ CHECK IF MORE PAGES ============
+    const hasMore = pageResult.hasMore;
 
-    if (needsContinuation) {
-      // Update checkpoint with heartbeat
-      await (supabase.from('sync_runs') as any)
+    if (hasMore) {
+      // Update checkpoint - frontend will call again with new offset
+      await supabase
+        .from('sync_runs')
         .update({
           status: 'continuing',
-          total_fetched: totalFetched,
-          total_inserted: totalInserted,
-          total_updated: totalUpdated,
-          total_skipped: totalSkipped,
-          total_conflicts: totalConflicts,
+          total_fetched: pageResult.contactsFetched,
+          total_inserted: pageResult.inserted,
+          total_updated: pageResult.updated,
+          total_skipped: pageResult.skipped,
+          total_conflicts: pageResult.conflicts,
           checkpoint: { 
-            offset: pageResult.nextOffset, 
-            page: pageNumber,
-            totalFetched,
-            totalInserted,
-            totalUpdated,
-            totalSkipped,
-            totalConflicts,
-            lastHeartbeat: new Date().toISOString()
+            offset: pageResult.nextOffset,
+            lastActivity: new Date().toISOString()
           }
         })
         .eq('id', syncRunId);
 
-      // ============ CRITICAL: TRIGGER NEXT PAGE BEFORE RETURNING ============
-      const triggered = await triggerNextPage(supabaseUrl, adminKey, {
-        dry_run: dryRun,
-        max_pages: maxPages,
-        _continuation: {
-          syncRunId: syncRunId!,
-          offset: pageResult.nextOffset,
-          pageNumber,
-          totalFetched,
-          totalInserted,
-          totalUpdated,
-          totalSkipped,
-          totalConflicts
-        }
-      });
-
-      if (!triggered) {
-        await (supabase.from('sync_runs') as any)
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: 'Failed to trigger next page continuation'
-          })
-          .eq('id', syncRunId);
-      }
-
-      const duration = Date.now() - startTime;
       return new Response(
         JSON.stringify({
           success: true,
           status: 'continuing',
-          sync_run_id: syncRunId,
-          page: pageNumber,
-          totalFetched,
-          totalInserted,
-          totalUpdated,
+          syncRunId,
+          contactsFetched: pageResult.contactsFetched,
+          inserted: pageResult.inserted,
+          updated: pageResult.updated,
           hasMore: true,
-          duration_ms: duration,
-          message: `GHL Page ${pageNumber} complete. Next page triggered.`
+          nextOffset: pageResult.nextOffset,
+          duration_ms: Date.now() - startTime
         }),
-        { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     // ============ SYNC COMPLETE ============
-    await (supabase.from('sync_runs') as any)
+    await supabase
+      .from('sync_runs')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
-        total_fetched: totalFetched,
-        total_inserted: totalInserted,
-        total_updated: totalUpdated,
-        total_skipped: totalSkipped,
-        total_conflicts: totalConflicts,
-        checkpoint: { offset: pageResult.nextOffset, page: pageNumber }
+        total_fetched: pageResult.contactsFetched,
+        total_inserted: pageResult.inserted,
+        total_updated: pageResult.updated,
+        total_skipped: pageResult.skipped,
+        total_conflicts: pageResult.conflicts,
+        checkpoint: null
       })
       .eq('id', syncRunId);
 
-    const duration = Date.now() - startTime;
-    console.log(`🎉 GHL SYNC COMPLETE: ${totalFetched} contacts, ${totalInserted} inserted, ${pageNumber} pages in ${duration}ms`);
+    console.log(`🎉 GHL SYNC COMPLETE: ${pageResult.contactsFetched} contacts in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({
         success: true,
         status: 'completed',
-        sync_run_id: syncRunId,
-        dry_run: dryRun,
-        pages: pageNumber,
-        totalFetched,
-        totalInserted,
-        totalUpdated,
-        totalSkipped,
-        totalConflicts,
+        syncRunId,
+        stats: {
+          total_fetched: pageResult.contactsFetched,
+          total_inserted: pageResult.inserted,
+          total_updated: pageResult.updated,
+          total_skipped: pageResult.skipped,
+          total_conflicts: pageResult.conflicts
+        },
         hasMore: false,
-        duration_ms: duration
+        duration_ms: Date.now() - startTime
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[sync-ghl] Fatal error:', error);
+    console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ error: errorMessage }),
+      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
