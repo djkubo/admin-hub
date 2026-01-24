@@ -22,9 +22,10 @@ interface SyncRequest {
 }
 
 // ============ CONFIGURATION ============
-const CONTACTS_PER_PAGE = 100; // GHL API limit
+const CONTACTS_PER_PAGE = 100;
+const STALE_TIMEOUT_MINUTES = 30;
 
-// ============ TRIGGER NEXT PAGE ============
+// ============ TRIGGER NEXT PAGE (BLOCKING) ============
 async function triggerNextPage(
   supabaseUrl: string,
   adminKey: string,
@@ -41,7 +42,7 @@ async function triggerNextPage(
       body: JSON.stringify(body),
     });
     console.log(`✅ GHL next page triggered: ${response.status}`);
-    return response.ok;
+    return response.ok || response.status === 202;
   } catch (err) {
     console.error(`❌ Failed to trigger GHL next page:`, err);
     return false;
@@ -265,7 +266,7 @@ Deno.serve(async (req) => {
     }
     
     const dryRun = body.dry_run ?? false;
-    const maxPages = body.max_pages ?? 5000; // Default 500k contacts
+    const maxPages = body.max_pages ?? 5000;
 
     // Continuation state
     let syncRunId: string | null = body._continuation?.syncRunId || null;
@@ -276,6 +277,49 @@ Deno.serve(async (req) => {
     let totalUpdated = body._continuation?.totalUpdated || 0;
     let totalSkipped = body._continuation?.totalSkipped || 0;
     let totalConflicts = body._continuation?.totalConflicts || 0;
+
+    // ============ CHECK FOR EXISTING RUNNING/CONTINUING SYNC ============
+    if (!syncRunId) {
+      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+      
+      // Check for existing active sync
+      const { data: existingRuns } = await supabase
+        .from('sync_runs')
+        .select('id, status, started_at, checkpoint')
+        .eq('source', 'ghl')
+        .in('status', ['running', 'continuing'])
+        .order('started_at', { ascending: false })
+        .limit(1);
+
+      if (existingRuns && existingRuns.length > 0) {
+        const existingRun = existingRuns[0];
+        
+        // Check if stale
+        if (existingRun.started_at < staleThreshold) {
+          console.log(`⏰ Marking stale GHL sync ${existingRun.id} as failed`);
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              error_message: 'Stale/timeout - no heartbeat for 30 minutes'
+            })
+            .eq('id', existingRun.id);
+        } else {
+          // Resume existing sync instead of creating new one
+          console.log(`📍 Resuming existing GHL sync ${existingRun.id}`);
+          const checkpoint = existingRun.checkpoint as Record<string, unknown> || {};
+          syncRunId = existingRun.id;
+          offset = (checkpoint.offset as number) || 0;
+          pageNumber = (checkpoint.page as number) || 0;
+          totalFetched = (checkpoint.totalFetched as number) || 0;
+          totalInserted = (checkpoint.totalInserted as number) || 0;
+          totalUpdated = (checkpoint.totalUpdated as number) || 0;
+          totalSkipped = (checkpoint.totalSkipped as number) || 0;
+          totalConflicts = (checkpoint.totalConflicts as number) || 0;
+        }
+      }
+    }
 
     // Create or reuse sync_run
     if (!syncRunId) {
@@ -334,7 +378,13 @@ Deno.serve(async (req) => {
           checkpoint: { 
             offset: pageResult.nextOffset, 
             page: pageNumber,
-            last_error: pageResult.error 
+            totalFetched,
+            totalInserted,
+            totalUpdated,
+            totalSkipped,
+            totalConflicts,
+            last_error: pageResult.error,
+            lastHeartbeat: new Date().toISOString()
           },
           total_fetched: totalFetched,
           total_inserted: totalInserted,
@@ -373,7 +423,7 @@ Deno.serve(async (req) => {
     const needsContinuation = pageResult.hasMore && pageNumber < maxPages;
 
     if (needsContinuation) {
-      // Update checkpoint
+      // Update checkpoint with heartbeat
       await (supabase.from('sync_runs') as any)
         .update({
           status: 'continuing',
@@ -382,7 +432,16 @@ Deno.serve(async (req) => {
           total_updated: totalUpdated,
           total_skipped: totalSkipped,
           total_conflicts: totalConflicts,
-          checkpoint: { offset: pageResult.nextOffset, page: pageNumber }
+          checkpoint: { 
+            offset: pageResult.nextOffset, 
+            page: pageNumber,
+            totalFetched,
+            totalInserted,
+            totalUpdated,
+            totalSkipped,
+            totalConflicts,
+            lastHeartbeat: new Date().toISOString()
+          }
         })
         .eq('id', syncRunId);
 
@@ -416,7 +475,7 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: true,
-          mode: 'continuing',
+          status: 'continuing',
           sync_run_id: syncRunId,
           page: pageNumber,
           totalFetched,
@@ -450,7 +509,7 @@ Deno.serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        mode: 'completed',
+        status: 'completed',
         sync_run_id: syncRunId,
         dry_run: dryRun,
         pages: pageNumber,
