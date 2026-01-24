@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,7 +6,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: JWT-based admin verification
+// SECURITY: JWT-based admin verification using getUser()
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
@@ -20,10 +20,10 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
     global: { headers: { Authorization: authHeader } }
   });
 
-  const token = authHeader.replace('Bearer ', '');
-  const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+  // Use getUser() instead of getClaims() for compatibility
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
   
-  if (claimsError || !claims?.claims?.sub) {
+  if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
@@ -397,6 +397,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         success: true,
         message: `Synced ${upsertedCount} pending invoices with enriched data`,
+        synced: upsertedCount,
         draftCount: filteredInvoices.filter(i => i.status === "draft").length,
         openCount: filteredInvoices.filter(i => i.status === "open").length,
         excludedCount: allRawInvoices.length - filteredInvoices.length,

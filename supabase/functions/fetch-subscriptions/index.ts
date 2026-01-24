@@ -1,6 +1,7 @@
+// deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,7 +9,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: JWT-based admin verification
+// SECURITY: JWT-based admin verification using getUser()
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
@@ -22,6 +23,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
     global: { headers: { Authorization: authHeader } }
   });
 
+  // Use getUser() instead of getClaims() for compatibility
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   
   if (userError || !user) {
@@ -38,17 +40,17 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
 }
 
 // Background sync function
-async function runSync(serviceClient: any, stripe: any, syncRunId: string) {
+async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
   try {
     console.log("📊 Starting background sync...");
     
-    let subscriptions: any[] = [];
+    let subscriptions: Stripe.Subscription[] = [];
     let hasMore = true;
     let startingAfter: string | undefined;
     const limit = 100;
 
     while (hasMore) {
-      const params: any = {
+      const params: Stripe.SubscriptionListParams = {
         limit,
         expand: ["data.customer", "data.plan.product"],
       };
@@ -284,6 +286,6 @@ serve(async (req: Request) => {
 });
 
 // Handle shutdown gracefully
-addEventListener('beforeunload', (ev: any) => {
-  console.log('Function shutdown:', ev.detail?.reason);
+addEventListener('beforeunload', (ev: Event) => {
+  console.log('Function shutdown');
 });
