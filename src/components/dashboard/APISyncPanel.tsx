@@ -7,20 +7,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
-
-interface SyncResult {
-  success: boolean;
-  synced_transactions?: number;
-  synced_clients?: number;
-  paid_count?: number;
-  failed_count?: number;
-  total_fetched?: number;
-  total_inserted?: number;
-  total_updated?: number;
-  total_conflicts?: number;
-  message?: string;
-  error?: string;
-}
+import type { 
+  SyncResult,
+  FetchStripeBody,
+  FetchStripeResponse,
+  FetchPayPalBody,
+  FetchPayPalResponse,
+  SyncContactsBody,
+  SyncContactsResponse
+} from '@/types/edgeFunctions';
 
 export function APISyncPanel() {
   const queryClient = useQueryClient();
@@ -41,9 +36,9 @@ export function APISyncPanel() {
     years: number,
     setResult: (r: SyncResult) => void,
     setProgress: (p: { current: number; total: number } | null) => void
-  ) => {
+  ): Promise<{ synced_transactions: number; synced_clients: number; paid_count: number; failed_count: number }> => {
     const now = new Date();
-    let allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
+    const allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
     
     // Sync in 30-day chunks to avoid API limits and timeouts
     const totalChunks = Math.ceil(years * 12); // Monthly chunks
@@ -55,20 +50,34 @@ export function APISyncPanel() {
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
       
       try {
-        const data = await invokeWithAdminKey(
-          service === 'stripe' ? 'fetch-stripe' : 'fetch-paypal',
-          { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: endDate.toISOString()
+        if (service === 'stripe') {
+          const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+            'fetch-stripe',
+            { 
+              fetchAll: true,
+              startDate: startDate.toISOString(),
+              endDate: endDate.toISOString()
+            }
+          );
+          if (data?.success) {
+            allResults.synced_transactions += data.synced_transactions ?? 0;
+            allResults.paid_count += data.paid_count ?? 0;
+            allResults.failed_count += data.failed_count ?? 0;
           }
-        );
-
-        if (data?.success) {
-          allResults.synced_transactions += data.synced_transactions || 0;
-          allResults.synced_clients += data.synced_clients || 0;
-          allResults.paid_count += data.paid_count || 0;
-          allResults.failed_count += data.failed_count || 0;
+        } else {
+          const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+            'fetch-paypal',
+            { 
+              fetchAll: true,
+              startDate: startDate.toISOString(),
+              endDate: endDate.toISOString()
+            }
+          );
+          if (data?.success) {
+            allResults.synced_transactions += data.synced_transactions ?? 0;
+            allResults.paid_count += data.paid_count ?? 0;
+            allResults.failed_count += data.failed_count ?? 0;
+          }
         }
       } catch (err) {
         console.error(`Chunk ${i + 1} failed:`, err);
@@ -95,31 +104,37 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey('fetch-stripe', { 
-          fetchAll: true,
-          startDate: yesterday.toISOString(),
-          endDate: now.toISOString()
-        });
+        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll: true,
+            startDate: yesterday.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
         setStripeResult(data);
         
         if (data.success) {
-          toast.success(`Stripe (24h): ${data.synced_transactions} transacciones sincronizadas`);
+          toast.success(`Stripe (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
         }
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey('fetch-stripe', { 
-          fetchAll: true,
-          startDate: startDate.toISOString(),
-          endDate: now.toISOString()
-        });
+        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll: true,
+            startDate: startDate.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
         setStripeResult(data);
         
         if (data.success) {
-          toast.success(`Stripe (31 días): ${data.synced_transactions} transacciones sincronizadas`);
+          toast.success(`Stripe (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
         }
       } else if (mode === 'all6months') {
         const results = await syncInChunks('stripe', 0.5, setStripeResult, setStripeProgress);
@@ -154,31 +169,37 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey('fetch-paypal', { 
-          fetchAll: true,
-          startDate: yesterday.toISOString(),
-          endDate: now.toISOString()
-        });
+        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+          'fetch-paypal', 
+          { 
+            fetchAll: true,
+            startDate: yesterday.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
         setPaypalResult(data);
         
         if (data.success) {
-          toast.success(`PayPal (24h): ${data.synced_transactions} transacciones sincronizadas`);
+          toast.success(`PayPal (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
         }
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey('fetch-paypal', { 
-          fetchAll: true,
-          startDate: startDate.toISOString(),
-          endDate: now.toISOString()
-        });
+        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+          'fetch-paypal', 
+          { 
+            fetchAll: true,
+            startDate: startDate.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
         setPaypalResult(data);
         
         if (data.success) {
-          toast.success(`PayPal (31 días): ${data.synced_transactions} transacciones sincronizadas`);
+          toast.success(`PayPal (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
         }
       } else if (mode === 'all6months') {
         const results = await syncInChunks('paypal', 0.5, setPaypalResult, setPaypalProgress);
@@ -209,17 +230,20 @@ export function APISyncPanel() {
     setManychatResult(null);
     
     try {
-      const data = await invokeWithAdminKey('sync-manychat', { dry_run: false });
+      const data = await invokeWithAdminKey<SyncContactsResponse, SyncContactsBody>(
+        'sync-manychat', 
+        { dry_run: false }
+      );
       
       setManychatResult({
         success: true,
-        total_fetched: data.stats?.total_fetched || 0,
-        total_inserted: data.stats?.total_inserted || 0,
-        total_updated: data.stats?.total_updated || 0,
-        total_conflicts: data.stats?.total_conflicts || 0
+        total_fetched: data.stats?.total_fetched ?? 0,
+        total_inserted: data.stats?.total_inserted ?? 0,
+        total_updated: data.stats?.total_updated ?? 0,
+        total_conflicts: data.stats?.total_conflicts ?? 0
       });
       
-      toast.success(`ManyChat: ${data.stats?.total_fetched || 0} contactos sincronizados (${data.stats?.total_inserted || 0} nuevos, ${data.stats?.total_updated || 0} actualizados)`);
+      toast.success(`ManyChat: ${data.stats?.total_fetched ?? 0} contactos sincronizados (${data.stats?.total_inserted ?? 0} nuevos, ${data.stats?.total_updated ?? 0} actualizados)`);
       
       // Refresh clients data
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -239,11 +263,14 @@ export function APISyncPanel() {
     
     try {
       // GHL runs in background mode - increase batch_size for 150k+ contacts
-      const data = await invokeWithAdminKey('sync-ghl', { 
-        dry_run: false,
-        batch_size: 100, // Bigger batches for 150k contacts
-        background: true 
-      });
+      const data = await invokeWithAdminKey<SyncContactsResponse, SyncContactsBody>(
+        'sync-ghl', 
+        { 
+          dry_run: false,
+          batch_size: 100, // Bigger batches for 150k contacts
+          background: true 
+        }
+      );
       
       // Background mode returns sync_run_id, not immediate results
       if (data.mode === 'background' && data.sync_run_id) {
@@ -256,19 +283,19 @@ export function APISyncPanel() {
         // Foreground mode (shouldn't happen but handle it)
         setGhlResult({
           success: true,
-          total_fetched: data.stats?.total_fetched || 0,
-          total_inserted: data.stats?.total_inserted || 0,
-          total_updated: data.stats?.total_updated || 0,
-          total_conflicts: data.stats?.total_conflicts || 0
+          total_fetched: data.stats?.total_fetched ?? 0,
+          total_inserted: data.stats?.total_inserted ?? 0,
+          total_updated: data.stats?.total_updated ?? 0,
+          total_conflicts: data.stats?.total_conflicts ?? 0
         });
-        toast.success(`GoHighLevel: ${data.stats?.total_fetched || 0} contactos sincronizados`);
+        toast.success(`GoHighLevel: ${data.stats?.total_fetched ?? 0} contactos sincronizados`);
       } else {
         // Generic success
         setGhlResult({
           success: true,
-          message: data.message || 'Sincronización iniciada'
+          message: data.message ?? 'Sincronización iniciada'
         });
-        toast.success(data.message || 'GoHighLevel: Sincronización iniciada en segundo plano');
+        toast.success(data.message ?? 'GoHighLevel: Sincronización iniciada en segundo plano');
       }
       
       // Refresh clients data

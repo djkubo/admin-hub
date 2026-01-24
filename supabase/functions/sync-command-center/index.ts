@@ -1,11 +1,12 @@
-// deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+// ============= TYPE DEFINITIONS =============
 
 interface SyncConfig {
   mode: 'today' | '7d' | 'month' | 'full';
@@ -14,7 +15,6 @@ interface SyncConfig {
   includeContacts?: boolean;
 }
 
-// Response types for sub-function invocations
 interface StripeSyncResponse {
   success: boolean;
   error?: string;
@@ -22,14 +22,6 @@ interface StripeSyncResponse {
   syncRunId?: string;
   nextCursor?: string;
   hasMore?: boolean;
-}
-
-interface GenericSyncResponse {
-  success: boolean;
-  error?: string;
-  synced?: number;
-  upserted?: number;
-  unified?: number;
 }
 
 interface PayPalSyncResponse {
@@ -41,10 +33,49 @@ interface PayPalSyncResponse {
   hasMore?: boolean;
 }
 
-// SECURITY: JWT-based admin verification using getUser()
-async function verifyAdmin(
-  supabase: any
-): Promise<{ valid: boolean; error?: string; email?: string }> {
+interface GenericSyncResponse {
+  success: boolean;
+  error?: string;
+  synced?: number;
+  upserted?: number;
+  unified?: number;
+}
+
+interface SyncStepResult {
+  success: boolean;
+  count: number;
+  error?: string;
+}
+
+interface SyncRunMetadata {
+  mode: string;
+  startDate: string;
+  endDate: string;
+  authMethod: string;
+  userEmail: string;
+  steps: string[];
+  currentStep?: string;
+  lastUpdate?: string;
+  results?: Record<string, SyncStepResult>;
+  completedAt?: string;
+}
+
+interface SyncRun {
+  id: string;
+  metadata: SyncRunMetadata;
+  total_fetched: number;
+  total_inserted: number;
+}
+
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  email?: string;
+}
+
+// ============= HELPERS =============
+
+async function verifyAdmin(supabase: SupabaseClient): Promise<AdminVerifyResult> {
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   
   if (userError || !user) {
@@ -59,6 +90,12 @@ async function verifyAdmin(
 
   return { valid: true, email: user.email };
 }
+
+function formatPayPalDate(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+// ============= MAIN HANDLER =============
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -94,7 +131,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const userEmail = authCheck.email || "";
+    const userEmail = authCheck.email ?? "";
     console.log("✅ Admin authenticated:", userEmail);
 
     // ============ SEPARATE CLIENTS ============
@@ -110,12 +147,12 @@ Deno.serve(async (req: Request) => {
     // ============ PARSE CONFIG ============
     let config: SyncConfig = { mode: 'today' };
     try {
-      const body = await req.json();
+      const body = await req.json() as Partial<SyncConfig>;
       config = {
-        mode: body.mode || 'today',
+        mode: body.mode ?? 'today',
         startDate: body.startDate,
         endDate: body.endDate,
-        includeContacts: body.includeContacts || false,
+        includeContacts: body.includeContacts ?? false,
       };
     } catch {
       // Use defaults
@@ -146,19 +183,21 @@ Deno.serve(async (req: Request) => {
     if (config.endDate) endDate = new Date(config.endDate);
 
     // ============ CREATE MASTER SYNC RUN ============
-    const { data: syncRun, error: syncRunError } = await dbClient
+    const initialMetadata: SyncRunMetadata = {
+      mode: config.mode,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      authMethod: "jwt+is_admin",
+      userEmail,
+      steps: [],
+    };
+
+    const { data: syncRunData, error: syncRunError } = await dbClient
       .from("sync_runs")
       .insert({
         source: "command-center",
         status: "running",
-        metadata: {
-          mode: config.mode,
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString(),
-          authMethod: "jwt+is_admin",
-          userEmail,
-          steps: [],
-        }
+        metadata: initialMetadata
       })
       .select()
       .single();
@@ -167,32 +206,43 @@ Deno.serve(async (req: Request) => {
       throw new Error(`Failed to create sync run: ${syncRunError.message}`);
     }
 
+    const syncRun = syncRunData as SyncRun;
     const syncRunId = syncRun.id;
     console.log(`📊 Master sync run created: ${syncRunId}`);
 
     // Helper to update progress
-    const updateProgress = async (step: string, details: string, counts?: { fetched?: number; inserted?: number }) => {
-      const metadata = syncRun.metadata as Record<string, unknown> || {};
-      const steps = (metadata.steps as string[]) || [];
-      steps.push(`${step}: ${details}`);
+    const updateProgress = async (
+      step: string, 
+      details: string, 
+      counts?: { fetched?: number; inserted?: number }
+    ): Promise<void> => {
+      const currentMetadata = (syncRun.metadata as SyncRunMetadata) ?? { steps: [] };
+      const steps = [...(currentMetadata.steps ?? []), `${step}: ${details}`];
       
+      const updateData: Record<string, unknown> = {
+        metadata: { 
+          ...currentMetadata, 
+          steps, 
+          currentStep: step, 
+          lastUpdate: new Date().toISOString() 
+        },
+        checkpoint: { step, details, timestamp: new Date().toISOString() },
+      };
+
+      if (counts?.fetched) {
+        updateData.total_fetched = (syncRun.total_fetched ?? 0) + counts.fetched;
+      }
+      if (counts?.inserted) {
+        updateData.total_inserted = (syncRun.total_inserted ?? 0) + counts.inserted;
+      }
+
       await dbClient
         .from("sync_runs")
-        .update({
-          metadata: { ...metadata, steps, currentStep: step, lastUpdate: new Date().toISOString() },
-          checkpoint: { step, details, timestamp: new Date().toISOString() },
-          ...(counts?.fetched && { total_fetched: (syncRun.total_fetched || 0) + counts.fetched }),
-          ...(counts?.inserted && { total_inserted: (syncRun.total_inserted || 0) + counts.inserted }),
-        })
+        .update(updateData)
         .eq("id", syncRunId);
     };
 
-    // Helper to format dates for PayPal (no milliseconds)
-    const formatPayPalDate = (date: Date): string => {
-      return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    };
-
-    const results: Record<string, { success: boolean; count: number; error?: string }> = {};
+    const results: Record<string, SyncStepResult> = {};
 
     // ============ STRIPE SYNC ============
     try {
@@ -213,17 +263,17 @@ Deno.serve(async (req: Request) => {
           }
         });
         
-        const stripeResp = response.data as StripeSyncResponse | null;
+        const respData = response.data as StripeSyncResponse | null;
         if (response.error) throw response.error;
-        if (stripeResp?.error === 'sync_already_running') {
+        if (respData?.error === 'sync_already_running') {
           results["stripe"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalStripe += stripeResp?.synced_transactions || 0;
-        stripeSyncId = stripeResp?.syncRunId || stripeSyncId;
-        cursor = stripeResp?.nextCursor || null;
-        hasMore = stripeResp?.hasMore === true && cursor !== null;
+        totalStripe += respData?.synced_transactions ?? 0;
+        stripeSyncId = respData?.syncRunId ?? stripeSyncId;
+        cursor = respData?.nextCursor ?? null;
+        hasMore = respData?.hasMore === true && cursor !== null;
         
         await updateProgress("stripe-transactions", `${totalStripe} transacciones`);
       }
@@ -238,9 +288,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE SUBSCRIPTIONS ============
     try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
-      const { data: subsData, error: subsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-subscriptions');
-      if (subsError) throw subsError;
-      results["subscriptions"] = { success: true, count: subsData?.synced || subsData?.upserted || 0 };
+      const response = await invokeClient.functions.invoke('fetch-subscriptions');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["subscriptions"] = { success: true, count: respData?.synced ?? respData?.upserted ?? 0 };
       await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
     } catch (e) {
       console.error("Subscriptions sync error:", e);
@@ -250,9 +301,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE INVOICES ============
     try {
       await updateProgress("stripe-invoices", "Iniciando...");
-      const { data: invData, error: invError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-invoices');
-      if (invError) throw invError;
-      results["invoices"] = { success: true, count: invData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-invoices');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["invoices"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
     } catch (e) {
       console.error("Invoices sync error:", e);
@@ -262,9 +314,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE CUSTOMERS ============
     try {
       await updateProgress("stripe-customers", "Iniciando...");
-      const { data: custData, error: custError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-customers');
-      if (custError) throw custError;
-      results["customers"] = { success: true, count: custData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-customers');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["customers"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
     } catch (e) {
       console.error("Customers sync error:", e);
@@ -274,9 +327,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PRODUCTS ============
     try {
       await updateProgress("stripe-products", "Iniciando...");
-      const { data: prodData, error: prodError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-products');
-      if (prodError) throw prodError;
-      results["products"] = { success: true, count: prodData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-products');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["products"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-products", `${results["products"].count} productos`);
     } catch (e) {
       console.error("Products sync error:", e);
@@ -286,9 +340,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE DISPUTES ============
     try {
       await updateProgress("stripe-disputes", "Iniciando...");
-      const { data: dispData, error: dispError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-disputes');
-      if (dispError) throw dispError;
-      results["disputes"] = { success: true, count: dispData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-disputes');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["disputes"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-disputes", `${results["disputes"].count} disputas`);
     } catch (e) {
       console.error("Disputes sync error:", e);
@@ -298,9 +353,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PAYOUTS ============
     try {
       await updateProgress("stripe-payouts", "Iniciando...");
-      const { data: payoutsData, error: payoutsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-payouts');
-      if (payoutsError) throw payoutsError;
-      results["payouts"] = { success: true, count: payoutsData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-payouts');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["payouts"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-payouts", `${results["payouts"].count} payouts`);
     } catch (e) {
       console.error("Payouts sync error:", e);
@@ -310,8 +366,8 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE BALANCE ============
     try {
       await updateProgress("stripe-balance", "Iniciando...");
-      const { error: balError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-balance');
-      if (balError) throw balError;
+      const response = await invokeClient.functions.invoke('fetch-balance');
+      if (response.error) throw response.error;
       results["balance"] = { success: true, count: 1 };
       await updateProgress("stripe-balance", "Balance actualizado");
     } catch (e) {
@@ -328,7 +384,7 @@ Deno.serve(async (req: Request) => {
       let paypalSyncId: string | null = null;
       
       while (hasMore && page <= 100) {
-        const ppResponse = await invokeClient.functions.invoke('fetch-paypal', {
+        const response = await invokeClient.functions.invoke('fetch-paypal', {
           body: {
             fetchAll: true,
             startDate: formatPayPalDate(startDate),
@@ -338,17 +394,17 @@ Deno.serve(async (req: Request) => {
           }
         });
         
-        const ppResp = ppResponse.data as PayPalSyncResponse | null;
-        if (ppResponse.error) throw ppResponse.error;
-        if (ppResp?.error === 'sync_already_running') {
+        const respData = response.data as PayPalSyncResponse | null;
+        if (response.error) throw response.error;
+        if (respData?.error === 'sync_already_running') {
           results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalPaypal += ppResp?.synced_transactions || 0;
-        paypalSyncId = ppResp?.syncRunId || paypalSyncId;
-        hasMore = ppResp?.hasMore === true;
-        page = ppResp?.nextPage || page + 1;
+        totalPaypal += respData?.synced_transactions ?? 0;
+        paypalSyncId = respData?.syncRunId ?? paypalSyncId;
+        hasMore = respData?.hasMore === true;
+        page = respData?.nextPage ?? page + 1;
         
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
       }
@@ -363,9 +419,10 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL SUBSCRIPTIONS ============
     try {
       await updateProgress("paypal-subscriptions", "Iniciando...");
-      const { data: ppSubsData, error: ppSubsError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-subscriptions');
-      if (ppSubsError) throw ppSubsError;
-      results["paypal-subscriptions"] = { success: true, count: ppSubsData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-paypal-subscriptions');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["paypal-subscriptions"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("paypal-subscriptions", `${results["paypal-subscriptions"].count} suscripciones`);
     } catch (e) {
       console.error("PayPal subscriptions sync error:", e);
@@ -375,9 +432,10 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL DISPUTES ============
     try {
       await updateProgress("paypal-disputes", "Iniciando...");
-      const { data: ppDispData, error: ppDispError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-disputes');
-      if (ppDispError) throw ppDispError;
-      results["paypal-disputes"] = { success: true, count: ppDispData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-paypal-disputes');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["paypal-disputes"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("paypal-disputes", `${results["paypal-disputes"].count} disputas`);
     } catch (e) {
       console.error("PayPal disputes sync error:", e);
@@ -387,9 +445,10 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL PRODUCTS ============
     try {
       await updateProgress("paypal-products", "Iniciando...");
-      const { data: ppProdData, error: ppProdError } = await invokeClient.functions.invoke<GenericSyncResponse>('fetch-paypal-products');
-      if (ppProdError) throw ppProdError;
-      results["paypal-products"] = { success: true, count: ppProdData?.synced || 0 };
+      const response = await invokeClient.functions.invoke('fetch-paypal-products');
+      const respData = response.data as GenericSyncResponse | null;
+      if (response.error) throw response.error;
+      results["paypal-products"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("paypal-products", `${results["paypal-products"].count} productos`);
     } catch (e) {
       console.error("PayPal products sync error:", e);
@@ -401,9 +460,10 @@ Deno.serve(async (req: Request) => {
       // GHL
       try {
         await updateProgress("ghl-contacts", "Iniciando...");
-        const { data: ghlData, error: ghlError } = await invokeClient.functions.invoke<GenericSyncResponse>('sync-ghl');
-        if (ghlError) throw ghlError;
-        results["ghl"] = { success: true, count: ghlData?.synced || 0 };
+        const response = await invokeClient.functions.invoke('sync-ghl');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["ghl"] = { success: true, count: respData?.synced ?? 0 };
         await updateProgress("ghl-contacts", `${results["ghl"].count} contactos`);
       } catch (e) {
         console.error("GHL sync error:", e);
@@ -413,9 +473,10 @@ Deno.serve(async (req: Request) => {
       // ManyChat
       try {
         await updateProgress("manychat-contacts", "Iniciando...");
-        const { data: mcData, error: mcError } = await invokeClient.functions.invoke<GenericSyncResponse>('sync-manychat');
-        if (mcError) throw mcError;
-        results["manychat"] = { success: true, count: mcData?.synced || 0 };
+        const response = await invokeClient.functions.invoke('sync-manychat');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["manychat"] = { success: true, count: respData?.synced ?? 0 };
         await updateProgress("manychat-contacts", `${results["manychat"].count} contactos`);
       } catch (e) {
         console.error("ManyChat sync error:", e);
@@ -425,9 +486,10 @@ Deno.serve(async (req: Request) => {
       // Unify identities
       try {
         await updateProgress("unify-identity", "Iniciando...");
-        const { data: unifyData, error: unifyError } = await invokeClient.functions.invoke<GenericSyncResponse>('unify-identity');
-        if (unifyError) throw unifyError;
-        results["unify"] = { success: true, count: unifyData?.unified || 0 };
+        const response = await invokeClient.functions.invoke('unify-identity');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["unify"] = { success: true, count: respData?.unified ?? 0 };
         await updateProgress("unify-identity", `${results["unify"].count} identidades unificadas`);
       } catch (e) {
         console.error("Unify identity error:", e);
@@ -439,6 +501,12 @@ Deno.serve(async (req: Request) => {
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
     
+    const finalMetadata: SyncRunMetadata = {
+      ...(syncRun.metadata as SyncRunMetadata),
+      results,
+      completedAt: new Date().toISOString(),
+    };
+
     await dbClient
       .from("sync_runs")
       .update({
@@ -447,11 +515,7 @@ Deno.serve(async (req: Request) => {
         total_fetched: totalFetched,
         total_inserted: totalFetched,
         error_message: failedSteps.length > 0 ? `Errors in: ${failedSteps.join(", ")}` : null,
-        metadata: {
-          ...((syncRun.metadata as Record<string, unknown>) || {}),
-          results,
-          completedAt: new Date().toISOString(),
-        }
+        metadata: finalMetadata
       })
       .eq("id", syncRunId);
 

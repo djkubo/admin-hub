@@ -5,13 +5,20 @@ import { supabase } from "@/integrations/supabase/client";
  * Edge functions verify JWT + is_admin() server-side.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const invokeWithAdminKey = async (
+/**
+ * Generic wrapper for invoking Edge Functions with type safety.
+ * Uses the active Supabase session JWT for authentication.
+ * 
+ * @template T - Response type (defaults to Record<string, unknown> for compatibility)
+ * @template B - Body type (defaults to Record<string, unknown>)
+ */
+export async function invokeWithAdminKey<
+  T = Record<string, unknown>,
+  B extends Record<string, unknown> = Record<string, unknown>
+>(
   functionName: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  body?: Record<string, any>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> => {
+  body?: B
+): Promise<T> {
   // Get current session - the SDK automatically includes the JWT in requests
   const { data: { session } } = await supabase.auth.getSession();
   
@@ -28,8 +35,8 @@ export const invokeWithAdminKey = async (
     throw error;
   }
 
-  return data;
-};
+  return data as T;
+}
 
 // Helper to get admin headers (for compatibility - now just returns empty since JWT is automatic)
 export const getAdminHeaders = (): Record<string, string> => {

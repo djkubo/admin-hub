@@ -35,6 +35,14 @@ import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 import { invokeWithAdminKey } from '@/lib/adminApi';
+import type { 
+  FetchStripeBody, 
+  FetchStripeResponse, 
+  FetchPayPalBody, 
+  FetchPayPalResponse,
+  FetchSubscriptionsResponse,
+  FetchInvoicesResponse 
+} from '@/types/edgeFunctions';
 
 type SyncRange = 'today' | '7d' | 'month' | 'full';
 
@@ -125,13 +133,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         
         while (hasMore && attempts < maxAttempts) {
           attempts++;
-          const stripeData = await invokeWithAdminKey('fetch-stripe', { 
-            fetchAll, 
-            startDate: startDate.toISOString(), 
-            endDate: endDate.toISOString(),
-            cursor,
-            syncRunId
-          });
+          const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+            'fetch-stripe', 
+            { 
+              fetchAll, 
+              startDate: startDate.toISOString(), 
+              endDate: endDate.toISOString(),
+              cursor,
+              syncRunId
+            }
+          );
           
           if (stripeData?.error === 'sync_already_running') {
             toast.warning('Ya hay un sync de Stripe en progreso');
@@ -139,9 +150,9 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             break;
           }
           
-          results.stripe += stripeData?.synced_transactions || 0;
-          syncRunId = stripeData?.syncRunId || syncRunId;
-          cursor = stripeData?.nextCursor || null;
+          results.stripe += stripeData?.synced_transactions ?? 0;
+          syncRunId = stripeData?.syncRunId ?? syncRunId;
+          cursor = stripeData?.nextCursor ?? null;
           hasMore = stripeData?.hasMore === true && cursor !== null;
           
           if (hasMore) {
@@ -164,13 +175,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         
         while (hasMore && attempts < maxAttempts) {
           attempts++;
-          const paypalData = await invokeWithAdminKey('fetch-paypal', { 
-            fetchAll, 
-            startDate: startDate.toISOString(), 
-            endDate: endDate.toISOString(),
-            page,
-            syncRunId
-          });
+          const paypalData = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+            'fetch-paypal', 
+            { 
+              fetchAll, 
+              startDate: startDate.toISOString(), 
+              endDate: endDate.toISOString(),
+              page,
+              syncRunId
+            }
+          );
           
           if (paypalData?.error === 'sync_already_running') {
             toast.warning('Ya hay un sync de PayPal en progreso');
@@ -178,10 +192,10 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             break;
           }
           
-          results.paypal += paypalData?.synced_transactions || 0;
-          syncRunId = paypalData?.syncRunId || syncRunId;
+          results.paypal += paypalData?.synced_transactions ?? 0;
+          syncRunId = paypalData?.syncRunId ?? syncRunId;
           hasMore = paypalData?.hasMore === true;
-          page = paypalData?.nextPage || page + 1;
+          page = paypalData?.nextPage ?? page + 1;
           
           if (hasMore) {
             setSyncProgress(`PayPal... ${results.paypal} tx`);
@@ -195,8 +209,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       // 3. Subscriptions
       setSyncProgress('Suscripciones...');
       try {
-        const subsData = await invokeWithAdminKey('fetch-subscriptions', {});
-        results.subs = subsData?.synced || subsData?.upserted || 0;
+        const subsData = await invokeWithAdminKey<FetchSubscriptionsResponse>('fetch-subscriptions', {});
+        results.subs = subsData?.synced ?? subsData?.upserted ?? 0;
       } catch (e) {
         console.error('Subscriptions sync error:', e);
         results.errors++;
@@ -205,8 +219,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       // 4. Invoices
       setSyncProgress('Facturas...');
       try {
-        const invoicesData = await invokeWithAdminKey('fetch-invoices', {});
-        results.invoices = invoicesData?.synced || 0;
+        const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse>('fetch-invoices', {});
+        results.invoices = invoicesData?.synced ?? 0;
       } catch (e) {
         console.error('Invoices sync error:', e);
         results.errors++;
