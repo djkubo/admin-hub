@@ -17,6 +17,7 @@ interface SyncConfig {
 
 interface StripeSyncResponse {
   success: boolean;
+  status?: string;
   error?: string;
   synced_transactions?: number;
   syncRunId?: string;
@@ -26,6 +27,7 @@ interface StripeSyncResponse {
 
 interface PayPalSyncResponse {
   success: boolean;
+  status?: string;
   error?: string;
   synced_transactions?: number;
   syncRunId?: string;
@@ -35,6 +37,7 @@ interface PayPalSyncResponse {
 
 interface GenericSyncResponse {
   success: boolean;
+  status?: string;
   error?: string;
   synced?: number;
   upserted?: number;
@@ -105,6 +108,7 @@ Deno.serve(async (req: Request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const startTime = Date.now();
   
   try {
     // ============ AUTHENTICATION ============
@@ -112,12 +116,11 @@ Deno.serve(async (req: Request) => {
     
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
-        JSON.stringify({ success: false, error: "Missing or invalid Authorization header" }),
+        JSON.stringify({ success: false, status: 'failed', error: "Missing or invalid Authorization header" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Client for auth verification - uses anon key with user's JWT
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } }
     });
@@ -126,7 +129,7 @@ Deno.serve(async (req: Request) => {
     
     if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ success: false, error: authCheck.error }),
+        JSON.stringify({ success: false, status: 'failed', error: authCheck.error }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -135,11 +138,7 @@ Deno.serve(async (req: Request) => {
     console.log("✅ Admin authenticated:", userEmail);
 
     // ============ SEPARATE CLIENTS ============
-    // dbClient: For direct database operations (uses service role)
     const dbClient = createClient(supabaseUrl, serviceRoleKey);
-    
-    // invokeClient: For invoking sub-functions (uses anon key + user's JWT)
-    // This ensures sub-functions receive the original JWT for their own auth checks
     const invokeClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } }
     });
@@ -216,7 +215,7 @@ Deno.serve(async (req: Request) => {
       details: string, 
       counts?: { fetched?: number; inserted?: number }
     ): Promise<void> => {
-      const currentMetadata = (syncRun.metadata as SyncRunMetadata) ?? { steps: [] };
+      const currentMetadata = syncRun.metadata ?? { steps: [] };
       const steps = [...(currentMetadata.steps ?? []), `${step}: ${details}`];
       
       const updateData: Record<string, unknown> = {
@@ -244,7 +243,7 @@ Deno.serve(async (req: Request) => {
 
     const results: Record<string, SyncStepResult> = {};
 
-    // ============ STRIPE SYNC ============
+    // ============ STRIPE TRANSACTIONS ============
     try {
       await updateProgress("stripe-transactions", "Iniciando...");
       let totalStripe = 0;
@@ -502,15 +501,17 @@ Deno.serve(async (req: Request) => {
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
     
     const finalMetadata: SyncRunMetadata = {
-      ...(syncRun.metadata as SyncRunMetadata),
+      ...syncRun.metadata,
       results,
       completedAt: new Date().toISOString(),
     };
 
+    const finalStatus = failedSteps.length > 0 ? "completed_with_errors" : "completed";
+
     await dbClient
       .from("sync_runs")
       .update({
-        status: failedSteps.length > 0 ? "completed_with_errors" : "completed",
+        status: finalStatus,
         completed_at: new Date().toISOString(),
         total_fetched: totalFetched,
         total_inserted: totalFetched,
@@ -519,16 +520,18 @@ Deno.serve(async (req: Request) => {
       })
       .eq("id", syncRunId);
 
-    console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps`);
+    console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({
         success: true,
+        status: finalStatus,
         syncRunId,
         mode: config.mode,
         totalRecords: totalFetched,
         results,
         failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
+        duration_ms: Date.now() - startTime
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -536,7 +539,7 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

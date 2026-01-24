@@ -1,5 +1,4 @@
-// deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,53 +6,13 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: JWT-based admin verification using getUser()
-async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string; userId?: string }> {
-  const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { valid: false, error: 'Missing or invalid Authorization header' };
-  }
+// ============= TYPE DEFINITIONS =============
 
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authHeader } }
-  });
-
-  // Use getUser() instead of getClaims() for compatibility
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
-  if (userError || !user) {
-    return { valid: false, error: 'Invalid or expired token' };
-  }
-
-  // Check if user is admin using RPC
-  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
-  if (adminError || !isAdmin) {
-    return { valid: false, error: 'User is not an admin' };
-  }
-
-  return { valid: true, userId: user.id };
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  userId?: string;
 }
-
-// Mapeo de decline codes a español
-const DECLINE_REASONS_ES: Record<string, string> = {
-  'insufficient_funds': 'Fondos insuficientes',
-  'lost_card': 'Tarjeta perdida',
-  'stolen_card': 'Tarjeta robada',
-  'expired_card': 'Tarjeta expirada',
-  'incorrect_cvc': 'CVC incorrecto',
-  'processing_error': 'Error de procesamiento',
-  'incorrect_number': 'Número incorrecto',
-  'card_velocity_exceeded': 'Límite de transacciones excedido',
-  'do_not_honor': 'Transacción rechazada por el banco',
-  'generic_decline': 'Rechazo genérico',
-  'card_declined': 'Tarjeta rechazada',
-  'fraudulent': 'Transacción sospechosa',
-  'blocked': 'Tarjeta bloqueada',
-};
 
 interface StripeCustomer {
   id: string;
@@ -104,10 +63,98 @@ interface StripeListResponse {
   has_more: boolean;
 }
 
-// ============ CONFIGURATION ============
+interface PageResult {
+  transactions: number;
+  clients: number;
+  skipped: number;
+  paidCount: number;
+  failedCount: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  error: string | null;
+}
+
+interface TransactionRecord {
+  stripe_payment_intent_id: string;
+  external_transaction_id: string;
+  payment_key: string;
+  amount: number;
+  currency: string;
+  status: string;
+  customer_email: string;
+  stripe_customer_id: string | null;
+  stripe_created_at: string;
+  source: string;
+  subscription_id: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  payment_type: string;
+  metadata: Record<string, unknown>;
+  raw_data: Record<string, unknown>;
+}
+
+interface ClientRecord {
+  email: string;
+  full_name: string | null;
+  phone: string | null;
+  stripe_customer_id: string | null;
+  lifecycle_stage: string;
+  last_sync: string;
+}
+
+// ============= SECURITY =============
+
+async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
+
+// ============= CONSTANTS =============
+
+const DECLINE_REASONS_ES: Record<string, string> = {
+  'insufficient_funds': 'Fondos insuficientes',
+  'lost_card': 'Tarjeta perdida',
+  'stolen_card': 'Tarjeta robada',
+  'expired_card': 'Tarjeta expirada',
+  'incorrect_cvc': 'CVC incorrecto',
+  'processing_error': 'Error de procesamiento',
+  'incorrect_number': 'Número incorrecto',
+  'card_velocity_exceeded': 'Límite de transacciones excedido',
+  'do_not_honor': 'Transacción rechazada por el banco',
+  'generic_decline': 'Rechazo genérico',
+  'card_declined': 'Tarjeta rechazada',
+  'fraudulent': 'Transacción sospechosa',
+  'blocked': 'Tarjeta bloqueada',
+};
+
 const RECORDS_PER_PAGE = 100;
 const STRIPE_API_DELAY_MS = 50;
 const STALE_TIMEOUT_MINUTES = 30;
+
+// ============= HELPERS =============
 
 const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 
@@ -138,29 +185,20 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ============ PROCESS SINGLE PAGE ============
+// ============= PROCESS SINGLE PAGE =============
+
 async function processSinglePage(
-  supabase: any,
+  supabase: SupabaseClient,
   stripeSecretKey: string,
   startDate: number | null,
   endDate: number | null,
   cursor: string | null
-): Promise<{
-  transactions: number;
-  clients: number;
-  skipped: number;
-  paidCount: number;
-  failedCount: number;
-  hasMore: boolean;
-  nextCursor: string | null;
-  error: string | null;
-}> {
+): Promise<PageResult> {
   let paidCount = 0;
   let failedCount = 0;
   let skippedNoEmail = 0;
 
   try {
-    // Build Stripe API URL
     const url = new URL("https://api.stripe.com/v1/payment_intents");
     url.searchParams.set("limit", RECORDS_PER_PAGE.toString());
     url.searchParams.append("expand[]", "data.customer");
@@ -205,8 +243,8 @@ async function processSinglePage(
       };
     }
 
-    const transactions: Array<Record<string, unknown>> = [];
-    const clientsMap = new Map<string, Record<string, unknown>>();
+    const transactions: TransactionRecord[] = [];
+    const clientsMap = new Map<string, ClientRecord>();
 
     for (const pi of data.data) {
       let email = pi.receipt_email || null;
@@ -274,8 +312,8 @@ async function processSinglePage(
       }
 
       let mappedStatus: string;
-      let failureCode = pi.last_payment_error?.code || pi.last_payment_error?.decline_code || chargeFailureCode || null;
-      let failureMessage = pi.last_payment_error?.message || chargeFailureMessage || null;
+      const failureCode = pi.last_payment_error?.code || pi.last_payment_error?.decline_code || chargeFailureCode || null;
+      const failureMessage = pi.last_payment_error?.message || chargeFailureMessage || null;
       let declineReasonEs: string | null = null;
 
       switch (pi.status) {
@@ -309,6 +347,7 @@ async function processSinglePage(
         invoice_number: invoiceNumber,
         decline_reason_es: declineReasonEs,
         customer_name: customerName,
+        charge_outcome_reason: chargeOutcomeReason,
       };
 
       transactions.push({
@@ -327,6 +366,7 @@ async function processSinglePage(
         failure_message: failureMessage,
         payment_type: "card",
         metadata,
+        raw_data: pi as unknown as Record<string, unknown>,
       });
 
       if (email) {
@@ -400,7 +440,8 @@ async function processSinglePage(
   }
 }
 
-// ============ MAIN HANDLER ============
+// ============= MAIN HANDLER =============
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -414,7 +455,7 @@ Deno.serve(async (req) => {
     if (!authCheck.valid) {
       console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -425,7 +466,7 @@ Deno.serve(async (req) => {
 
     if (!stripeSecretKey) {
       return new Response(
-        JSON.stringify({ error: "STRIPE_SECRET_KEY not configured" }),
+        JSON.stringify({ success: false, error: "STRIPE_SECRET_KEY not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -452,7 +493,6 @@ Deno.serve(async (req) => {
         endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
       }
       
-      // Resume existing sync
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
     } catch {
@@ -479,16 +519,17 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ 
           success: true, 
+          status: 'completed',
           cleaned: staleSyncs?.length || 0,
-          message: `${staleSyncs?.length || 0} syncs marcados como fallidos`
+          message: `${staleSyncs?.length || 0} syncs marcados como fallidos`,
+          duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // ============ CHECK FOR EXISTING SYNC TO RESUME ============
+    // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
-      // Mark any stale syncs as failed first
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
       
       await supabase
@@ -513,6 +554,7 @@ Deno.serve(async (req) => {
         return new Response(
           JSON.stringify({ 
             success: false, 
+            status: 'failed',
             error: 'sync_already_running',
             message: 'Ya hay un sync de Stripe en progreso',
             existingSyncId: existingRuns[0].id
@@ -536,7 +578,7 @@ Deno.serve(async (req) => {
       
       if (syncError) {
         return new Response(
-          JSON.stringify({ error: "Failed to create sync record" }),
+          JSON.stringify({ success: false, status: 'failed', error: "Failed to create sync record" }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -567,7 +609,7 @@ Deno.serve(async (req) => {
         .eq('id', syncRunId);
 
       return new Response(
-        JSON.stringify({ success: false, error: result.error }),
+        JSON.stringify({ success: false, status: 'failed', syncRunId, error: result.error }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -600,7 +642,8 @@ Deno.serve(async (req) => {
           paid_count: result.paidCount,
           failed_count: result.failedCount,
           hasMore: true,
-          nextCursor: result.nextCursor
+          nextCursor: result.nextCursor,
+          duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -639,7 +682,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

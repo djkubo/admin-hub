@@ -716,6 +716,7 @@ export type Database = {
           plan_interval: string | null
           plan_name: string | null
           product_name: string | null
+          raw_data: Json | null
           status: string
           stripe_customer_id: string | null
           stripe_invoice_id: string
@@ -752,6 +753,7 @@ export type Database = {
           plan_interval?: string | null
           plan_name?: string | null
           product_name?: string | null
+          raw_data?: Json | null
           status: string
           stripe_customer_id?: string | null
           stripe_invoice_id: string
@@ -788,6 +790,7 @@ export type Database = {
           plan_interval?: string | null
           plan_name?: string | null
           product_name?: string | null
+          raw_data?: Json | null
           status?: string
           stripe_customer_id?: string | null
           stripe_invoice_id?: string
@@ -1640,6 +1643,7 @@ export type Database = {
           plan_id: string | null
           plan_name: string
           provider: string | null
+          raw_data: Json | null
           status: string
           stripe_customer_id: string | null
           stripe_subscription_id: string
@@ -1661,6 +1665,7 @@ export type Database = {
           plan_id?: string | null
           plan_name: string
           provider?: string | null
+          raw_data?: Json | null
           status: string
           stripe_customer_id?: string | null
           stripe_subscription_id: string
@@ -1682,6 +1687,7 @@ export type Database = {
           plan_id?: string | null
           plan_name?: string
           provider?: string | null
+          raw_data?: Json | null
           status?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string
@@ -1817,6 +1823,7 @@ export type Database = {
           metadata: Json | null
           payment_key: string | null
           payment_type: string | null
+          raw_data: Json | null
           source: string | null
           status: string
           stripe_created_at: string | null
@@ -1836,6 +1843,7 @@ export type Database = {
           metadata?: Json | null
           payment_key?: string | null
           payment_type?: string | null
+          raw_data?: Json | null
           source?: string | null
           status: string
           stripe_created_at?: string | null
@@ -1855,6 +1863,7 @@ export type Database = {
           metadata?: Json | null
           payment_key?: string | null
           payment_type?: string | null
+          raw_data?: Json | null
           source?: string | null
           status?: string
           stripe_created_at?: string | null

@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,39 +6,13 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: JWT-based admin verification using getUser()
-async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string; userId?: string }> {
-  const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { valid: false, error: 'Missing or invalid Authorization header' };
-  }
+// ============= TYPE DEFINITIONS =============
 
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authHeader } }
-  });
-
-  // Use getUser() instead of getClaims() for compatibility
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
-  if (userError || !user) {
-    return { valid: false, error: 'Invalid or expired token' };
-  }
-
-  // Check if user is admin using RPC
-  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
-  if (adminError || !isAdmin) {
-    return { valid: false, error: 'User is not an admin' };
-  }
-
-  return { valid: true, userId: user.id };
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  userId?: string;
 }
-
-// ============ CONFIGURATION ============
-const STALE_TIMEOUT_MINUTES = 30;
 
 interface PayPalTransaction {
   transaction_info: {
@@ -71,6 +45,70 @@ interface PayPalTransaction {
     }>;
   };
 }
+
+interface PayPalPageResult {
+  transactions: PayPalTransaction[];
+  totalPages: number;
+  totalItems: number;
+}
+
+interface TransactionRecord {
+  stripe_payment_intent_id: string;
+  payment_key: string;
+  external_transaction_id: string;
+  customer_email: string;
+  amount: number;
+  currency: string;
+  status: string;
+  stripe_created_at: string;
+  source: string;
+  metadata: Record<string, unknown>;
+  raw_data: Record<string, unknown>;
+}
+
+interface ClientRecord {
+  email: string;
+  full_name: string | null;
+  paypal_customer_id: string | null;
+  lifecycle_stage: string;
+  last_sync: string;
+}
+
+// ============= CONSTANTS =============
+
+const STALE_TIMEOUT_MINUTES = 30;
+
+// ============= SECURITY =============
+
+async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
+
+// ============= HELPERS =============
 
 async function getPayPalAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const credentials = btoa(`${clientId}:${clientSecret}`);
@@ -115,7 +153,7 @@ async function fetchPayPalPage(
   startDate: string,
   endDate: string,
   page: number = 1
-): Promise<{ transactions: PayPalTransaction[]; totalPages: number; totalItems: number }> {
+): Promise<PayPalPageResult> {
   const url = new URL("https://api-m.paypal.com/v1/reporting/transactions");
   url.searchParams.set("start_date", startDate);
   url.searchParams.set("end_date", endDate);
@@ -146,6 +184,12 @@ async function fetchPayPalPage(
   };
 }
 
+function formatPayPalDate(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+// ============= MAIN HANDLER =============
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -158,7 +202,7 @@ Deno.serve(async (req) => {
     const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        JSON.stringify({ success: false, status: 'failed', error: "Forbidden", message: authCheck.error }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -168,7 +212,7 @@ Deno.serve(async (req) => {
     
     if (!paypalClientId || !paypalSecret) {
       return new Response(
-        JSON.stringify({ error: "PayPal credentials not configured" }),
+        JSON.stringify({ success: false, status: 'failed', error: "PayPal credentials not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -188,11 +232,6 @@ Deno.serve(async (req) => {
     const now = new Date();
     const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000);
 
-    // PayPal requires dates in ISO 8601 format WITHOUT milliseconds: YYYY-MM-DDTHH:MM:SSZ
-    const formatPayPalDate = (date: Date): string => {
-      return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    };
-
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
@@ -206,7 +245,6 @@ Deno.serve(async (req) => {
           requestedStart = threeYearsAgo;
         }
         startDate = formatPayPalDate(requestedStart);
-        // Also format endDate to ensure consistent format
         endDate = formatPayPalDate(new Date(body.endDate));
       } else {
         startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
@@ -234,7 +272,7 @@ Deno.serve(async (req) => {
         .select('id');
       
       return new Response(
-        JSON.stringify({ success: true, cleaned: staleSyncs?.length || 0 }),
+        JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -265,6 +303,7 @@ Deno.serve(async (req) => {
         return new Response(
           JSON.stringify({ 
             success: false, 
+            status: 'failed',
             error: 'sync_already_running',
             message: 'Ya hay un sync de PayPal en progreso',
             existingSyncId: existingRuns[0].id
@@ -288,7 +327,7 @@ Deno.serve(async (req) => {
       
       if (syncError) {
         return new Response(
-          JSON.stringify({ error: "Failed to create sync record" }),
+          JSON.stringify({ success: false, status: 'failed', error: "Failed to create sync record" }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -319,13 +358,13 @@ Deno.serve(async (req) => {
         .eq('id', syncRunId);
       
       return new Response(
-        JSON.stringify({ success: false, error: 'PayPal authentication failed' }),
+        JSON.stringify({ success: false, status: 'failed', syncRunId, error: 'PayPal authentication failed' }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     // Fetch transactions
-    let result;
+    let result: PayPalPageResult;
     try {
       result = await fetchPayPalPage(accessToken, startDate, endDate, page);
     } catch (error) {
@@ -339,7 +378,7 @@ Deno.serve(async (req) => {
         .eq('id', syncRunId);
       
       return new Response(
-        JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Failed' }),
+        JSON.stringify({ success: false, status: 'failed', syncRunId, error: error instanceof Error ? error.message : 'Failed' }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -349,8 +388,8 @@ Deno.serve(async (req) => {
     // Process transactions
     let paidCount = 0;
     let failedCount = 0;
-    const transactions: Array<Record<string, unknown>> = [];
-    const clientsMap = new Map<string, Record<string, unknown>>();
+    const transactions: TransactionRecord[] = [];
+    const clientsMap = new Map<string, ClientRecord>();
 
     for (const tx of result.transactions) {
       const info = tx.transaction_info;
@@ -371,7 +410,7 @@ Deno.serve(async (req) => {
         ? `${payer.payer_name.given_name || ''} ${payer.payer_name.surname || ''}`.trim()
         : null;
 
-      let productName = tx.cart_info?.item_details?.[0]?.item_name || 
+      const productName = tx.cart_info?.item_details?.[0]?.item_name || 
                         info.transaction_subject || 
                         info.transaction_note || null;
 
@@ -392,7 +431,8 @@ Deno.serve(async (req) => {
           paypal_payer_id: payer?.account_id,
           gross_amount: Math.round(Math.abs(grossAmount) * 100),
           fee_amount: Math.round(Math.abs(feeAmount) * 100)
-        }
+        },
+        raw_data: tx as unknown as Record<string, unknown>
       });
 
       if (!clientsMap.has(email)) {
@@ -457,7 +497,8 @@ Deno.serve(async (req) => {
           hasMore: true,
           currentPage: page,
           totalPages: result.totalPages,
-          nextPage: page + 1
+          nextPage: page + 1,
+          duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -495,7 +536,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
