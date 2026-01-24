@@ -112,7 +112,7 @@ export function useSubscriptions() {
     }
   }, [syncStatus?.status, syncStatus?.total_inserted, syncStatus?.error_message, queryClient, toast]);
 
-  const { data: subscriptions = [], isLoading, error } = useQuery({
+  const { data: subscriptions = [], isLoading, error, refetch } = useQuery({
     queryKey: ["subscriptions"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -125,6 +125,23 @@ export function useSubscriptions() {
     },
     refetchInterval: 60000, // Refetch every minute for near-realtime updates
   });
+
+  // Realtime subscription for subscriptions table
+  useEffect(() => {
+    const channel = supabase.channel('subscriptions-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, () => {
+        refetch();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, () => {
+        refetch();
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'subscriptions' }, () => {
+        refetch();
+      })
+      .subscribe();
+      
+    return () => { supabase.removeChannel(channel); };
+  }, [refetch]);
 
   // Calculate revenue by plan with Pareto analysis
   const revenueByPlan: PlanRevenue[] = (() => {

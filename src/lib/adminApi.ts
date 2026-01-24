@@ -1,38 +1,27 @@
 import { supabase } from "@/integrations/supabase/client";
 
-// Admin API key for internal edge functions
-const ADMIN_API_KEY = 'vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk';
+/**
+ * SECURE: No hardcoded API keys. Uses authenticated Supabase session.
+ * Edge functions verify JWT + is_admin() server-side.
+ */
 
-// Get admin key
-const getAdminKey = (): string => {
-  return import.meta.env.VITE_ADMIN_API_KEY || ADMIN_API_KEY;
-};
-
-// Helper to create headers with admin key
-export const getAdminHeaders = (): Record<string, string> => {
-  const adminKey = getAdminKey();
-  return {
-    'x-admin-key': adminKey,
-    'Content-Type': 'application/json',
-  };
-};
-
-// Invoke edge function with admin key
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const invokeWithAdminKey = async (
   functionName: string,
-  body?: Record<string, unknown>
-) => {
-  const adminKey = getAdminKey();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body?: Record<string, any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> => {
+  // Get current session - the SDK automatically includes the JWT in requests
+  const { data: { session } } = await supabase.auth.getSession();
   
-  if (!adminKey) {
-    throw new Error('ADMIN_API_KEY not configured. Add VITE_ADMIN_API_KEY to your environment.');
+  if (!session) {
+    throw new Error('No hay sesión activa. Por favor, inicia sesión.');
   }
 
   const { data, error } = await supabase.functions.invoke(functionName, {
     body,
-    headers: {
-      'x-admin-key': adminKey,
-    },
+    // JWT is automatically included via the session
   });
 
   if (error) {
@@ -40,6 +29,13 @@ export const invokeWithAdminKey = async (
   }
 
   return data;
+};
+
+// Helper to get admin headers (for compatibility - now just returns empty since JWT is automatic)
+export const getAdminHeaders = (): Record<string, string> => {
+  return {
+    'Content-Type': 'application/json',
+  };
 };
 
 export default invokeWithAdminKey;

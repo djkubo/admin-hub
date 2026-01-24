@@ -38,12 +38,13 @@ export function SourceAnalytics() {
         .select('id, acquisition_source, lifecycle_stage, total_spend');
 
       // Get transactions for revenue calculation (last 30 days)
+      // FIX: Use stripe_created_at for accurate date filtering and include both 'succeeded' and 'paid' statuses
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const { data: transactions } = await supabase
         .from('transactions')
-        .select('customer_email, amount, status, currency')
-        .eq('status', 'succeeded')
-        .gte('created_at', thirtyDaysAgo);
+        .select('customer_email, amount, status, currency, stripe_created_at')
+        .in('status', ['succeeded', 'paid'])
+        .gte('stripe_created_at', thirtyDaysAgo);
 
       if (!clients) {
         setMetrics([]);

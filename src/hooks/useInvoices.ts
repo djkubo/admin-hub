@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -74,6 +75,20 @@ export function useInvoices() {
     },
     refetchInterval: 60000, // Refetch every minute for near-realtime updates
   });
+
+  // Realtime subscription for invoices table
+  useEffect(() => {
+    const channel = supabase.channel('invoices-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'invoices' }, () => {
+        refetch();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'invoices' }, () => {
+        refetch();
+      })
+      .subscribe();
+      
+    return () => { supabase.removeChannel(channel); };
+  }, [refetch]);
 
   // Sync invoices from Stripe
   const syncInvoices = useMutation({
