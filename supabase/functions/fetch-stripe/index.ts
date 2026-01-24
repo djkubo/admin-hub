@@ -1,5 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Declare EdgeRuntime for background processing
+declare const EdgeRuntime: {
+  waitUntil: (promise: Promise<unknown>) => void;
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
@@ -38,23 +43,6 @@ const DECLINE_REASONS_ES: Record<string, string> = {
   'card_declined': 'Tarjeta rechazada',
   'fraudulent': 'Transacción sospechosa',
   'blocked': 'Tarjeta bloqueada',
-  'withdrawal_count_limit_exceeded': 'Límite de retiros excedido',
-  'invalid_account': 'Cuenta inválida',
-  'new_account_information_available': 'Datos de cuenta nuevos disponibles',
-  'try_again_later': 'Intentar más tarde',
-  'not_permitted': 'Transacción no permitida',
-  'revocation_of_all_authorizations': 'Revocación de autorizaciones',
-  'revocation_of_authorization': 'Autorización revocada',
-  'stop_payment_order': 'Orden de detener pago',
-  'call_issuer': 'Contactar al banco emisor',
-  'currency_not_supported': 'Moneda no soportada',
-  'duplicate_transaction': 'Transacción duplicada',
-  'reenter_transaction': 'Reingresar transacción',
-  'merchant_blacklist': 'Comercio en lista negra',
-  'security_violation': 'Violación de seguridad',
-  'service_not_allowed': 'Servicio no permitido',
-  'testmode_decline': 'Rechazo en modo prueba',
-  'transaction_not_allowed': 'Transacción no permitida',
 };
 
 interface StripeCustomer {
@@ -67,14 +55,9 @@ interface StripeCustomer {
 interface StripeCharge {
   id: string;
   payment_method_details?: {
-    card?: {
-      brand?: string;
-      last4?: string;
-    };
+    card?: { brand?: string; last4?: string };
   };
-  outcome?: {
-    reason?: string;
-  };
+  outcome?: { reason?: string };
   failure_code?: string;
   failure_message?: string;
 }
@@ -86,9 +69,7 @@ interface StripeInvoice {
   lines?: {
     data: Array<{
       description?: string;
-      price?: {
-        product?: string | { id: string; name: string };
-      };
+      price?: { product?: string | { id: string; name: string } };
     }>;
   };
 }
@@ -99,11 +80,7 @@ interface StripePaymentIntent {
   amount: number;
   currency: string;
   status: string;
-  last_payment_error?: {
-    code?: string;
-    message?: string;
-    decline_code?: string;
-  } | null;
+  last_payment_error?: { code?: string; message?: string; decline_code?: string } | null;
   created: number;
   metadata: Record<string, string>;
   receipt_email?: string | null;
@@ -117,6 +94,14 @@ interface StripeListResponse {
   has_more: boolean;
 }
 
+// ============ CONFIGURATION ============
+// Process 10 pages per invocation (1000 records) to stay well under 5-min limit
+const MAX_PAGES_PER_INVOCATION = 10;
+// Delay between Stripe API calls to respect rate limits
+const STRIPE_API_DELAY_MS = 100;
+// Delay before triggering continuation
+const CONTINUATION_DELAY_MS = 1000;
+
 const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 
 async function getCustomerInfo(customerId: string, stripeSecretKey: string): Promise<{ email: string | null; name: string | null; phone: string | null }> {
@@ -125,10 +110,9 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   }
 
   try {
-    const response = await fetch(
-      `https://api.stripe.com/v1/customers/${customerId}`,
-      { headers: { Authorization: `Bearer ${stripeSecretKey}` } }
-    );
+    const response = await fetch(`https://api.stripe.com/v1/customers/${customerId}`, {
+      headers: { Authorization: `Bearer ${stripeSecretKey}` }
+    });
 
     if (!response.ok) {
       customerEmailCache.set(customerId, { email: null, name: null, phone: null });
@@ -145,201 +129,55 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   }
 }
 
-// TUNED: Process more pages per invocation but stay safe under Deno's ~5 min limit
-const MAX_PAGES_PER_INVOCATION = 20;
-const CONTINUATION_DELAY_MS = 500;
-
-// Helper: delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Background worker that continues processing with retry logic
-async function continueSync(
-  supabaseUrl: string,
+// ============ MAIN SYNC LOGIC ============
+async function processStripeSync(
+  supabase: ReturnType<typeof createClient>,
+  stripeSecretKey: string,
+  syncRunId: string,
+  fetchAll: boolean,
+  startDate: number | null,
+  endDate: number | null,
+  requestedMaxPages: number,
+  continuationCursor: string | null,
+  continuationPageCount: number,
+  continuationTotalSynced: number,
+  continuationTotalClients: number,
   adminKey: string,
-  continuationBody: Record<string, unknown>,
-  retryCount = 0
-) {
-  const maxRetries = 3;
+  supabaseUrl: string
+): Promise<{ status: string; totalSynced: number; pageCount: number; hasMore: boolean; cursor: string | null }> {
   
-  try {
-    await delay(CONTINUATION_DELAY_MS);
-    
-    console.log(`🔄 Background: Starting continuation (attempt ${retryCount + 1})...`);
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 280000);
-    
-    const response = await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-key': adminKey,
-      },
-      body: JSON.stringify(continuationBody),
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    console.log(`🔄 Background: Continuation response status: ${response.status}`);
-    
-    if (!response.ok && retryCount < maxRetries) {
-      console.log(`🔄 Background: Retrying after error...`);
-      await delay(2000 * (retryCount + 1));
-      return continueSync(supabaseUrl, adminKey, continuationBody, retryCount + 1);
-    }
-  } catch (err) {
-    console.error('🔄 Background: Continuation error:', err);
-    
-    if (retryCount < maxRetries) {
-      console.log(`🔄 Background: Retrying after exception...`);
-      await delay(2000 * (retryCount + 1));
-      return continueSync(supabaseUrl, adminKey, continuationBody, retryCount + 1);
-    }
-    
-    // Mark sync as failed after all retries exhausted
-    try {
-      const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-      const cont = continuationBody._continuation as Record<string, unknown> | undefined;
-      const syncRunId = cont?.syncRunId as string | undefined;
-      
-      if (syncRunId) {
-        await (supabase.from('sync_runs') as any)
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: `Auto-continuation failed after ${maxRetries} retries: ${err}`
-          })
-          .eq('id', syncRunId);
-      }
-    } catch (updateErr) {
-      console.error('🔄 Background: Failed to update sync status:', updateErr);
-    }
-  }
-}
+  let totalSynced = continuationTotalSynced;
+  let totalClients = continuationTotalClients;
+  let paidCount = 0;
+  let failedCount = 0;
+  let skippedNoEmail = 0;
+  let hasMore = true;
+  let cursor: string | null = continuationCursor;
+  let pageCount = continuationPageCount;
+  const maxPages = fetchAll ? requestedMaxPages : 1;
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
-
-  let syncRunId: string | null = null;
-  let supabase: ReturnType<typeof createClient> | null = null;
+  console.log(`🔄 STRIPE SYNC: Starting from page ${pageCount}, cursor: ${cursor?.substring(0, 20)}...`);
 
   try {
-    // SECURITY: Verify x-admin-key
-    const authCheck = verifyAdminKey(req);
-    if (!authCheck.valid) {
-      console.error("❌ Auth failed:", authCheck.error);
-      return new Response(
-        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-    const adminKey = Deno.env.get("ADMIN_API_KEY");
-    if (!stripeSecretKey) {
-      return new Response(
-        JSON.stringify({ error: "STRIPE_SECRET_KEY not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Parse request body
-    let fetchAll = false;
-    let startDate: number | null = null;
-    let endDate: number | null = null;
-    let requestedMaxPages = 50;
-    let continuationCursor: string | null = null;
-    let continuationSyncRunId: string | null = null;
-    let continuationPageCount = 0;
-    let continuationTotalSynced = 0;
-    let continuationTotalClients = 0;
-    
-    try {
-      const body = await req.json();
-      fetchAll = body.fetchAll === true;
-      
-      if (body.startDate) {
-        startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
-      }
-      if (body.endDate) {
-        endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
-      }
-      if (typeof body.maxPages === 'number' && body.maxPages > 0) {
-        requestedMaxPages = Math.min(body.maxPages, 5000);
-      }
-      if (body._continuation) {
-        continuationCursor = body._continuation.cursor || null;
-        continuationSyncRunId = body._continuation.syncRunId || null;
-        continuationPageCount = body._continuation.pageCount || 0;
-        continuationTotalSynced = body._continuation.totalSynced || 0;
-        continuationTotalClients = body._continuation.totalClients || 0;
-        console.log(`🔄 CONTINUATION from page ${continuationPageCount}, synced: ${continuationTotalSynced}`);
-      }
-    } catch {
-      // No body or parse error
-    }
-
-    console.log(`🔄 Stripe Sync - fetchAll: ${fetchAll}, maxPages: ${requestedMaxPages}, continuation: ${!!continuationCursor}`);
-
-    // Create or reuse sync_run record
-    syncRunId = continuationSyncRunId;
-    if (!syncRunId) {
-      const { data: syncRun, error: syncError } = await (supabase.from('sync_runs') as any)
-        .insert({
-          source: 'stripe',
-          status: 'running',
-          metadata: { fetchAll, startDate, endDate, requestedMaxPages }
-        })
-        .select('id')
-        .single();
-      
-      if (syncError) {
-        console.error("Failed to create sync_run:", syncError);
-        return new Response(
-          JSON.stringify({ error: "Failed to create sync record", details: syncError.message }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      syncRunId = syncRun?.id;
-    }
-
-    // Process sync
-    let totalSynced = continuationTotalSynced;
-    let totalClients = continuationTotalClients;
-    let paidCount = 0;
-    let failedCount = 0;
-    let skippedNoEmail = 0;
-    let hasMore = true;
-    let cursor: string | null = continuationCursor;
-    let pageCount = continuationPageCount;
-    const maxPages = fetchAll ? requestedMaxPages : 1;
-    const maxPagesThisInvocation = Math.min(MAX_PAGES_PER_INVOCATION, maxPages - pageCount);
     let pagesThisInvocation = 0;
-
-    while (hasMore && pagesThisInvocation < maxPagesThisInvocation && pageCount < maxPages) {
+    
+    while (hasMore && pagesThisInvocation < MAX_PAGES_PER_INVOCATION && pageCount < maxPages) {
+      // Rate limit protection
+      if (pagesThisInvocation > 0) {
+        await delay(STRIPE_API_DELAY_MS);
+      }
+      
       const url = new URL("https://api.stripe.com/v1/payment_intents");
       url.searchParams.set("limit", "100");
       url.searchParams.append("expand[]", "data.customer");
       url.searchParams.append("expand[]", "data.latest_charge");
       url.searchParams.append("expand[]", "data.invoice");
       
-      if (startDate) {
-        url.searchParams.set("created[gte]", startDate.toString());
-      }
-      if (endDate) {
-        url.searchParams.set("created[lte]", endDate.toString());
-      }
-      
-      if (cursor) {
-        url.searchParams.set("starting_after", cursor);
-      }
+      if (startDate) url.searchParams.set("created[gte]", startDate.toString());
+      if (endDate) url.searchParams.set("created[lte]", endDate.toString());
+      if (cursor) url.searchParams.set("starting_after", cursor);
 
       const response = await fetch(url.toString(), {
         headers: { Authorization: `Bearer ${stripeSecretKey}` },
@@ -349,25 +187,24 @@ Deno.serve(async (req) => {
         const errorText = await response.text();
         console.error("Stripe API error:", response.status, errorText);
         
-        await (supabase.from('sync_runs') as any)
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: `Stripe API error: ${response.status} - ${errorText.substring(0, 200)}`,
-            total_fetched: totalSynced + skippedNoEmail,
-            total_inserted: totalSynced
-          })
-          .eq('id', syncRunId);
+        // Update sync run with error
+        await (supabase.from('sync_runs') as any).update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: `Stripe API error: ${response.status} - ${errorText.substring(0, 200)}`,
+          total_fetched: totalSynced + skippedNoEmail,
+          total_inserted: totalSynced
+        }).eq('id', syncRunId);
         
-        return new Response(
-          JSON.stringify({ error: "Stripe API error", status: response.status }),
-          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return { status: 'failed', totalSynced, pageCount, hasMore: false, cursor };
       }
 
       const data: StripeListResponse = await response.json();
       
-      if (data.data.length === 0) break;
+      if (data.data.length === 0) {
+        hasMore = false;
+        break;
+      }
 
       const transactions: Array<Record<string, unknown>> = [];
       const clientsMap = new Map<string, Record<string, unknown>>();
@@ -421,7 +258,6 @@ Deno.serve(async (req) => {
           const invoice = pi.invoice as StripeInvoice;
           invoiceNumber = invoice.number || null;
           subscriptionId = invoice.subscription || null;
-
           if (invoice.lines?.data?.[0]) {
             const firstLine = invoice.lines.data[0];
             productName = firstLine.description || null;
@@ -450,9 +286,7 @@ Deno.serve(async (req) => {
           case "requires_payment_method":
             mappedStatus = "requires_payment_method";
             failedCount++;
-            declineReasonEs = (failureCode && DECLINE_REASONS_ES[failureCode]) 
-              || (chargeOutcomeReason && DECLINE_REASONS_ES[chargeOutcomeReason])
-              || "Pago rechazado";
+            declineReasonEs = (failureCode && DECLINE_REASONS_ES[failureCode]) || "Pago rechazado";
             break;
           case "requires_action":
           case "requires_confirmation":
@@ -511,8 +345,9 @@ Deno.serve(async (req) => {
 
       // Save transactions
       if (transactions.length > 0) {
-        const { error: txError, data: txData } = await (supabase.from("transactions") as any)
-          .upsert(transactions, { onConflict: "stripe_payment_intent_id", ignoreDuplicates: false })
+        const { error: txError, data: txData } = await supabase
+          .from("transactions")
+          .upsert(transactions as any, { onConflict: "stripe_payment_intent_id", ignoreDuplicates: false })
           .select("id");
 
         if (txError) {
@@ -525,8 +360,9 @@ Deno.serve(async (req) => {
       // Save clients
       const clientsToSave = Array.from(clientsMap.values());
       if (clientsToSave.length > 0) {
-        const { error: clientError, data: clientData } = await (supabase.from("clients") as any)
-          .upsert(clientsToSave, { onConflict: "email", ignoreDuplicates: false })
+        const { error: clientError, data: clientData } = await supabase
+          .from("clients")
+          .upsert(clientsToSave as any, { onConflict: "email", ignoreDuplicates: false })
           .select("id");
 
         if (!clientError) {
@@ -539,24 +375,29 @@ Deno.serve(async (req) => {
       pageCount++;
       pagesThisInvocation++;
       
-      console.log(`📄 Page ${pageCount}: ${transactions.length} tx (total: ${totalSynced})`);
+      console.log(`📄 Page ${pageCount}: ${transactions.length} tx, total: ${totalSynced}`);
 
       // Update checkpoint every page
-      await (supabase.from('sync_runs') as any)
-        .update({
-          total_fetched: totalSynced + skippedNoEmail,
-          total_inserted: totalSynced,
-          checkpoint: { last_cursor: cursor, page: pageCount }
-        })
-        .eq('id', syncRunId);
+      await (supabase.from('sync_runs') as any).update({
+        total_fetched: totalSynced + skippedNoEmail,
+        total_inserted: totalSynced,
+        checkpoint: { last_cursor: cursor, page: pageCount }
+      }).eq('id', syncRunId);
     }
 
     // Check if we need to auto-continue
     const needsContinuation = hasMore && pageCount < maxPages;
 
-    if (needsContinuation && adminKey) {
-      console.log(`🔄 Auto-continuing: ${pageCount}/${maxPages} pages done, scheduling next batch...`);
+    if (needsContinuation) {
+      console.log(`🔄 NEED CONTINUATION: page ${pageCount}/${maxPages}, triggering next batch...`);
       
+      // Update status to continuing
+      await (supabase.from('sync_runs') as any).update({
+        status: 'continuing',
+        checkpoint: { last_cursor: cursor, page: pageCount }
+      }).eq('id', syncRunId);
+
+      // CRITICAL FIX: Schedule continuation with proper delay and fire-and-forget
       const continuationBody = {
         fetchAll,
         startDate: startDate ? new Date(startDate * 1000).toISOString() : undefined,
@@ -571,71 +412,191 @@ Deno.serve(async (req) => {
         }
       };
 
-      // Use EdgeRuntime.waitUntil for reliable background continuation
-      // @ts-ignore - EdgeRuntime is available in Deno Deploy
-      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
-        // @ts-ignore
-        EdgeRuntime.waitUntil(continueSync(supabaseUrl, adminKey, continuationBody));
-      } else {
-        continueSync(supabaseUrl, adminKey, continuationBody).catch(console.error);
-      }
+      // Fire and forget - don't await, don't use EdgeRuntime.waitUntil on fetch
+      // Instead, schedule the HTTP call after a delay
+      setTimeout(async () => {
+        try {
+          console.log(`🚀 Triggering continuation HTTP call...`);
+          const resp = await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-key': adminKey,
+            },
+            body: JSON.stringify(continuationBody),
+          });
+          console.log(`✅ Continuation triggered: ${resp.status}`);
+        } catch (err) {
+          console.error(`❌ Continuation failed:`, err);
+          // Mark as failed so UI shows error
+          await (supabase.from('sync_runs') as any).update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: `Continuation failed: ${err}`
+          }).eq('id', syncRunId);
+        }
+      }, CONTINUATION_DELAY_MS);
 
-      return new Response(
-        JSON.stringify({
-          status: 'continuing',
-          message: `Processed ${pagesThisInvocation} pages. Continuing in background...`,
-          syncRunId,
-          pagesCompleted: pageCount,
-          totalSynced,
-        }),
-        { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return { status: 'continuing', totalSynced, pageCount, hasMore: true, cursor };
     }
 
     // Mark completed
-    await (supabase.from('sync_runs') as any)
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        total_fetched: totalSynced + skippedNoEmail,
-        total_inserted: totalSynced,
-        total_skipped: skippedNoEmail,
-        metadata: { fetchAll, startDate, endDate, paidCount, failedCount, pages: pageCount }
-      })
-      .eq('id', syncRunId);
+    await (supabase.from('sync_runs') as any).update({
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      total_fetched: totalSynced + skippedNoEmail,
+      total_inserted: totalSynced,
+      total_skipped: skippedNoEmail,
+      metadata: { fetchAll, startDate, endDate, paidCount, failedCount, pages: pageCount }
+    }).eq('id', syncRunId);
 
-    console.log(`✅ COMPLETE: ${totalSynced} transactions, ${totalClients} clients, ${pageCount} pages`);
+    console.log(`✅ STRIPE SYNC COMPLETE: ${totalSynced} transactions, ${totalClients} clients, ${pageCount} pages`);
+    return { status: 'completed', totalSynced, pageCount, hasMore: false, cursor };
 
+  } catch (error) {
+    console.error("Stripe sync error:", error);
+    
+    await (supabase.from('sync_runs') as any).update({
+      status: 'failed',
+      completed_at: new Date().toISOString(),
+      error_message: `Sync error: ${error instanceof Error ? error.message : String(error)}`
+    }).eq('id', syncRunId);
+    
+    return { status: 'failed', totalSynced, pageCount, hasMore: false, cursor };
+  }
+}
+
+// ============ MAIN HANDLER ============
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    // SECURITY: Verify x-admin-key
+    const authCheck = verifyAdminKey(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
+    const adminKey = Deno.env.get("ADMIN_API_KEY")!;
+    if (!stripeSecretKey) {
+      return new Response(
+        JSON.stringify({ error: "STRIPE_SECRET_KEY not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Parse request body
+    let fetchAll = false;
+    let startDate: number | null = null;
+    let endDate: number | null = null;
+    let requestedMaxPages = 100; // Default to 100 pages (10,000 records)
+    let continuationCursor: string | null = null;
+    let continuationSyncRunId: string | null = null;
+    let continuationPageCount = 0;
+    let continuationTotalSynced = 0;
+    let continuationTotalClients = 0;
+    
+    try {
+      const body = await req.json();
+      fetchAll = body.fetchAll === true;
+      
+      if (body.startDate) {
+        startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
+      }
+      if (body.endDate) {
+        endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
+      }
+      if (typeof body.maxPages === 'number' && body.maxPages > 0) {
+        requestedMaxPages = Math.min(body.maxPages, 10000); // Cap at 10k pages (1M records)
+      }
+      if (body._continuation) {
+        continuationCursor = body._continuation.cursor || null;
+        continuationSyncRunId = body._continuation.syncRunId || null;
+        continuationPageCount = body._continuation.pageCount || 0;
+        continuationTotalSynced = body._continuation.totalSynced || 0;
+        continuationTotalClients = body._continuation.totalClients || 0;
+        console.log(`🔄 CONTINUATION MODE: page ${continuationPageCount}, synced: ${continuationTotalSynced}`);
+      }
+    } catch {
+      // No body or parse error - use defaults
+    }
+
+    console.log(`🔄 Stripe Sync Request - fetchAll: ${fetchAll}, maxPages: ${requestedMaxPages}, continuation: ${!!continuationCursor}`);
+
+    // Create or reuse sync_run record
+    let syncRunId = continuationSyncRunId;
+    if (!syncRunId) {
+      const { data: syncRun, error: syncError } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'stripe',
+          status: 'running',
+          metadata: { fetchAll, startDate, endDate, requestedMaxPages }
+        })
+        .select('id')
+        .single();
+      
+      if (syncError) {
+        console.error("Failed to create sync_run:", syncError);
+        return new Response(
+          JSON.stringify({ error: "Failed to create sync record", details: syncError.message }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      syncRunId = syncRun?.id;
+    } else {
+      // Update existing run to running status
+      await (supabase.from('sync_runs') as any).update({ status: 'running' }).eq('id', syncRunId);
+    }
+
+    // Run sync in background using EdgeRuntime.waitUntil
+    const syncPromise = processStripeSync(
+      supabase as any,
+      stripeSecretKey,
+      syncRunId!,
+      fetchAll,
+      startDate,
+      endDate,
+      requestedMaxPages,
+      continuationCursor,
+      continuationPageCount,
+      continuationTotalSynced,
+      continuationTotalClients,
+      adminKey,
+      supabaseUrl
+    );
+
+    // Use EdgeRuntime.waitUntil to keep the function running
+    if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+      EdgeRuntime.waitUntil(syncPromise);
+    }
+
+    // Return immediate response
     return new Response(
       JSON.stringify({
         success: true,
-        synced_transactions: totalSynced,
-        synced_clients: totalClients,
-        pages: pageCount,
-        paidCount,
-        failedCount,
-        skippedNoEmail,
+        syncRunId,
+        mode: continuationCursor ? 'continuation' : 'started',
+        message: continuationCursor 
+          ? `Continuing from page ${continuationPageCount}...`
+          : 'Stripe sync started in background. Check sync_runs table for progress.',
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error) {
     console.error("Fatal error:", error);
-    
-    if (syncRunId && supabase) {
-      try {
-        await (supabase.from('sync_runs') as any)
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: `Fatal error: ${error instanceof Error ? error.message : String(error)}`
-          })
-          .eq('id', syncRunId);
-      } catch (updateErr) {
-        console.error("Failed to update sync status:", updateErr);
-      }
-    }
-    
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
