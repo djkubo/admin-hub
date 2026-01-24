@@ -2,21 +2,39 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: Admin key guard
-function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
-  const adminKey = Deno.env.get("ADMIN_API_KEY");
-  if (!adminKey) {
-    return { valid: false, error: "ADMIN_API_KEY not configured" };
+// SECURITY: JWT-based admin verification
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string; userId?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
   }
-  const providedKey = req.headers.get("x-admin-key");
-  if (!providedKey || providedKey !== adminKey) {
-    return { valid: false, error: "Invalid or missing x-admin-key" };
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const token = authHeader.replace('Bearer ', '');
+  const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+  
+  if (claimsError || !claims?.claims?.sub) {
+    return { valid: false, error: 'Invalid or expired token' };
   }
-  return { valid: true };
+
+  // Check if user is admin using RPC
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true, userId: claims.claims.sub as string };
 }
 
 // ============ CONFIGURATION ============
@@ -136,7 +154,8 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    const authCheck = verifyAdminKey(req);
+    // SECURITY: Verify JWT + admin role
+    const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
       return new Response(
         JSON.stringify({ error: "Forbidden", message: authCheck.error }),

@@ -1,12 +1,41 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+// SECURITY: JWT-based admin verification
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true };
+}
 
 // Background sync function
 async function runSync(serviceClient: any, stripe: any, syncRunId: string) {
@@ -137,56 +166,20 @@ serve(async (req: Request) => {
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-    // SECURITY: Dual authentication - JWT or x-admin-key
-    const authHeader = req.headers.get("Authorization");
-    const adminKeyHeader = req.headers.get("x-admin-key");
-    
-    let isAuthenticated = false;
-    let authMethod = "";
-
-    // Method 1: Check x-admin-key header
-    if (adminKeyHeader) {
-      const serviceClient = createClient(supabaseUrl, serviceRoleKey);
-      const { data: settings } = await serviceClient
-        .from("system_settings")
-        .select("value")
-        .eq("key", "admin_api_key")
-        .single();
-
-      if (settings?.value && adminKeyHeader === settings.value) {
-        isAuthenticated = true;
-        authMethod = "admin-key";
-        console.log("✅ Authenticated via admin key");
-      }
-    }
-
-    // Method 2: Check JWT Bearer token
-    if (!isAuthenticated && authHeader?.startsWith("Bearer ")) {
-      const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-        global: { headers: { Authorization: authHeader } }
-      });
-      
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (!userError && user) {
-        isAuthenticated = true;
-        authMethod = "jwt";
-        console.log("✅ User authenticated:", user.email);
-      }
-    }
-
-    if (!isAuthenticated) {
-      console.log("❌ Authentication failed");
+    // SECURITY: Verify JWT + admin role
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`✅ Auth method: ${authMethod}`);
+    console.log("✅ Admin verified");
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeSecretKey) {

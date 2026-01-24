@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -11,13 +11,6 @@ interface SyncConfig {
   startDate?: string;
   endDate?: string;
   includeContacts?: boolean;
-}
-
-interface SyncProgress {
-  step: string;
-  current: number;
-  total: number;
-  details: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -32,55 +25,40 @@ Deno.serve(async (req: Request) => {
   try {
     // ============ AUTHENTICATION ============
     const authHeader = req.headers.get("Authorization");
-    const adminKeyHeader = req.headers.get("x-admin-key");
     
-    let isAuthenticated = false;
-    let authMethod = "";
-    let userEmail = "";
-
-    // Method 1: JWT Bearer token (preferred for frontend)
-    if (authHeader?.startsWith("Bearer ")) {
-      const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-        global: { headers: { Authorization: authHeader } }
-      });
-      
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (!userError && user) {
-        // Verify user is admin using is_admin() RPC
-        const { data: isAdmin } = await supabase.rpc('is_admin');
-        if (isAdmin === true) {
-          isAuthenticated = true;
-          authMethod = "jwt+is_admin";
-          userEmail = user.email || "";
-          console.log("✅ Admin authenticated:", userEmail);
-        } else {
-          console.log("❌ User is not admin:", user.email);
-        }
-      }
-    }
-
-    // Method 2: x-admin-key header (for external scripts/cron)
-    if (!isAuthenticated && adminKeyHeader) {
-      const serviceClient = createClient(supabaseUrl, serviceRoleKey);
-      const { data: settings } = await serviceClient
-        .from("system_settings")
-        .select("value")
-        .eq("key", "admin_api_key")
-        .single();
-
-      if (settings?.value && adminKeyHeader === settings.value) {
-        isAuthenticated = true;
-        authMethod = "admin-key";
-        console.log("✅ Authenticated via admin key (external script)");
-      }
-    }
-
-    if (!isAuthenticated) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized: Admin access required" }),
+        JSON.stringify({ success: false, error: "Missing or invalid Authorization header" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // Verify JWT and admin status
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+    
+    const token = authHeader.replace('Bearer ', '');
+    const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+    
+    if (claimsError || !claims?.claims?.sub) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Invalid or expired token" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+    
+    if (adminError || !isAdmin) {
+      return new Response(
+        JSON.stringify({ success: false, error: "User is not an admin" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const userEmail = (claims.claims as Record<string, unknown>).email as string || "";
+    console.log("✅ Admin authenticated:", userEmail);
 
     // ============ PARSE CONFIG ============
     let config: SyncConfig = { mode: 'today' };
@@ -132,7 +110,7 @@ Deno.serve(async (req: Request) => {
           mode: config.mode,
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
-          authMethod,
+          authMethod: "jwt+is_admin",
           userEmail,
           steps: [],
         }
@@ -188,7 +166,7 @@ Deno.serve(async (req: Request) => {
             cursor,
             syncRunId: stripeSyncId,
           },
-          headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+          headers: { Authorization: authHeader }
         });
         
         const stripeData = response.data as Record<string, unknown> | null;
@@ -214,11 +192,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE SUBSCRIPTIONS ============
     try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-subscriptions', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: subsData, error: subsError } = await serviceClient.functions.invoke('fetch-subscriptions', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["subscriptions"] = { success: true, count: data?.synced || data?.upserted || 0 };
+      if (subsError) throw subsError;
+      results["subscriptions"] = { success: true, count: subsData?.synced || subsData?.upserted || 0 };
       await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
     } catch (e) {
       console.error("Subscriptions sync error:", e);
@@ -228,11 +206,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE INVOICES ============
     try {
       await updateProgress("stripe-invoices", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-invoices', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: invData, error: invError } = await serviceClient.functions.invoke('fetch-invoices', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["invoices"] = { success: true, count: data?.synced || 0 };
+      if (invError) throw invError;
+      results["invoices"] = { success: true, count: invData?.synced || 0 };
       await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
     } catch (e) {
       console.error("Invoices sync error:", e);
@@ -242,11 +220,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE CUSTOMERS ============
     try {
       await updateProgress("stripe-customers", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-customers', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: custData, error: custError } = await serviceClient.functions.invoke('fetch-customers', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["customers"] = { success: true, count: data?.synced || 0 };
+      if (custError) throw custError;
+      results["customers"] = { success: true, count: custData?.synced || 0 };
       await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
     } catch (e) {
       console.error("Customers sync error:", e);
@@ -256,11 +234,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PRODUCTS ============
     try {
       await updateProgress("stripe-products", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-products', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: prodData, error: prodError } = await serviceClient.functions.invoke('fetch-products', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["products"] = { success: true, count: data?.synced || 0 };
+      if (prodError) throw prodError;
+      results["products"] = { success: true, count: prodData?.synced || 0 };
       await updateProgress("stripe-products", `${results["products"].count} productos`);
     } catch (e) {
       console.error("Products sync error:", e);
@@ -270,11 +248,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE DISPUTES ============
     try {
       await updateProgress("stripe-disputes", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-disputes', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: dispData, error: dispError } = await serviceClient.functions.invoke('fetch-disputes', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["disputes"] = { success: true, count: data?.synced || 0 };
+      if (dispError) throw dispError;
+      results["disputes"] = { success: true, count: dispData?.synced || 0 };
       await updateProgress("stripe-disputes", `${results["disputes"].count} disputas`);
     } catch (e) {
       console.error("Disputes sync error:", e);
@@ -284,11 +262,11 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE PAYOUTS ============
     try {
       await updateProgress("stripe-payouts", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-payouts', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: payoutsData, error: payoutsError } = await serviceClient.functions.invoke('fetch-payouts', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["payouts"] = { success: true, count: data?.synced || 0 };
+      if (payoutsError) throw payoutsError;
+      results["payouts"] = { success: true, count: payoutsData?.synced || 0 };
       await updateProgress("stripe-payouts", `${results["payouts"].count} payouts`);
     } catch (e) {
       console.error("Payouts sync error:", e);
@@ -298,10 +276,10 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE BALANCE ============
     try {
       await updateProgress("stripe-balance", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-balance', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: balData, error: balError } = await serviceClient.functions.invoke('fetch-balance', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
+      if (balError) throw balError;
       results["balance"] = { success: true, count: 1 };
       await updateProgress("stripe-balance", "Balance actualizado");
     } catch (e) {
@@ -318,7 +296,7 @@ Deno.serve(async (req: Request) => {
       let paypalSyncId: string | null = null;
       
       while (hasMore && page <= 100) {
-        const { data, error } = await serviceClient.functions.invoke('fetch-paypal', {
+        const ppResponse = await serviceClient.functions.invoke('fetch-paypal', {
           body: {
             fetchAll: true,
             startDate: formatPayPalDate(startDate),
@@ -326,19 +304,20 @@ Deno.serve(async (req: Request) => {
             page,
             syncRunId: paypalSyncId,
           },
-          headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+          headers: { Authorization: authHeader }
         });
         
-        if (error) throw error;
-        if (data?.error === 'sync_already_running') {
+        const ppData = ppResponse.data as Record<string, unknown> | null;
+        if (ppResponse.error) throw ppResponse.error;
+        if (ppData?.error === 'sync_already_running') {
           results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalPaypal += data?.synced_transactions || 0;
-        paypalSyncId = data?.syncRunId || paypalSyncId;
-        hasMore = data?.hasMore === true;
-        page = data?.nextPage || page + 1;
+        totalPaypal += (ppData?.synced_transactions as number) || 0;
+        paypalSyncId = (ppData?.syncRunId as string) || paypalSyncId;
+        hasMore = ppData?.hasMore === true;
+        page = (ppData?.nextPage as number) || page + 1;
         
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
       }
@@ -353,11 +332,11 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL SUBSCRIPTIONS ============
     try {
       await updateProgress("paypal-subscriptions", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-paypal-subscriptions', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: ppSubsData, error: ppSubsError } = await serviceClient.functions.invoke('fetch-paypal-subscriptions', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["paypal-subscriptions"] = { success: true, count: data?.synced || 0 };
+      if (ppSubsError) throw ppSubsError;
+      results["paypal-subscriptions"] = { success: true, count: ppSubsData?.synced || 0 };
       await updateProgress("paypal-subscriptions", `${results["paypal-subscriptions"].count} suscripciones`);
     } catch (e) {
       console.error("PayPal subscriptions sync error:", e);
@@ -367,11 +346,11 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL DISPUTES ============
     try {
       await updateProgress("paypal-disputes", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-paypal-disputes', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: ppDispData, error: ppDispError } = await serviceClient.functions.invoke('fetch-paypal-disputes', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["paypal-disputes"] = { success: true, count: data?.synced || 0 };
+      if (ppDispError) throw ppDispError;
+      results["paypal-disputes"] = { success: true, count: ppDispData?.synced || 0 };
       await updateProgress("paypal-disputes", `${results["paypal-disputes"].count} disputas`);
     } catch (e) {
       console.error("PayPal disputes sync error:", e);
@@ -381,11 +360,11 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL PRODUCTS ============
     try {
       await updateProgress("paypal-products", "Iniciando...");
-      const { data, error } = await serviceClient.functions.invoke('fetch-paypal-products', {
-        headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+      const { data: ppProdData, error: ppProdError } = await serviceClient.functions.invoke('fetch-paypal-products', {
+        headers: { Authorization: authHeader }
       });
-      if (error) throw error;
-      results["paypal-products"] = { success: true, count: data?.synced || 0 };
+      if (ppProdError) throw ppProdError;
+      results["paypal-products"] = { success: true, count: ppProdData?.synced || 0 };
       await updateProgress("paypal-products", `${results["paypal-products"].count} productos`);
     } catch (e) {
       console.error("PayPal products sync error:", e);
@@ -397,11 +376,11 @@ Deno.serve(async (req: Request) => {
       // GHL
       try {
         await updateProgress("ghl-contacts", "Iniciando...");
-        const { data, error } = await serviceClient.functions.invoke('sync-ghl', {
-          headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+        const { data: ghlData, error: ghlError } = await serviceClient.functions.invoke('sync-ghl', {
+          headers: { Authorization: authHeader }
         });
-        if (error) throw error;
-        results["ghl"] = { success: true, count: data?.synced || 0 };
+        if (ghlError) throw ghlError;
+        results["ghl"] = { success: true, count: ghlData?.synced || 0 };
         await updateProgress("ghl-contacts", `${results["ghl"].count} contactos`);
       } catch (e) {
         console.error("GHL sync error:", e);
@@ -411,11 +390,11 @@ Deno.serve(async (req: Request) => {
       // ManyChat
       try {
         await updateProgress("manychat-contacts", "Iniciando...");
-        const { data, error } = await serviceClient.functions.invoke('sync-manychat', {
-          headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+        const { data: mcData, error: mcError } = await serviceClient.functions.invoke('sync-manychat', {
+          headers: { Authorization: authHeader }
         });
-        if (error) throw error;
-        results["manychat"] = { success: true, count: data?.synced || 0 };
+        if (mcError) throw mcError;
+        results["manychat"] = { success: true, count: mcData?.synced || 0 };
         await updateProgress("manychat-contacts", `${results["manychat"].count} contactos`);
       } catch (e) {
         console.error("ManyChat sync error:", e);
@@ -425,11 +404,11 @@ Deno.serve(async (req: Request) => {
       // Unify identities
       try {
         await updateProgress("unify-identity", "Iniciando...");
-        const { data, error } = await serviceClient.functions.invoke('unify-identity', {
-          headers: { 'x-admin-key': Deno.env.get("ADMIN_API_KEY") || '' }
+        const { data: unifyData, error: unifyError } = await serviceClient.functions.invoke('unify-identity', {
+          headers: { Authorization: authHeader }
         });
-        if (error) throw error;
-        results["unify"] = { success: true, count: data?.unified || 0 };
+        if (unifyError) throw unifyError;
+        results["unify"] = { success: true, count: unifyData?.unified || 0 };
         await updateProgress("unify-identity", `${results["unify"].count} identidades unificadas`);
       } catch (e) {
         console.error("Unify identity error:", e);

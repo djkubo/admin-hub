@@ -1,19 +1,39 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// More permissive CORS - accept all lovable domains
-function getCorsHeaders(origin: string | null) {
-  const isAllowed = origin && (
-    origin.includes('lovable.app') ||
-    origin.includes('lovable.dev') ||
-    origin.includes('lovableproject.com') ||
-    origin.includes('localhost')
-  );
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+// SECURITY: JWT-based admin verification
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
   
-  return {
-    "Access-Control-Allow-Origin": isAllowed ? origin : "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-admin-key",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const token = authHeader.replace('Bearer ', '');
+  const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+  
+  if (claimsError || !claims?.claims?.sub) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true };
 }
 
 interface StripeLineItem {
@@ -90,9 +110,6 @@ interface StripeInvoice {
 const EXCLUDED_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired", "unpaid"];
 const EXCLUDED_INVOICE_STATUSES = ["void", "uncollectible", "paid"];
 
-// Admin key for internal authentication
-const ADMIN_API_KEY = Deno.env.get("ADMIN_API_KEY");
-
 // Helper to extract plan info from subscription or lines
 function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; planInterval: string | null; productName: string | null } {
   let planName: string | null = null;
@@ -143,28 +160,22 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
 }
 
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-  const corsHeaders = getCorsHeaders(origin);
-
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // SECURITY: Verify admin key authentication
-    const providedAdminKey = req.headers.get("x-admin-key");
-    
-    console.log(`🔐 Admin key check - Configured: ${ADMIN_API_KEY ? 'YES' : 'NO'}, Provided: ${providedAdminKey ? 'YES' : 'NO'}`);
-    
-    if (!ADMIN_API_KEY || !providedAdminKey || providedAdminKey !== ADMIN_API_KEY) {
-      console.error("❌ Admin key verification failed");
+    // SECURITY: Verify JWT + admin role
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Unauthorized - Invalid admin key" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("✅ Admin key verified");
+    console.log("✅ Admin verified");
 
     const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
     if (!STRIPE_SECRET_KEY) {
@@ -400,12 +411,11 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    const origin = req.headers.get("origin");
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
     return new Response(
       JSON.stringify({ success: false, error: errorMessage }),
-      { status: 500, headers: { ...getCorsHeaders(origin), "Content-Type": "application/json" } }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
