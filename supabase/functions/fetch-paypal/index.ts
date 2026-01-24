@@ -213,13 +213,41 @@ async function fetchPayPalChunk(
   return allTransactions;
 }
 
+// ============ TRIGGER NEXT PAGE (BLOCKING - await response) ============
+async function triggerNextPage(
+  supabaseUrl: string,
+  adminKey: string,
+  body: Record<string, unknown>
+): Promise<boolean> {
+  try {
+    console.log(`🚀 TRIGGERING PAYPAL NEXT CHUNK...`);
+    const response = await fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': adminKey,
+      },
+      body: JSON.stringify(body),
+    });
+    console.log(`✅ PayPal next chunk triggered: ${response.status}`);
+    return response.ok || response.status === 202;
+  } catch (err) {
+    console.error(`❌ Failed to trigger PayPal next chunk:`, err);
+    return false;
+  }
+}
+
 // Max chunks per invocation to avoid timeout
 const MAX_CHUNKS_PER_INVOCATION = 3;
+// Stale timeout in minutes
+const STALE_TIMEOUT_MINUTES = 30;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  const startTime = Date.now();
 
   try {
     // SECURITY: Verify x-admin-key
@@ -236,7 +264,7 @@ Deno.serve(async (req) => {
 
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
-    const adminKey = Deno.env.get("ADMIN_API_KEY");
+    const adminKey = Deno.env.get("ADMIN_API_KEY")!;
     
     if (!paypalClientId || !paypalSecret) {
       return new Response(
@@ -256,6 +284,8 @@ Deno.serve(async (req) => {
     let continuationSyncRunId: string | null = null;
     let continuationTotalSynced = 0;
     let continuationTotalClients = 0;
+    let continuationPaidCount = 0;
+    let continuationFailedCount = 0;
 
     // PayPal API limit: max 3 years of history
     const now = new Date();
@@ -284,6 +314,8 @@ Deno.serve(async (req) => {
         continuationSyncRunId = body._continuation.syncRunId || null;
         continuationTotalSynced = body._continuation.totalSynced || 0;
         continuationTotalClients = body._continuation.totalClients || 0;
+        continuationPaidCount = body._continuation.paidCount || 0;
+        continuationFailedCount = body._continuation.failedCount || 0;
         console.log(`🔄 CONTINUATION from chunk ${continuationChunkIndex}`);
       }
     } catch {
@@ -293,10 +325,49 @@ Deno.serve(async (req) => {
 
     console.log(`🔄 PayPal Sync - from ${startDate.toISOString()} to ${endDate.toISOString()}, fetchAll: ${fetchAll}`);
 
+    // ============ CHECK FOR EXISTING RUNNING/CONTINUING SYNC ============
+    if (!continuationSyncRunId) {
+      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+      
+      // Check for existing active sync
+      const { data: existingRuns } = await supabase
+        .from('sync_runs')
+        .select('id, status, started_at, checkpoint')
+        .eq('source', 'paypal')
+        .in('status', ['running', 'continuing'])
+        .order('started_at', { ascending: false })
+        .limit(1);
+
+      if (existingRuns && existingRuns.length > 0) {
+        const existingRun = existingRuns[0];
+        
+        // Check if stale
+        if (existingRun.started_at < staleThreshold) {
+          console.log(`⏰ Marking stale sync ${existingRun.id} as failed`);
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              error_message: 'Stale/timeout - no heartbeat for 30 minutes'
+            })
+            .eq('id', existingRun.id);
+        } else {
+          // Resume existing sync instead of creating new one
+          console.log(`📍 Resuming existing sync ${existingRun.id}`);
+          const checkpoint = existingRun.checkpoint as Record<string, unknown> || {};
+          continuationSyncRunId = existingRun.id;
+          continuationChunkIndex = (checkpoint.chunkIndex as number) || 0;
+          continuationTotalSynced = (checkpoint.totalSynced as number) || 0;
+          continuationTotalClients = (checkpoint.totalClients as number) || 0;
+        }
+      }
+    }
+
     // Create or reuse sync_run record
     let syncRunId = continuationSyncRunId;
     if (!syncRunId) {
-      const { data: syncRun } = await supabase
+      const { data: syncRun, error: syncError } = await supabase
         .from('sync_runs')
         .insert({
           source: 'paypal',
@@ -305,7 +376,16 @@ Deno.serve(async (req) => {
         })
         .select('id')
         .single();
+      
+      if (syncError) {
+        console.error("Failed to create sync_run:", syncError);
+        return new Response(
+          JSON.stringify({ error: "Failed to create sync record", details: syncError.message }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       syncRunId = syncRun?.id;
+      console.log(`📊 NEW PAYPAL SYNC RUN: ${syncRunId}`);
     }
 
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
@@ -342,8 +422,8 @@ Deno.serve(async (req) => {
     console.log(`✅ Fetched ${allTransactions.length} transactions from ${chunksProcessed} chunks`);
 
     // Process transactions
-    let paidCount = 0;
-    let failedCount = 0;
+    let paidCount = continuationPaidCount;
+    let failedCount = continuationFailedCount;
     let skippedNoEmail = 0;
     let skippedDuplicate = 0;
 
@@ -497,25 +577,34 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Update checkpoint
-    if (syncRunId) {
+    // ============ DECIDE: CONTINUE OR COMPLETE ============
+    const needsContinuation = currentChunkIndex < dateChunks.length;
+
+    if (needsContinuation && syncRunId) {
+      console.log(`🔄 Continuing: ${currentChunkIndex}/${dateChunks.length} chunks done...`);
+      
+      // Update status to 'continuing' with heartbeat
       await supabase
         .from('sync_runs')
         .update({
+          status: 'continuing',
           total_fetched: syncedCount + skippedNoEmail,
           total_inserted: syncedCount,
-          checkpoint: { chunkIndex: currentChunkIndex, chunksTotal: dateChunks.length }
+          total_skipped: skippedNoEmail,
+          checkpoint: { 
+            chunkIndex: currentChunkIndex, 
+            chunksTotal: dateChunks.length,
+            totalSynced: syncedCount,
+            totalClients: clientsSynced,
+            paidCount,
+            failedCount,
+            lastHeartbeat: new Date().toISOString()
+          }
         })
         .eq('id', syncRunId);
-    }
 
-    // Check if need to continue
-    const needsContinuation = currentChunkIndex < dateChunks.length;
-
-    if (needsContinuation && syncRunId && adminKey) {
-      console.log(`🔄 Auto-continuing: ${currentChunkIndex}/${dateChunks.length} chunks done...`);
-      
-      const continuationBody = {
+      // ============ CRITICAL: TRIGGER NEXT CHUNK BEFORE RETURNING ============
+      const triggered = await triggerNextPage(supabaseUrl, adminKey, {
         fetchAll,
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
@@ -523,33 +612,43 @@ Deno.serve(async (req) => {
           chunkIndex: currentChunkIndex,
           syncRunId,
           totalSynced: syncedCount,
-          totalClients: clientsSynced
+          totalClients: clientsSynced,
+          paidCount,
+          failedCount
         }
-      };
+      });
 
-      fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminKey,
-        },
-        body: JSON.stringify(continuationBody)
-      }).catch(err => console.error('Continuation invoke error:', err));
+      if (!triggered) {
+        // Failed to trigger - mark as failed
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: 'Failed to trigger next chunk continuation'
+          })
+          .eq('id', syncRunId);
+      }
 
+      const duration = Date.now() - startTime;
       return new Response(
         JSON.stringify({
+          success: true,
           status: 'continuing',
-          message: `Processed ${chunksProcessed} chunks (${syncedCount} total). Continuing in background...`,
           syncRunId,
           chunksCompleted: currentChunkIndex,
           chunksTotal: dateChunks.length,
           totalSynced: syncedCount,
+          totalClients: clientsSynced,
+          hasMore: true,
+          duration_ms: duration,
+          message: `Processed ${chunksProcessed} chunks (${syncedCount} total). Continuing...`
         }),
         { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Mark completed
+    // ============ SYNC COMPLETE ============
     if (syncRunId) {
       await supabase
         .from('sync_runs')
@@ -571,11 +670,14 @@ Deno.serve(async (req) => {
         .eq('id', syncRunId);
     }
 
-    console.log(`✅ COMPLETE: ${syncedCount} transactions, ${clientsSynced} clients`);
+    const duration = Date.now() - startTime;
+    console.log(`🎉 PAYPAL SYNC COMPLETE: ${syncedCount} transactions, ${clientsSynced} clients in ${duration}ms`);
 
     return new Response(
       JSON.stringify({
         success: true,
+        status: 'completed',
+        syncRunId,
         synced_transactions: syncedCount,
         synced_clients: clientsSynced,
         chunks: dateChunks.length,
@@ -583,6 +685,8 @@ Deno.serve(async (req) => {
         failedCount,
         skippedNoEmail,
         skippedDuplicate,
+        hasMore: false,
+        duration_ms: duration
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
