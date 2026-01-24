@@ -93,22 +93,23 @@ export function useInvoices() {
   // Sync invoices from Stripe
   const syncInvoices = useMutation({
     mutationFn: async () => {
-      return await invokeWithAdminKey("fetch-invoices", {});
+      return await invokeWithAdminKey<{ draftCount?: number; openCount?: number; excludedCount?: number; totalPending?: number }>("fetch-invoices", {});
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      const excludedMsg = data.excludedCount > 0 
+      const excludedMsg = (data.excludedCount ?? 0) > 0 
         ? ` (${data.excludedCount} excluidas por suscripción cancelada)`
         : "";
       toast({
         title: "Facturas sincronizadas",
-        description: `${data.draftCount} borradores, ${data.openCount} abiertas.${excludedMsg} Total: $${(data.totalPending / 100).toFixed(2)}`,
+        description: `${data.draftCount ?? 0} borradores, ${data.openCount ?? 0} abiertas.${excludedMsg} Total: $${((data.totalPending ?? 0) / 100).toFixed(2)}`,
       });
     },
     onError: (error) => {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
       toast({
         title: "Error al sincronizar facturas",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     },

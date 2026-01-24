@@ -95,6 +95,122 @@ export interface FetchInvoicesBody {
 export interface FetchInvoicesResponse {
   success: boolean;
   synced?: number;
+  draftCount?: number;
+  openCount?: number;
+  excludedCount?: number;
+  totalPending?: number;
+  error?: string;
+}
+
+// ============= FORCE CHARGE INVOICE =============
+
+export interface ForceChargeInvoiceBody {
+  invoice_id?: string;
+  stripe_invoice_id?: string;
+}
+
+export interface ForceChargeInvoiceResponse {
+  success: boolean;
+  amount_paid?: number;
+  message?: string;
+  error?: string;
+}
+
+// ============= PORTAL SESSION =============
+
+export interface CreatePortalSessionBody {
+  stripe_customer_id?: string;
+  email?: string;
+  return_url?: string;
+}
+
+export interface CreatePortalSessionResponse {
+  url?: string;
+  error?: string;
+}
+
+// ============= CAMPAIGNS =============
+
+export interface SendCampaignBody {
+  campaign_id: string;
+  dry_run?: boolean;
+}
+
+export interface SendCampaignStats {
+  total?: number;
+  excluded?: number;
+  sent?: number;
+  failed?: number;
+}
+
+export interface SendCampaignResponse {
+  success: boolean;
+  dry_run?: boolean;
+  stats?: SendCampaignStats;
+  error?: string;
+}
+
+// ============= RECONCILE =============
+
+export interface ReconcileMetricsBody {
+  source: string;
+  start_date: string;
+  end_date: string;
+}
+
+export interface ReconcileMetricsResponse {
+  status: 'ok' | 'warning' | 'error';
+  difference: number;
+  difference_pct: number;
+  external_total?: number;
+  internal_total?: number;
+  error?: string;
+}
+
+// ============= ANALYZE BUSINESS =============
+
+export interface AnalyzeBusinessBody {
+  prompt: string;
+  context?: string;
+}
+
+export interface AnalyzeBusinessResponse {
+  analysis?: string;
+  message?: string;
+  error?: string;
+}
+
+// ============= MANYCHAT SEND =============
+
+export interface SendManyChatBody {
+  email?: string;
+  phone?: string;
+  template: string;
+  client_name?: string;
+  amount?: number;
+  client_id?: string;
+  tag?: string;
+}
+
+export interface SendManyChatResponse {
+  success?: boolean;
+  message_id?: string;
+  error?: string;
+}
+
+// ============= GHL NOTIFY =============
+
+export interface NotifyGHLBody {
+  email?: string;
+  phone?: string;
+  name?: string;
+  tag?: string;
+  message_data?: Record<string, unknown>;
+}
+
+export interface NotifyGHLResponse {
+  success?: boolean;
+  contact_id?: string;
   error?: string;
 }
 
@@ -109,7 +225,7 @@ export interface GenericSyncResponse {
   message?: string;
 }
 
-// ============= MANYCHAT / GHL =============
+// ============= MANYCHAT / GHL SYNC =============
 
 export interface SyncContactsBody {
   dry_run?: boolean;
@@ -118,16 +234,18 @@ export interface SyncContactsBody {
   [key: string]: unknown;
 }
 
+export interface SyncContactsStats {
+  total_fetched?: number;
+  total_inserted?: number;
+  total_updated?: number;
+  total_conflicts?: number;
+}
+
 export interface SyncContactsResponse {
   success: boolean;
   mode?: string;
   sync_run_id?: string;
-  stats?: {
-    total_fetched?: number;
-    total_inserted?: number;
-    total_updated?: number;
-    total_conflicts?: number;
-  };
+  stats?: SyncContactsStats;
   message?: string;
   error?: string;
 }

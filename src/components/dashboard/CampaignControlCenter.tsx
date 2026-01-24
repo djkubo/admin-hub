@@ -416,10 +416,11 @@ export function CampaignControlCenter() {
     toast.loading('Ejecutando dry run...', { id: 'dry-run' });
     
     try {
-      const data = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id, dry_run: true });
-      toast.success(`Dry run completado: ${data.stats.total} destinatarios, ${data.stats.excluded} excluidos`, { id: 'dry-run' });
-    } catch (error: any) {
-      toast.error('Error: ' + error.message, { id: 'dry-run' });
+      const data = await invokeWithAdminKey<{ stats?: { total?: number; excluded?: number } }>('send-campaign', { campaign_id: campaign.id, dry_run: true });
+      toast.success(`Dry run completado: ${data.stats?.total ?? 0} destinatarios, ${data.stats?.excluded ?? 0} excluidos`, { id: 'dry-run' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error('Error: ' + message, { id: 'dry-run' });
     }
   };
 
@@ -432,11 +433,12 @@ export function CampaignControlCenter() {
     toast.loading('Enviando campaña...', { id: 'send-campaign' });
     
     try {
-      const data = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id });
-      toast.success(`Campaña enviada: ${data.stats.sent} enviados, ${data.stats.failed} fallidos`, { id: 'send-campaign' });
+      const data = await invokeWithAdminKey<{ stats?: { sent?: number; failed?: number } }>('send-campaign', { campaign_id: campaign.id });
+      toast.success(`Campaña enviada: ${data.stats?.sent ?? 0} enviados, ${data.stats?.failed ?? 0} fallidos`, { id: 'send-campaign' });
       loadData();
-    } catch (error: any) {
-      toast.error('Error: ' + error.message, { id: 'send-campaign' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error('Error: ' + message, { id: 'send-campaign' });
     }
   };
 

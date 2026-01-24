@@ -339,7 +339,7 @@ export function RevenueOpsPipeline() {
   const handleManyChat = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
     toast.loading('Enviando por ManyChat...', { id: 'manychat' });
     try {
-      const data = await invokeWithAdminKey('send-manychat', {
+      const data = await invokeWithAdminKey<{ error?: string }>('send-manychat', {
         email: client.email,
         phone: client.phone,
         template,
@@ -354,8 +354,9 @@ export function RevenueOpsPipeline() {
         toast.success('Mensaje ManyChat enviado', { id: 'manychat' });
         loadData();
       }
-    } catch (error: any) {
-      toast.error(error.message, { id: 'manychat' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(message, { id: 'manychat' });
     }
   };
 
@@ -371,8 +372,9 @@ export function RevenueOpsPipeline() {
       });
       toast.success('Oportunidad creada en GHL', { id: 'ghl' });
       loadData();
-    } catch (error: any) {
-      toast.error('Error: ' + error.message, { id: 'ghl' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error('Error: ' + message, { id: 'ghl' });
     }
   };
 
@@ -380,14 +382,14 @@ export function RevenueOpsPipeline() {
     if (!client.email) return;
     toast.loading('Creando link del portal...', { id: 'portal' });
     try {
-      const data = await invokeWithAdminKey('create-portal-session', { email: client.email });
+      const data = await invokeWithAdminKey<{ url?: string }>('create-portal-session', { email: client.email });
       if (data?.url) {
         window.open(data.url, '_blank');
         toast.success('Portal abierto', { id: 'portal' });
       } else {
         toast.error('Error creando portal', { id: 'portal' });
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast.error('Error creando portal', { id: 'portal' });
     }
   };

@@ -152,12 +152,12 @@ export function ManualSendPanel() {
       if (error) throw error;
 
       // Call send-campaign with dry_run
-      const result = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id, dry_run: true });
+      const result = await invokeWithAdminKey<{ stats?: { total?: number; excluded?: number } }>('send-campaign', { campaign_id: campaign.id, dry_run: true });
 
       setDryRunResult({
-        total: result.stats?.total || 0,
-        excluded: result.stats?.excluded || 0,
-        toSend: (result.stats?.total || 0) - (result.stats?.excluded || 0),
+        total: result.stats?.total ?? 0,
+        excluded: result.stats?.excluded ?? 0,
+        toSend: (result.stats?.total ?? 0) - (result.stats?.excluded ?? 0),
       });
 
       // Delete the temporary campaign
@@ -197,9 +197,9 @@ export function ManualSendPanel() {
       if (error) throw error;
 
       // Send campaign
-      const result = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id });
+      const result = await invokeWithAdminKey<{ stats?: { sent?: number } }>('send-campaign', { campaign_id: campaign.id });
 
-      toast.success(`Enviado: ${result.stats?.sent || 0} mensajes`);
+      toast.success(`Enviado: ${result.stats?.sent ?? 0} mensajes`);
       setSelectedSegment('');
       setSelectedTemplate('');
       setRecipientCount(0);

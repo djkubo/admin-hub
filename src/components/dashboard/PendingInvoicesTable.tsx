@@ -75,12 +75,12 @@ export function PendingInvoicesTable({
   const handleForceCharge = async (invoice: Invoice) => {
     setChargingInvoice(invoice.id);
     try {
-      const data = await invokeWithAdminKey("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
+      const data = await invokeWithAdminKey<{ success?: boolean; amount_paid?: number; message?: string }>("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
 
       if (data?.success) {
         toast({
           title: "¡Cobro exitoso!",
-          description: `Factura cobrada: $${(data.amount_paid / 100).toFixed(2)}`,
+          description: `Factura cobrada: $${((data.amount_paid ?? 0) / 100).toFixed(2)}`,
         });
         onSync();
       } else {
@@ -124,11 +124,11 @@ export function PendingInvoicesTable({
       const invoice = chargeableInvoices[i];
       
       try {
-        const data = await invokeWithAdminKey("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
+        const data = await invokeWithAdminKey<{ success?: boolean; amount_paid?: number }>("force-charge-invoice", { stripe_invoice_id: invoice.stripe_invoice_id });
 
         if (data?.success) {
           result.succeeded++;
-          result.totalRecovered += data.amount_paid || 0;
+          result.totalRecovered += data.amount_paid ?? 0;
         } else {
           result.failed++;
         }

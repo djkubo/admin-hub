@@ -183,7 +183,7 @@ export function useSubscriptions() {
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
-      const result = await invokeWithAdminKey("fetch-subscriptions", {});
+      const result = await invokeWithAdminKey<{ status?: string; syncRunId?: string }>("fetch-subscriptions", {});
       return result;
     },
     onSuccess: (data) => {

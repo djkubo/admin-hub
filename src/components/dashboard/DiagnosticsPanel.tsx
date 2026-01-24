@@ -326,7 +326,7 @@ export default function DiagnosticsPanel() {
           startDate = subDays(new Date(), 7);
       }
 
-      const data = await invokeWithAdminKey('reconcile-metrics', {
+      const data = await invokeWithAdminKey<{ status: string; difference: number; difference_pct: number }>('reconcile-metrics', {
         source: reconcileSource,
         start_date: format(startDate, 'yyyy-MM-dd'),
         end_date: format(endDate, 'yyyy-MM-dd')
@@ -341,8 +341,9 @@ export default function DiagnosticsPanel() {
       } else {
         toast.error(`Fail: $${(data.difference / 100).toFixed(2)}`);
       }
-    } catch (error: any) {
-      toast.error(`Error: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error: ${message}`);
     } finally {
       setIsReconciling(false);
     }
@@ -358,8 +359,9 @@ export default function DiagnosticsPanel() {
       queryClient.invalidateQueries({ queryKey: ['rebuild-logs'] });
       toast.success('Métricas en staging');
     },
-    onError: (error: any) => {
-      toast.error(`Error: ${error.message}`);
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error: ${message}`);
     }
   });
 
@@ -374,8 +376,9 @@ export default function DiagnosticsPanel() {
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
       toast.success('Staging promovido');
     },
-    onError: (error: any) => {
-      toast.error(`Error: ${error.message}`);
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error: ${message}`);
     }
   });
 
@@ -403,10 +406,11 @@ Por favor:
 
 Responde en español, de forma concisa.`;
 
-      const data = await invokeWithAdminKey('analyze-business', { prompt, context: 'diagnostics' });
+      const data = await invokeWithAdminKey<{ analysis?: string; message?: string }>('analyze-business', { prompt, context: 'diagnostics' });
       setAiAnalysis(data.analysis || data.message || 'No se pudo generar análisis');
-    } catch (error: any) {
-      toast.error(`Error AI: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error AI: ${message}`);
       setAiAnalysis(null);
     } finally {
       setIsAnalyzing(false);

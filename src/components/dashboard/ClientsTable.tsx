@@ -153,7 +153,7 @@ export function ClientsTable({
 
     setLoadingPortal(client.id);
     try {
-      const data = await invokeWithAdminKey("create-portal-session", { 
+      const data = await invokeWithAdminKey<{ url?: string }>("create-portal-session", { 
         stripe_customer_id: client.stripe_customer_id,
         return_url: window.location.origin
       });

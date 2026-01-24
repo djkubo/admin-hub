@@ -128,7 +128,7 @@ export default function SyncCenter() {
   const syncGHL = useMutation({
     mutationFn: async () => {
       setSyncingSource('ghl');
-      return await invokeWithAdminKey('sync-ghl', { dry_run: dryRun });
+      return await invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-ghl', { dry_run: dryRun });
     },
     onSuccess: (data) => {
       setSyncingSource(null);
@@ -137,16 +137,17 @@ export default function SyncCenter() {
       queryClient.invalidateQueries({ queryKey: ['identity-stats'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       
-      const stats = data.stats;
+      const stats = data.stats ?? {};
       toast.success(
         dryRun 
-          ? `[Dry Run] GHL: ${stats.total_fetched} contacts, ${stats.total_inserted} nuevos, ${stats.total_updated} actualizados`
-          : `GHL sincronizado: ${stats.total_inserted} nuevos, ${stats.total_updated} actualizados, ${stats.total_conflicts} conflictos`
+          ? `[Dry Run] GHL: ${stats.total_fetched ?? 0} contacts, ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados`
+          : `GHL sincronizado: ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados, ${stats.total_conflicts ?? 0} conflictos`
       );
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       setSyncingSource(null);
-      toast.error(`Error sincronizando GHL: ${error.message}`);
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error sincronizando GHL: ${message}`);
     }
   });
 
@@ -154,7 +155,7 @@ export default function SyncCenter() {
   const syncManyChat = useMutation({
     mutationFn: async () => {
       setSyncingSource('manychat');
-      return await invokeWithAdminKey('sync-manychat', { dry_run: dryRun });
+      return await invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-manychat', { dry_run: dryRun });
     },
     onSuccess: (data) => {
       setSyncingSource(null);
@@ -163,16 +164,17 @@ export default function SyncCenter() {
       queryClient.invalidateQueries({ queryKey: ['identity-stats'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       
-      const stats = data.stats;
+      const stats = data.stats ?? {};
       toast.success(
         dryRun 
-          ? `[Dry Run] ManyChat: ${stats.total_fetched} subscribers, ${stats.total_inserted} nuevos, ${stats.total_updated} actualizados`
-          : `ManyChat sincronizado: ${stats.total_inserted} nuevos, ${stats.total_updated} actualizados, ${stats.total_conflicts} conflictos`
+          ? `[Dry Run] ManyChat: ${stats.total_fetched ?? 0} subscribers, ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados`
+          : `ManyChat sincronizado: ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados, ${stats.total_conflicts ?? 0} conflictos`
       );
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       setSyncingSource(null);
-      toast.error(`Error sincronizando ManyChat: ${error.message}`);
+      const message = error instanceof Error ? error.message : 'Error desconocido';
+      toast.error(`Error sincronizando ManyChat: ${message}`);
     }
   });
 

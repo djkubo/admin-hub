@@ -107,7 +107,7 @@ export function InvoicesPage() {
   const handleChargeInvoice = async (invoice: Invoice) => {
     setChargingInvoice(invoice.id);
     try {
-      const data = await invokeWithAdminKey('force-charge-invoice', { invoice_id: invoice.stripe_invoice_id });
+      const data = await invokeWithAdminKey<{ success?: boolean; error?: string }>('force-charge-invoice', { invoice_id: invoice.stripe_invoice_id });
 
       if (data?.success) {
         toast.success(`Cobro exitoso: $${(invoice.amount_due / 100).toFixed(2)}`);
