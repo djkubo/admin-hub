@@ -108,42 +108,85 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     setSyncStatus(null);
     setSyncProgress('');
     
-    const { startDate, endDate, fetchAll, maxPages } = getSyncDateRange(range);
-    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0, background: false };
+    const { startDate, endDate, fetchAll } = getSyncDateRange(range);
+    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
 
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      // 1. Stripe
+      // 1. Stripe (with pagination loop)
       setSyncProgress('Stripe...');
       try {
-        const stripeData = await invokeWithAdminKey('fetch-stripe', { 
-          fetchAll, 
-          startDate: startDate.toISOString(), 
-          endDate: endDate.toISOString(),
-          maxPages,
-          background: maxPages > 5 // Enable background for large syncs
-        });
-        if (stripeData?.background) {
-          results.background = true;
-          toast.info('⏳ Stripe sync en background - revisa el banner de estado');
-        } else {
-          results.stripe = stripeData?.synced_transactions || 0;
+        let hasMore = true;
+        let cursor: string | null = null;
+        let syncRunId: string | null = null;
+        let attempts = 0;
+        const maxAttempts = 500; // Safety limit
+        
+        while (hasMore && attempts < maxAttempts) {
+          attempts++;
+          const stripeData = await invokeWithAdminKey('fetch-stripe', { 
+            fetchAll, 
+            startDate: startDate.toISOString(), 
+            endDate: endDate.toISOString(),
+            cursor,
+            syncRunId
+          });
+          
+          if (stripeData?.error === 'sync_already_running') {
+            toast.warning('Ya hay un sync de Stripe en progreso');
+            hasMore = false;
+            break;
+          }
+          
+          results.stripe += stripeData?.synced_transactions || 0;
+          syncRunId = stripeData?.syncRunId || syncRunId;
+          cursor = stripeData?.nextCursor || null;
+          hasMore = stripeData?.hasMore === true && cursor !== null;
+          
+          if (hasMore) {
+            setSyncProgress(`Stripe... ${results.stripe} tx`);
+          }
         }
       } catch (e) {
         console.error('Stripe sync error:', e);
         results.errors++;
       }
 
-      // 2. PayPal
+      // 2. PayPal (with pagination loop)
       setSyncProgress('PayPal...');
       try {
-        const paypalData = await invokeWithAdminKey('fetch-paypal', { 
-          fetchAll, 
-          startDate: startDate.toISOString(), 
-          endDate: endDate.toISOString() 
-        });
-        results.paypal = paypalData?.synced_transactions || 0;
+        let hasMore = true;
+        let page = 1;
+        let syncRunId: string | null = null;
+        let attempts = 0;
+        const maxAttempts = 100;
+        
+        while (hasMore && attempts < maxAttempts) {
+          attempts++;
+          const paypalData = await invokeWithAdminKey('fetch-paypal', { 
+            fetchAll, 
+            startDate: startDate.toISOString(), 
+            endDate: endDate.toISOString(),
+            page,
+            syncRunId
+          });
+          
+          if (paypalData?.error === 'sync_already_running') {
+            toast.warning('Ya hay un sync de PayPal en progreso');
+            hasMore = false;
+            break;
+          }
+          
+          results.paypal += paypalData?.synced_transactions || 0;
+          syncRunId = paypalData?.syncRunId || syncRunId;
+          hasMore = paypalData?.hasMore === true;
+          page = paypalData?.nextPage || page + 1;
+          
+          if (hasMore) {
+            setSyncProgress(`PayPal... ${results.paypal} tx`);
+          }
+        }
       } catch (e) {
         console.error('PayPal sync error:', e);
         results.errors++;
@@ -173,11 +216,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('');
 
       const totalTx = results.stripe + results.paypal;
-      if (results.background) {
-        toast.success(`⏳ Sync iniciado - ${results.subs} subs, ${results.invoices} facturas (Stripe en background)${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
-      } else {
-        toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
-      }
+      toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      
       // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });

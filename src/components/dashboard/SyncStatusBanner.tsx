@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Loader2, Check, X, RefreshCw, AlertTriangle } from "lucide-react";
+import { Loader2, Check, X, RefreshCw, AlertTriangle, Trash2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import type { Json } from "@/integrations/supabase/types";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 interface SyncRun {
   id: string;
@@ -18,81 +21,107 @@ interface SyncRun {
   checkpoint: Json | null;
 }
 
-// Stale threshold - same as backend (30 minutes)
+// Stale threshold - 30 minutes
 const STALE_THRESHOLD_MS = 30 * 60 * 1000;
 
 export function SyncStatusBanner() {
   const [runningSyncs, setRunningSyncs] = useState<SyncRun[]>([]);
+  const [staleSyncs, setStaleSyncs] = useState<SyncRun[]>([]);
   const [recentCompleted, setRecentCompleted] = useState<SyncRun[]>([]);
-  const [staleSyncs, setStaleSyncs] = useState<Set<string>>(new Set());
+  const [isCleaningUp, setIsCleaningUp] = useState(false);
 
   const fetchSyncStatus = useCallback(async () => {
     const now = Date.now();
-    const staleThreshold = new Date(now - STALE_THRESHOLD_MS).toISOString();
     
-    // Get running syncs (including "continuing" status for auto-pagination)
+    // Get running syncs
     const { data: running } = await supabase
       .from("sync_runs")
       .select("*")
       .in("status", ["running", "continuing"])
       .order("started_at", { ascending: false });
 
-    // Filter out stale syncs and mark them
+    // Separate active vs stale
     const activeSyncs: SyncRun[] = [];
-    const newStaleSyncs = new Set<string>();
+    const staleSyncsList: SyncRun[] = [];
     
     for (const sync of (running || []) as SyncRun[]) {
-      const startedAt = new Date(sync.started_at).getTime();
       const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
         ? sync.checkpoint as Record<string, unknown> 
         : null;
-      const lastHeartbeat = checkpoint?.lastHeartbeat 
-        ? new Date(checkpoint.lastHeartbeat as string).getTime()
-        : startedAt;
       
-      // Check if stale (no heartbeat for 30 minutes)
-      if (now - lastHeartbeat > STALE_THRESHOLD_MS) {
-        newStaleSyncs.add(sync.id);
+      const lastActivity = checkpoint?.lastActivity 
+        ? new Date(checkpoint.lastActivity as string).getTime()
+        : new Date(sync.started_at).getTime();
+      
+      if (now - lastActivity > STALE_THRESHOLD_MS) {
+        staleSyncsList.push(sync);
       } else {
         activeSyncs.push(sync);
       }
     }
 
-    // Get recently completed (last 5 minutes) or failed
-    const fiveMinutesAgo = new Date(now - 5 * 60 * 1000).toISOString();
+    // Get recently completed (last 10 seconds)
+    const tenSecondsAgo = new Date(now - 10 * 1000).toISOString();
     const { data: completed } = await supabase
       .from("sync_runs")
       .select("*")
-      .in("status", ["completed", "error", "failed"])
-      .gte("completed_at", fiveMinutesAgo)
+      .in("status", ["completed", "failed"])
+      .gte("completed_at", tenSecondsAgo)
       .order("completed_at", { ascending: false })
-      .limit(5);
+      .limit(3);
 
-    setRunningSyncs(activeSyncs as SyncRun[]);
+    setRunningSyncs(activeSyncs);
+    setStaleSyncs(staleSyncsList);
     setRecentCompleted((completed || []) as SyncRun[]);
-    setStaleSyncs(newStaleSyncs);
   }, []);
 
   useEffect(() => {
     fetchSyncStatus();
-    
-    // Poll every 3 seconds
     const interval = setInterval(fetchSyncStatus, 3000);
-    
     return () => clearInterval(interval);
   }, [fetchSyncStatus]);
 
-  // Auto-dismiss completed syncs after showing
+  // Auto-dismiss completed after 10 seconds
   useEffect(() => {
     if (recentCompleted.length > 0) {
       const timer = setTimeout(() => {
         setRecentCompleted([]);
-      }, 10000); // Hide after 10 seconds
+      }, 10000);
       return () => clearTimeout(timer);
     }
   }, [recentCompleted]);
 
-  if (runningSyncs.length === 0 && recentCompleted.length === 0 && staleSyncs.size === 0) {
+  const handleCleanupStale = async () => {
+    setIsCleaningUp(true);
+    try {
+      // Mark all stale syncs as failed directly in DB
+      const staleIds = staleSyncs.map(s => s.id);
+      
+      if (staleIds.length > 0) {
+        const { error } = await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: 'Marcado como fallido manualmente (timeout)'
+          })
+          .in('id', staleIds);
+        
+        if (error) {
+          toast.error('Error limpiando syncs');
+        } else {
+          toast.success(`${staleIds.length} syncs marcados como fallidos`);
+          setStaleSyncs([]);
+        }
+      }
+    } catch (e) {
+      toast.error('Error limpiando syncs atascados');
+    } finally {
+      setIsCleaningUp(false);
+    }
+  };
+
+  if (runningSyncs.length === 0 && staleSyncs.length === 0 && recentCompleted.length === 0) {
     return null;
   }
 
@@ -108,40 +137,6 @@ export function SyncStatusBanner() {
     return labels[source] || source;
   };
 
-  // Estimate progress based on checkpoint data or fetched contacts
-  const getEstimatedProgress = (sync: SyncRun) => {
-    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
-      ? sync.checkpoint as Record<string, unknown> 
-      : null;
-    
-    // For chunked syncs (PayPal), use chunk progress
-    if (checkpoint?.chunksTotal && checkpoint?.chunkIndex) {
-      const total = checkpoint.chunksTotal as number;
-      const current = checkpoint.chunkIndex as number;
-      return Math.min((current / total) * 100, 99);
-    }
-    
-    // For paginated syncs (Stripe/GHL), use page progress
-    if (checkpoint?.page) {
-      const page = checkpoint.page as number;
-      // Estimate based on typical sync sizes
-      const estimatedTotalPages = sync.source === 'ghl' ? 1500 : 100; // 150k GHL contacts / 100 per page
-      return Math.min((page / estimatedTotalPages) * 100, 99);
-    }
-    
-    // If we have fetched data, use that as indicator
-    if (sync.total_fetched && sync.total_fetched > 0) {
-      const estimatedTotal = sync.source === 'ghl' ? 150000 : 5000;
-      return Math.min((sync.total_fetched / estimatedTotal) * 100, 99);
-    }
-    
-    // Fallback: time-based estimate
-    const startTime = new Date(sync.started_at).getTime();
-    const elapsed = Date.now() - startTime;
-    const estimatedTotal = sync.source === 'ghl' ? 60 * 60 * 1000 : 15 * 60 * 1000;
-    return Math.min((elapsed / estimatedTotal) * 100, 95);
-  };
-
   const getProgressDetails = (sync: SyncRun) => {
     const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
       ? sync.checkpoint as Record<string, unknown> 
@@ -151,17 +146,11 @@ export function SyncStatusBanner() {
     if (checkpoint?.page) {
       parts.push(`página ${checkpoint.page}`);
     }
-    if (checkpoint?.chunkIndex && checkpoint?.chunksTotal) {
-      parts.push(`chunk ${checkpoint.chunkIndex}/${checkpoint.chunksTotal}`);
-    }
     if (sync.total_fetched) {
       parts.push(`${sync.total_fetched.toLocaleString()} descargados`);
     }
     if (sync.total_inserted) {
       parts.push(`${sync.total_inserted.toLocaleString()} nuevos`);
-    }
-    if (sync.total_updated) {
-      parts.push(`${sync.total_updated.toLocaleString()} actualizados`);
     }
     
     return parts.length > 0 ? parts.join(' • ') : '';
@@ -169,26 +158,38 @@ export function SyncStatusBanner() {
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md">
-      {/* Warning for stale syncs (hidden after a while) */}
-      {staleSyncs.size > 0 && (
+      {/* Stale syncs warning with cleanup button */}
+      {staleSyncs.length > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm">
           <div className="flex items-center gap-3">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
+            <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-foreground">
-                {staleSyncs.size} sync(s) sin respuesta
+                {staleSyncs.length} sync(s) atascados
               </p>
               <p className="text-xs text-muted-foreground">
-                Se marcarán como fallidos automáticamente
+                Sin actividad por más de 30 minutos
               </p>
             </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleCleanupStale}
+              disabled={isCleaningUp}
+              className="text-amber-400 hover:text-amber-300 hover:bg-amber-500/20"
+            >
+              {isCleaningUp ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Running syncs */}
+      {/* Active syncs */}
       {runningSyncs.map((sync) => {
-        const progress = getEstimatedProgress(sync);
         const details = getProgressDetails(sync);
         
         return (
@@ -201,24 +202,11 @@ export function SyncStatusBanner() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground">
                   Sincronizando {getSourceLabel(sync.source)}...
-                  {sync.status === 'continuing' && 
-                    <span className="ml-1 text-xs text-primary">(paginando)</span>
-                  }
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Iniciado {formatDistanceToNow(new Date(sync.started_at), { 
-                    addSuffix: true, 
-                    locale: es 
-                  })}
+                  {formatDistanceToNow(new Date(sync.started_at), { addSuffix: true, locale: es })}
                   {details && ` • ${details}`}
                 </p>
-                {/* Progress bar */}
-                <div className="mt-2 h-1.5 w-full bg-primary/20 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
               </div>
               <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
             </div>
@@ -226,7 +214,7 @@ export function SyncStatusBanner() {
         );
       })}
 
-      {/* Recently completed syncs */}
+      {/* Recently completed/failed */}
       {recentCompleted.map((sync) => (
         <div
           key={sync.id}
@@ -247,12 +235,9 @@ export function SyncStatusBanner() {
                 {getSourceLabel(sync.source)}{" "}
                 {sync.status === "completed" ? "completado" : "falló"}
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground truncate">
                 {sync.total_inserted
-                  ? `${sync.total_inserted.toLocaleString()} nuevos`
-                  : ""}
-                {sync.total_updated
-                  ? ` • ${sync.total_updated.toLocaleString()} actualizados`
+                  ? `${sync.total_inserted.toLocaleString()} sincronizados`
                   : ""}
                 {sync.error_message && (
                   <span className="text-destructive"> {sync.error_message}</span>
