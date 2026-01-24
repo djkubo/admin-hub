@@ -480,6 +480,7 @@ Deno.serve(async (req) => {
     let cursor: string | null = null;
     let syncRunId: string | null = null;
     let cleanupStale = false;
+    let previousTotal = 0; // Accumulated totals from previous pages
     
     try {
       const body = await req.json();
@@ -495,6 +496,7 @@ Deno.serve(async (req) => {
       
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
+      previousTotal = typeof body.previousTotal === 'number' ? body.previousTotal : 0;
     } catch {
       // No body or parse error - use defaults
     }
@@ -616,16 +618,18 @@ Deno.serve(async (req) => {
 
     // ============ CHECK FOR MORE PAGES ============
     const hasMore = fetchAll && result.hasMore && result.nextCursor;
+    const runningTotal = previousTotal + result.transactions;
 
     if (hasMore) {
       await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
-          total_fetched: result.transactions,
-          total_inserted: result.transactions,
+          total_fetched: runningTotal,
+          total_inserted: runningTotal,
           checkpoint: { 
             cursor: result.nextCursor,
+            runningTotal,
             lastActivity: new Date().toISOString()
           }
         })
@@ -637,12 +641,14 @@ Deno.serve(async (req) => {
           status: 'continuing',
           syncRunId,
           synced_transactions: result.transactions,
+          total_so_far: runningTotal,
           synced_clients: result.clients,
           skipped: result.skipped,
           paid_count: result.paidCount,
           failed_count: result.failedCount,
           hasMore: true,
           nextCursor: result.nextCursor,
+          previousTotal: runningTotal, // Pass accumulated total for next call
           duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -650,25 +656,27 @@ Deno.serve(async (req) => {
     }
 
     // ============ COMPLETE ============
+    const finalTotal = previousTotal + result.transactions;
+    
     await supabase
       .from('sync_runs')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
-        total_fetched: result.transactions,
-        total_inserted: result.transactions,
+        total_fetched: finalTotal,
+        total_inserted: finalTotal,
         checkpoint: null
       })
       .eq('id', syncRunId);
 
-    console.log(`🎉 STRIPE SYNC COMPLETE: ${result.transactions} transactions in ${Date.now() - startTime}ms`);
+    console.log(`🎉 STRIPE SYNC COMPLETE: ${finalTotal} transactions in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({
         success: true,
         status: 'completed',
         syncRunId,
-        synced_transactions: result.transactions,
+        synced_transactions: finalTotal,
         synced_clients: result.clients,
         skipped: result.skipped,
         paid_count: result.paidCount,

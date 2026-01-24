@@ -128,6 +128,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         let hasMore = true;
         let cursor: string | null = null;
         let syncRunId: string | null = null;
+        let previousTotal = 0;
         let attempts = 0;
         const maxAttempts = 500; // Safety limit
         
@@ -140,7 +141,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               startDate: startDate.toISOString(), 
               endDate: endDate.toISOString(),
               cursor,
-              syncRunId
+              syncRunId,
+              previousTotal
             }
           );
           
@@ -150,7 +152,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             break;
           }
           
-          results.stripe += stripeData?.synced_transactions ?? 0;
+          // Use total_so_far if available, otherwise accumulate
+          const thisPageTx = stripeData?.synced_transactions ?? 0;
+          if (stripeData?.total_so_far) {
+            results.stripe = stripeData.total_so_far;
+            previousTotal = stripeData.total_so_far;
+          } else {
+            results.stripe += thisPageTx;
+            previousTotal = results.stripe;
+          }
+          
           syncRunId = stripeData?.syncRunId ?? syncRunId;
           cursor = stripeData?.nextCursor ?? null;
           hasMore = stripeData?.hasMore === true && cursor !== null;

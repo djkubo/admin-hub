@@ -55,6 +55,7 @@ export interface FetchStripeBody {
   endDate?: string;
   cursor?: string | null;
   syncRunId?: string | null;
+  previousTotal?: number;
   cleanupStale?: boolean;
   [key: string]: unknown;
 }
@@ -66,6 +67,8 @@ export interface FetchStripeResponse extends BaseSyncResponse {
   failed_count?: number;
   skipped?: number;
   nextCursor?: string | null;
+  total_so_far?: number;
+  previousTotal?: number;
   // Cleanup response
   cleaned?: number;
   message?: string;
