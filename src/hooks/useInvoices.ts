@@ -4,6 +4,14 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 
+// Client info from join
+export interface InvoiceClient {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  phone_e164: string | null;
+}
+
 export interface Invoice {
   id: string;
   stripe_invoice_id: string;
@@ -12,6 +20,8 @@ export interface Invoice {
   customer_phone: string | null;
   stripe_customer_id: string | null;
   client_id: string | null;
+  // Joined client data (unified identity)
+  client: InvoiceClient | null;
   amount_due: number;
   amount_paid: number | null;
   amount_remaining: number | null;
@@ -22,6 +32,7 @@ export interface Invoice {
   stripe_created_at: string | null;
   finalized_at: string | null;
   automatically_finalizes_at: string | null;
+  paid_at: string | null;
   period_end: string | null;
   next_payment_attempt: string | null;
   due_date: string | null;
@@ -89,13 +100,21 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   const queryClient = useQueryClient();
   const [syncProgress, setSyncProgress] = useState<{ current: number; hasMore: boolean } | null>(null);
 
-  // Fetch invoices with filters
+  // Fetch invoices with filters - JOIN with clients for unified identity
   const { data: invoices = [], isLoading, refetch } = useQuery({
     queryKey: ["invoices", statusFilter, searchQuery, startDate, endDate],
     queryFn: async () => {
       let query = supabase
         .from("invoices")
-        .select("*")
+        .select(`
+          *,
+          client:clients!client_id (
+            id,
+            full_name,
+            email,
+            phone_e164
+          )
+        `)
         .order("stripe_created_at", { ascending: false, nullsFirst: false });
 
       // Status filter
@@ -111,7 +130,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         query = query.lte('stripe_created_at', endDate);
       }
 
-      // Search filter
+      // Search filter - also search in joined client fields
       if (searchQuery) {
         query = query.or(`customer_email.ilike.%${searchQuery}%,customer_name.ilike.%${searchQuery}%,invoice_number.ilike.%${searchQuery}%`);
       }
@@ -122,6 +141,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       
       return (data || []).map(row => ({
         ...row,
+        client: row.client as InvoiceClient | null,
         lines: row.lines as unknown as Invoice['lines'],
         raw_data: row.raw_data as unknown as Invoice['raw_data'],
       })) as Invoice[];

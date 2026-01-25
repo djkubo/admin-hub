@@ -320,15 +320,15 @@ export function InvoicesPage() {
                     <div className="flex items-center gap-1.5">
                       <User className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                       <p className="font-medium text-foreground text-sm truncate">
-                        {invoice.customer_name || invoice.customer_email || 'Sin nombre'}
+                        {invoice.client?.full_name || invoice.customer_name || 'Sin nombre'}
                       </p>
                     </div>
-                    {invoice.customer_name && invoice.customer_email && (
-                      <p className="text-[10px] text-muted-foreground truncate ml-5">{invoice.customer_email}</p>
-                    )}
+                    <p className="text-[10px] text-muted-foreground truncate ml-5">
+                      {invoice.client?.email || invoice.customer_email || '—'}
+                    </p>
                   </div>
                   <span className="text-lg font-bold text-foreground ml-2">
-                    ${(invoice.amount_due / 100).toFixed(2)}
+                    ${((invoice.total ?? invoice.amount_due) / 100).toFixed(2)}
                   </span>
                 </div>
 
@@ -346,18 +346,24 @@ export function InvoicesPage() {
                   {invoice.invoice_number || invoice.stripe_invoice_id}
                 </p>
                 
-                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   {getStatusBadge(invoice.status)}
                   {invoice.plan_interval && (
                     <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
                       {invoice.plan_interval}
                     </Badge>
                   )}
-                  {invoice.stripe_created_at && (
-                    <span className="text-xs text-muted-foreground">
-                      {format(new Date(invoice.stripe_created_at), 'dd MMM yy', { locale: es })}
-                    </span>
-                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px] text-muted-foreground mb-3">
+                  <div>
+                    <span className="text-muted-foreground/60">Creada: </span>
+                    {invoice.stripe_created_at ? format(new Date(invoice.stripe_created_at), 'dd MMM yy', { locale: es }) : '—'}
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground/60">Vence: </span>
+                    {invoice.due_date ? format(new Date(invoice.due_date), 'dd MMM yy', { locale: es }) : '—'}
+                  </div>
                 </div>
 
                 {invoice.last_finalization_error && (
@@ -406,15 +412,13 @@ export function InvoicesPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-border/50 hover:bg-transparent">
-                    <TableHead className="text-muted-foreground">Monto</TableHead>
-                    <TableHead className="text-muted-foreground">Moneda</TableHead>
+                    <TableHead className="text-muted-foreground">Total</TableHead>
                     <TableHead className="text-muted-foreground">Estado</TableHead>
-                    <TableHead className="text-muted-foreground">Frecuencia</TableHead>
                     <TableHead className="text-muted-foreground">Factura</TableHead>
                     <TableHead className="text-muted-foreground">Cliente</TableHead>
-                    <TableHead className="text-muted-foreground">Email</TableHead>
+                    <TableHead className="text-muted-foreground">Frecuencia</TableHead>
+                    <TableHead className="text-muted-foreground">Creada</TableHead>
                     <TableHead className="text-muted-foreground">Vence</TableHead>
-                    <TableHead className="text-muted-foreground">Creada (Stripe)</TableHead>
                     <TableHead className="text-muted-foreground">Finalización</TableHead>
                     <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
                   </TableRow>
@@ -424,43 +428,52 @@ export function InvoicesPage() {
                     <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
                       <TableCell>
                         <span className="text-lg font-semibold text-foreground">
-                          ${(invoice.amount_due / 100).toFixed(2)}
+                          ${((invoice.total ?? invoice.amount_due) / 100).toFixed(2)}
                         </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground uppercase">{invoice.currency}</span>
+                        <span className="text-xs text-muted-foreground uppercase ml-1">{invoice.currency}</span>
                       </TableCell>
                       <TableCell>{getStatusBadge(invoice.status)}</TableCell>
                       <TableCell>
                         <div className="flex flex-col">
-                          <span className="text-sm font-medium text-foreground">{invoice.plan_interval || 'N/A'}</span>
-                          <span className="text-xs text-muted-foreground truncate max-w-[120px]">
-                            {invoice.product_name || invoice.plan_name || '—'}
+                          <span className="text-xs font-mono text-muted-foreground">
+                            {invoice.invoice_number || invoice.stripe_invoice_id.substring(0, 14)}
+                          </span>
+                          {invoice.attempt_count && invoice.attempt_count > 0 && (
+                            <span className="text-[10px] text-amber-400">
+                              {invoice.attempt_count} intento{invoice.attempt_count > 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <p className="font-medium text-foreground truncate max-w-[150px]">
+                            {invoice.client?.full_name || invoice.customer_name || '—'}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground truncate max-w-[150px]">
+                            {invoice.client?.email || invoice.customer_email || '—'}
+                          </p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-foreground">{invoice.plan_interval || '—'}</span>
+                          <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">
+                            {invoice.product_name || invoice.plan_name || ''}
                           </span>
                         </div>
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs font-mono text-muted-foreground">
-                          {invoice.invoice_number || invoice.stripe_invoice_id.substring(0, 12)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <p className="font-medium text-foreground truncate max-w-[150px]">{invoice.customer_name || '—'}</p>
-                      </TableCell>
-                      <TableCell>
-                        <p className="text-sm text-muted-foreground truncate max-w-[180px]">{invoice.customer_email || '—'}</p>
+                        {invoice.stripe_created_at ? (
+                          <span className="text-xs text-muted-foreground">
+                            {format(new Date(invoice.stripe_created_at), 'dd MMM yy', { locale: es })}
+                          </span>
+                        ) : '—'}
                       </TableCell>
                       <TableCell>
                         {invoice.due_date ? (
                           <span className="text-xs text-muted-foreground">
                             {format(new Date(invoice.due_date), 'dd MMM yy', { locale: es })}
-                          </span>
-                        ) : '—'}
-                      </TableCell>
-                      <TableCell>
-                        {invoice.stripe_created_at ? (
-                          <span className="text-xs text-muted-foreground">
-                            {format(new Date(invoice.stripe_created_at), 'dd MMM yy HH:mm', { locale: es })}
                           </span>
                         ) : '—'}
                       </TableCell>
@@ -476,6 +489,10 @@ export function InvoicesPage() {
                           </div>
                         ) : invoice.finalized_at ? (
                           <span className="text-xs text-emerald-400">Finalizada</span>
+                        ) : invoice.paid_at ? (
+                          <span className="text-xs text-emerald-400">
+                            {format(new Date(invoice.paid_at), 'dd MMM yy', { locale: es })}
+                          </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
