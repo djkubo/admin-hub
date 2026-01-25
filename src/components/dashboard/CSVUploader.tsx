@@ -8,22 +8,27 @@ import {
   processPaymentCSV,
   processSubscriptionsCSV,
   processStripeCustomersCSV,
+  processStripePaymentsCSV,
   processGoHighLevelCSV,
   ProcessingResult,
   StripeCustomerResult,
+  StripePaymentsResult,
   GHLProcessingResult
 } from '@/lib/csvProcessor';
 import { toast } from 'sonner';
 
+type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl';
+
 interface CSVFile {
   name: string;
-  type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl';
+  type: CSVFileType;
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
-  result?: ProcessingResult | StripeCustomerResult | GHLProcessingResult;
+  result?: ProcessingResult | StripeCustomerResult | StripePaymentsResult | GHLProcessingResult;
   subscriptionCount?: number;
   duplicatesResolved?: number;
   ghlStats?: { withEmail: number; withPhone: number; withTags: number };
+  stripePaymentsStats?: { totalAmount: number; uniqueCustomers: number; refundedCount: number };
 }
 
 interface CSVUploaderProps {
@@ -35,7 +40,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl'> => {
+  const detectFileType = async (file: File): Promise<CSVFileType> => {
     const lowerName = file.name.toLowerCase();
     
     // Read content for column-based detection (more reliable)
@@ -48,13 +53,24 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       console.log(`[CSV Detection] Headers: ${firstLine.substring(0, 200)}...`);
       
       // STRIPE CUSTOMERS (unified_customers.csv) - detect by Total Spend or Delinquent columns
-      if (firstLine.includes('total spend') || 
-          firstLine.includes('total_spend') ||
-          firstLine.includes('delinquent') ||
-          firstLine.includes('lifetime value') ||
-          (firstLine.includes('customer id') && firstLine.includes('email') && !firstLine.includes('amount'))) {
+      // Must check BEFORE Stripe Payments to avoid misclassification
+      if ((firstLine.includes('total spend') || 
+           firstLine.includes('total_spend') ||
+           firstLine.includes('delinquent') ||
+           firstLine.includes('lifetime value')) &&
+          !firstLine.includes('amount refunded')) {
         console.log(`[CSV Detection] Detected as: Stripe Customers (LTV Master)`);
         return 'stripe_customers';
+      }
+
+      // STRIPE PAYMENTS (unified_payments.csv) - detect by specific payment columns
+      // Has: id, Amount, Amount Refunded, Currency, Customer Email, Status, Created (UTC)
+      if ((firstLine.includes('amount refunded') || firstLine.includes('amount_refunded')) ||
+          (firstLine.includes('balance transaction') && firstLine.includes('captured')) ||
+          (firstLine.includes('payment method type') && firstLine.includes('customer email')) ||
+          (firstLine.includes('invoice id') && firstLine.includes('customer email') && firstLine.includes('amount'))) {
+        console.log(`[CSV Detection] Detected as: Stripe Payments (unified_payments.csv)`);
+        return 'stripe_payments';
       }
       
       // PayPal detection: unique Spanish column names or "Bruto" column
@@ -67,7 +83,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         return 'paypal';
       }
       
-      // Stripe transactions: has specific Stripe column patterns
+      // Stripe transactions (legacy): has specific Stripe column patterns
       if (firstLine.includes('payment_intent') ||
           firstLine.includes('created (utc)') ||
           firstLine.includes('created date (utc)') ||
@@ -127,6 +143,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         console.log(`[CSV Detection] Filename fallback: Subscriptions`);
         return 'subscriptions';
       }
+      // Filename fallback: unified_payments.csv -> stripe_payments
+      if (lowerName.includes('unified_payment') || lowerName.includes('payments')) {
+        console.log(`[CSV Detection] Filename fallback: Stripe Payments`);
+        return 'stripe_payments';
+      }
       if (lowerName.includes('stripe') || lowerName.includes('payment') || lowerName.includes('unified')) {
         console.log(`[CSV Detection] Filename fallback: Stripe`);
         return 'stripe';
@@ -164,7 +185,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
   };
 
-  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl') => {
+  const updateFileType = (index: number, type: CSVFileType) => {
     setFiles(prev => prev.map((f, i) => i === index ? { ...f, type } : f));
   };
 
@@ -177,9 +198,17 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     
     setIsProcessing(true);
     
-    // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Subscriptions -> Payments
+    // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Stripe Payments -> Subscriptions -> Legacy Stripe/PayPal
     const sortedFiles = [...files].sort((a, b) => {
-      const priority = { ghl: 0, web: 1, stripe_customers: 2, subscriptions: 3, stripe: 4, paypal: 5 };
+      const priority: Record<CSVFileType, number> = { 
+        ghl: 0, 
+        web: 1, 
+        stripe_customers: 2, 
+        stripe_payments: 3,
+        subscriptions: 4, 
+        stripe: 5, 
+        paypal: 6 
+      };
       return priority[a.type] - priority[b.type];
     });
 
@@ -256,6 +285,34 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (ghlResult.errors.length > 0) {
             toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
           }
+        } else if (file.type === 'stripe_payments') {
+          // Process Stripe Payments (unified_payments.csv)
+          const paymentsResult = await processStripePaymentsCSV(text);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done', 
+              result: paymentsResult,
+              stripePaymentsStats: {
+                totalAmount: paymentsResult.totalAmountCents,
+                uniqueCustomers: paymentsResult.uniqueCustomers,
+                refundedCount: paymentsResult.refundedCount
+              }
+            } : f
+          ));
+          toast.success(
+            `${file.name}: ${paymentsResult.transactionsCreated} transacciones importadas. ` +
+            `${paymentsResult.uniqueCustomers} clientes únicos. ` +
+            `Total: $${(paymentsResult.totalAmountCents / 100).toLocaleString()}`
+          );
+          
+          if (paymentsResult.refundedCount > 0) {
+            toast.info(`📋 ${paymentsResult.refundedCount} transacciones con reembolsos`);
+          }
+          
+          if (paymentsResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${paymentsResult.errors.length} errores`);
+          }
         } else {
           let result: ProcessingResult;
 
@@ -294,6 +351,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'web': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
       case 'stripe': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
       case 'stripe_customers': return 'bg-amber-500/20 text-amber-400 border-amber-500/30';
+      case 'stripe_payments': return 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30';
       case 'paypal': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
       case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
       case 'ghl': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
@@ -304,8 +362,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const getTypeLabel = (type: string) => {
     switch (type) {
       case 'web': return 'Usuarios Web';
-      case 'stripe': return 'Stripe Pagos';
+      case 'stripe': return 'Stripe (Legacy)';
       case 'stripe_customers': return 'Clientes LTV';
+      case 'stripe_payments': return 'Stripe Pagos';
       case 'paypal': return 'PayPal';
       case 'subscriptions': return 'Suscripciones';
       case 'ghl': return 'GoHighLevel';
@@ -378,7 +437,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           Arrastra archivos o haz clic para seleccionar
         </p>
         <p className="text-xs text-gray-500">
-          Detecta: GoHighLevel, unified_customers.csv (LTV), Download-X.csv (PayPal), subscriptions.csv
+          Detecta: unified_payments.csv, unified_customers.csv, Download-X.csv (PayPal), GHL, subscriptions
         </p>
       </div>
 
@@ -393,15 +452,16 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               <div className="flex items-center gap-2">
                 <select
                   value={file.type}
-                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'ghl')}
+                  onChange={(e) => updateFileType(index, e.target.value as CSVFileType)}
                   disabled={file.status !== 'pending'}
                   className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
                 >
                   <option value="ghl">GoHighLevel</option>
                   <option value="web">Usuarios Web</option>
                   <option value="paypal">PayPal</option>
-                  <option value="stripe">Stripe Pagos</option>
+                  <option value="stripe_payments">Stripe Pagos</option>
                   <option value="stripe_customers">Clientes LTV</option>
+                  <option value="stripe">Stripe (Legacy)</option>
                   <option value="subscriptions">Suscripciones</option>
                 </select>
                 <Badge className={`${getTypeColor(file.type)} border`}>
