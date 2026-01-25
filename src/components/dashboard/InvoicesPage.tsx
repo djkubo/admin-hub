@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
-import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar, Download, User, Package, RefreshCw } from 'lucide-react';
+import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar, Download, User, Package, RefreshCw, Search, FileDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -23,86 +24,59 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useInvoices, Invoice } from '@/hooks/useInvoices';
+import { useInvoices, Invoice, InvoiceStatus } from '@/hooks/useInvoices';
 import { toast } from 'sonner';
-import { formatDistanceToNow, format, addDays, isAfter, isBefore } from 'date-fns';
+import { formatDistanceToNow, format, subDays } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 
-type InvoiceFilter = 'all' | 'open' | 'draft' | 'scheduled' | 'unscheduled';
-type DateRange = 'all' | '1d' | '7d' | '15d' | '30d' | '60d';
+type DateRange = 'all' | '7d' | '30d' | '90d' | '365d';
 
 export function InvoicesPage() {
-  const { invoices, isLoading, syncInvoices, totalPending, refetch } = useInvoices();
-  const [filter, setFilter] = useState<InvoiceFilter>('open');
-  const [dateRange, setDateRange] = useState<DateRange>('all');
+  const [statusFilter, setStatusFilter] = useState<InvoiceStatus>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [dateRange, setDateRange] = useState<DateRange>('90d');
   const [chargingInvoice, setChargingInvoice] = useState<string | null>(null);
   const [isChargingAll, setIsChargingAll] = useState(false);
   const [chargeProgress, setChargeProgress] = useState<{ current: number; total: number; recovered: number } | null>(null);
 
-  // Get date range cutoff
-  const getDateCutoff = (range: DateRange): Date | null => {
-    const now = new Date();
-    switch (range) {
-      case '1d': return addDays(now, 1);
-      case '7d': return addDays(now, 7);
-      case '15d': return addDays(now, 15);
-      case '30d': return addDays(now, 30);
-      case '60d': return addDays(now, 60);
-      default: return null;
-    }
-  };
+  // Calculate date range
+  const dateRangeValues = useMemo(() => {
+    if (dateRange === 'all') return { startDate: undefined, endDate: undefined };
+    const days = parseInt(dateRange);
+    return {
+      startDate: subDays(new Date(), days).toISOString(),
+      endDate: new Date().toISOString(),
+    };
+  }, [dateRange]);
 
-  const filteredInvoices = useMemo(() => {
-    let result = invoices;
-    
-    // Status filter
-    switch (filter) {
-      case 'open':
-        result = result.filter((i: Invoice) => i.status === 'open');
-        break;
-      case 'draft':
-        result = result.filter((i: Invoice) => i.status === 'draft');
-        break;
-      case 'scheduled':
-        result = result.filter((i: Invoice) => i.next_payment_attempt);
-        break;
-      case 'unscheduled':
-        result = result.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft');
-        break;
-    }
+  const { 
+    invoices, 
+    isLoading, 
+    syncInvoices, 
+    syncInvoicesFull,
+    syncProgress,
+    totalPending, 
+    totalPaid,
+    statusCounts,
+    exportToCSV,
+    refetch 
+  } = useInvoices({
+    statusFilter,
+    searchQuery,
+    startDate: dateRangeValues.startDate,
+    endDate: dateRangeValues.endDate,
+  });
 
-    // Date range filter (based on next_payment_attempt or created_at)
-    const cutoff = getDateCutoff(dateRange);
-    if (cutoff) {
-      const now = new Date();
-      result = result.filter((i: Invoice) => {
-        const dateToCheck = i.next_payment_attempt 
-          ? new Date(i.next_payment_attempt) 
-          : i.created_at 
-          ? new Date(i.created_at) 
-          : null;
-        
-        if (!dateToCheck) return true; // Include if no date
-        
-        // Include invoices where next_payment_attempt is between now and cutoff
-        // Or for created_at, include if created within the range
-        if (i.next_payment_attempt) {
-          return isAfter(dateToCheck, now) && isBefore(dateToCheck, cutoff);
-        }
-        return true; // Include drafts/unscheduled regardless
-      });
-    }
-    
-    // Sort by next payment attempt (soonest first)
-    return result.sort((a, b) => {
-      if (!a.next_payment_attempt) return 1;
-      if (!b.next_payment_attempt) return -1;
-      return new Date(a.next_payment_attempt).getTime() - new Date(b.next_payment_attempt).getTime();
+  // Sort invoices
+  const sortedInvoices = useMemo(() => {
+    return [...invoices].sort((a, b) => {
+      // Sort by stripe_created_at descending (newest first)
+      const dateA = a.stripe_created_at ? new Date(a.stripe_created_at).getTime() : 0;
+      const dateB = b.stripe_created_at ? new Date(b.stripe_created_at).getTime() : 0;
+      return dateB - dateA;
     });
-  }, [invoices, filter, dateRange]);
-
-  const totalFiltered = filteredInvoices.reduce((sum, i) => sum + (i.amount_due || 0), 0);
+  }, [invoices]);
 
   const handleChargeInvoice = async (invoice: Invoice) => {
     setChargingInvoice(invoice.id);
@@ -124,13 +98,10 @@ export function InvoicesPage() {
   };
 
   const handleChargeAll = async () => {
-    // Only charge open invoices from the filtered list (respects date range filter)
-    const toCharge = filteredInvoices.filter((i: Invoice) => 
-      i.status === 'open'
-    );
+    const toCharge = sortedInvoices.filter((i: Invoice) => i.status === 'open');
 
     if (toCharge.length === 0) {
-      toast.error('No hay facturas elegibles para cobrar en el rango seleccionado');
+      toast.error('No hay facturas elegibles para cobrar');
       return;
     }
 
@@ -156,7 +127,6 @@ export function InvoicesPage() {
         failed++;
       }
 
-      // Rate limiting
       await new Promise(r => setTimeout(r, 300));
     }
 
@@ -167,30 +137,31 @@ export function InvoicesPage() {
     toast.success(`Cobro masivo completado: $${(recovered / 100).toFixed(2)} recuperados, ${failed} fallidos`);
   };
 
-  // Filter invoices by date range first, then calculate counts
-  const dateFilteredInvoices = useMemo(() => {
-    const cutoff = getDateCutoff(dateRange);
-    if (!cutoff) return invoices;
-    
-    const now = new Date();
-    return invoices.filter((i: Invoice) => {
-      if (!i.next_payment_attempt) return true; // Include drafts/unscheduled
-      const dateToCheck = new Date(i.next_payment_attempt);
-      return isAfter(dateToCheck, now) && isBefore(dateToCheck, cutoff);
-    });
-  }, [invoices, dateRange]);
-
-  const filterCounts = useMemo(() => ({
-    all: dateFilteredInvoices.length,
-    open: dateFilteredInvoices.filter((i: Invoice) => i.status === 'open').length,
-    draft: dateFilteredInvoices.filter((i: Invoice) => i.status === 'draft').length,
-    scheduled: dateFilteredInvoices.filter((i: Invoice) => i.next_payment_attempt).length,
-    unscheduled: dateFilteredInvoices.filter((i: Invoice) => !i.next_payment_attempt && i.status !== 'draft').length,
-  }), [dateFilteredInvoices]);
+  const getStatusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      draft: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
+      open: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+      paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+      void: 'bg-red-500/10 text-red-400 border-red-500/30',
+      uncollectible: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    };
+    const labels: Record<string, string> = {
+      draft: 'Borrador',
+      open: 'Abierta',
+      paid: 'Pagada',
+      void: 'Anulada',
+      uncollectible: 'Incobrable',
+    };
+    return (
+      <Badge variant="outline" className={styles[status] || styles.open}>
+        {labels[status] || status}
+      </Badge>
+    );
+  };
 
   return (
     <div className="space-y-4 md:space-y-6">
-      {/* Header - Responsive */}
+      {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
@@ -198,89 +169,129 @@ export function InvoicesPage() {
             Facturas
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">
-            Gestiona facturas pendientes
+            Mirror completo de Stripe Invoices
           </p>
         </div>
         <div className="flex items-center gap-3 justify-between sm:justify-end">
           <div className="text-left sm:text-right">
             <p className="text-xl md:text-2xl font-bold text-foreground">${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-            <p className="text-xs text-muted-foreground">Total pendiente</p>
+            <p className="text-xs text-muted-foreground">Pendiente</p>
           </div>
-          <Button
-            onClick={() => syncInvoices.mutate()}
-            disabled={syncInvoices.isPending}
-            variant="outline"
-            size="sm"
-            className="touch-feedback"
-          >
-            {syncInvoices.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            <span className="hidden sm:inline ml-2">Sync</span>
-          </Button>
+          <div className="text-left sm:text-right">
+            <p className="text-xl md:text-2xl font-bold text-emerald-400">${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-xs text-muted-foreground">Cobrado</p>
+          </div>
         </div>
       </div>
 
-      {/* Charge All Progress */}
+      {/* Sync Progress */}
+      {syncProgress && (
+        <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs md:text-sm font-medium">Sincronizando facturas...</span>
+            <span className="text-xs text-muted-foreground">{syncProgress.current} procesadas</span>
+          </div>
+          <Progress value={syncProgress.hasMore ? 50 : 100} className="h-2" />
+        </div>
+      )}
+
+      {/* Charge Progress */}
       {chargeProgress && (
         <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs md:text-sm font-medium">Cobrando facturas...</span>
-            <span className="text-xs text-muted-foreground">
-              {chargeProgress.current}/{chargeProgress.total}
-            </span>
+            <span className="text-xs text-muted-foreground">{chargeProgress.current}/{chargeProgress.total}</span>
           </div>
           <Progress value={(chargeProgress.current / chargeProgress.total) * 100} className="h-2" />
-          <p className="text-xs text-emerald-400 mt-2">
-            Recuperado: ${(chargeProgress.recovered / 100).toFixed(2)}
-          </p>
+          <p className="text-xs text-emerald-400 mt-2">Recuperado: ${(chargeProgress.recovered / 100).toFixed(2)}</p>
         </div>
       )}
 
-      {/* Filters - Stack on mobile */}
+      {/* Filters */}
       <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
         <div className="flex flex-col gap-3">
-          {/* Tabs - Scroll on mobile */}
+          {/* Status Tabs */}
           <div className="overflow-x-auto -mx-3 px-3">
-            <Tabs value={filter} onValueChange={(v) => setFilter(v as InvoiceFilter)}>
+            <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as InvoiceStatus)}>
               <TabsList className="bg-muted/50 h-8 min-w-max">
-                <TabsTrigger value="all" className="text-xs px-2 md:px-3">Todas ({filterCounts.all})</TabsTrigger>
-                <TabsTrigger value="open" className="text-xs px-2 md:px-3">Abiertas ({filterCounts.open})</TabsTrigger>
-                <TabsTrigger value="draft" className="text-xs px-2 md:px-3">Borrador ({filterCounts.draft})</TabsTrigger>
-                <TabsTrigger value="scheduled" className="text-xs px-2 md:px-3">Prog ({filterCounts.scheduled})</TabsTrigger>
+                <TabsTrigger value="all" className="text-xs px-2 md:px-3">Todas ({statusCounts.all})</TabsTrigger>
+                <TabsTrigger value="open" className="text-xs px-2 md:px-3">Abiertas ({statusCounts.open})</TabsTrigger>
+                <TabsTrigger value="paid" className="text-xs px-2 md:px-3">Pagadas ({statusCounts.paid})</TabsTrigger>
+                <TabsTrigger value="draft" className="text-xs px-2 md:px-3">Borrador ({statusCounts.draft})</TabsTrigger>
+                <TabsTrigger value="void" className="text-xs px-2 md:px-3">Anuladas ({statusCounts.void})</TabsTrigger>
+                <TabsTrigger value="uncollectible" className="text-xs px-2 md:px-3">Incobrables ({statusCounts.uncollectible})</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
 
-          {/* Date filter and actions */}
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-muted-foreground" />
+          {/* Search, Date filter and actions */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+              <div className="relative flex-1 sm:flex-none">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar email, nombre, factura..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 h-8 w-full sm:w-64 bg-muted/50 border-border/50 text-sm"
+                />
+              </div>
               <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
-                <SelectTrigger className="w-24 md:w-32 bg-muted/50 border-border/50 text-xs md:text-sm h-8">
+                <SelectTrigger className="w-28 bg-muted/50 border-border/50 text-xs h-8">
+                  <Calendar className="h-3.5 w-3.5 mr-1.5" />
                   <SelectValue placeholder="Período" />
                 </SelectTrigger>
                 <SelectContent className="bg-popover border-border">
-                  <SelectItem value="all">Todas</SelectItem>
-                  <SelectItem value="1d">1 día</SelectItem>
                   <SelectItem value="7d">7 días</SelectItem>
-                  <SelectItem value="15d">15 días</SelectItem>
                   <SelectItem value="30d">30 días</SelectItem>
+                  <SelectItem value="90d">90 días</SelectItem>
+                  <SelectItem value="365d">1 año</SelectItem>
+                  <SelectItem value="all">Todo</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="text-muted-foreground text-xs hidden sm:flex">
-                ${(totalFiltered / 100).toFixed(2)}
-              </Badge>
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
               <Button
-                onClick={handleChargeAll}
-                disabled={isChargingAll || filteredInvoices.filter(i => i.status === 'open').length === 0}
+                onClick={() => exportToCSV()}
+                variant="outline"
                 size="sm"
-                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs touch-feedback"
+                className="h-8 text-xs"
               >
-                {isChargingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DollarSign className="h-3.5 w-3.5" />}
-                Cobrar
+                <FileDown className="h-3.5 w-3.5 mr-1.5" />
+                CSV
               </Button>
+              <Button
+                onClick={() => syncInvoices.mutate()}
+                disabled={syncInvoices.isPending || !!syncProgress}
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+              >
+                {syncInvoices.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span className="ml-1.5">Sync</span>
+              </Button>
+              <Button
+                onClick={() => syncInvoicesFull('full')}
+                disabled={syncInvoices.isPending || !!syncProgress}
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+              >
+                {syncProgress ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                <span className="ml-1">Full</span>
+              </Button>
+              {statusFilter === 'open' && (
+                <Button
+                  onClick={handleChargeAll}
+                  disabled={isChargingAll || sortedInvoices.filter(i => i.status === 'open').length === 0}
+                  size="sm"
+                  className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs h-8"
+                >
+                  {isChargingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DollarSign className="h-3.5 w-3.5" />}
+                  Cobrar todas
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -292,16 +303,17 @@ export function InvoicesPage() {
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
           <p className="text-sm text-muted-foreground">Cargando facturas...</p>
         </div>
-      ) : filteredInvoices.length === 0 ? (
+      ) : sortedInvoices.length === 0 ? (
         <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
           <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
-          <p className="text-sm text-muted-foreground mb-1">¡Sin facturas pendientes!</p>
+          <p className="text-sm text-muted-foreground mb-1">Sin facturas en este filtro</p>
+          <p className="text-xs text-muted-foreground/60">Prueba con otro filtro o sincroniza desde Stripe</p>
         </div>
       ) : (
         <>
-          {/* Mobile Cards - Enriched */}
+          {/* Mobile Cards */}
           <div className="md:hidden space-y-3">
-            {filteredInvoices.map((invoice) => (
+            {sortedInvoices.slice(0, 50).map((invoice) => (
               <div key={invoice.id} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0">
@@ -320,7 +332,6 @@ export function InvoicesPage() {
                   </span>
                 </div>
 
-                {/* Plan info */}
                 {(invoice.plan_name || invoice.product_name || invoice.plan_interval) && (
                   <div className="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground">
                     <Package className="h-3 w-3 flex-shrink-0" />
@@ -331,88 +342,65 @@ export function InvoicesPage() {
                   </div>
                 )}
 
-                {/* Invoice number */}
                 <p className="text-[10px] text-muted-foreground truncate mb-2">
                   {invoice.invoice_number || invoice.stripe_invoice_id}
                 </p>
                 
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
-                  <Badge variant="outline" className={`text-xs ${
-                    invoice.status === 'open' 
-                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                      : invoice.status === 'draft'
-                      ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
-                      : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                  }`}>
-                    {invoice.status === 'draft' ? 'Borrador' : invoice.status === 'open' ? 'Abierta' : invoice.status}
-                  </Badge>
+                  {getStatusBadge(invoice.status)}
                   {invoice.plan_interval && (
                     <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
                       {invoice.plan_interval}
                     </Badge>
                   )}
-                  {invoice.attempt_count && invoice.attempt_count > 0 && (
-                    <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
-                      <RefreshCw className="h-2.5 w-2.5 mr-1" />
-                      {invoice.attempt_count}
-                    </Badge>
-                  )}
-                  {invoice.next_payment_attempt && (
-                    <span className="text-xs text-muted-foreground flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
+                  {invoice.stripe_created_at && (
+                    <span className="text-xs text-muted-foreground">
+                      {format(new Date(invoice.stripe_created_at), 'dd MMM yy', { locale: es })}
                     </span>
                   )}
                 </div>
 
-                {/* Error message if any */}
                 {invoice.last_finalization_error && (
-                  <p className="text-[10px] text-red-400 mb-2 truncate">
-                    ⚠️ {invoice.last_finalization_error}
-                  </p>
+                  <p className="text-[10px] text-red-400 mb-2 truncate">⚠️ {invoice.last_finalization_error}</p>
                 )}
 
                 <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => handleChargeInvoice(invoice)}
-                    disabled={chargingInvoice === invoice.id || invoice.status !== 'open'}
-                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs h-8 flex-1 touch-feedback"
-                  >
-                    {chargingInvoice === invoice.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <DollarSign className="h-3.5 w-3.5" />
-                    )}
-                    Cobrar
-                  </Button>
-                  {invoice.pdf_url && (
+                  {invoice.status === 'open' && (
                     <Button
                       size="sm"
-                      variant="outline"
-                      onClick={() => window.open(invoice.pdf_url!, '_blank')}
-                      className="h-8 touch-feedback"
-                      title="Descargar PDF"
+                      onClick={() => handleChargeInvoice(invoice)}
+                      disabled={chargingInvoice === invoice.id}
+                      className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs h-8 flex-1"
                     >
+                      {chargingInvoice === invoice.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <DollarSign className="h-3.5 w-3.5" />
+                      )}
+                      Cobrar
+                    </Button>
+                  )}
+                  {invoice.pdf_url && (
+                    <Button size="sm" variant="outline" onClick={() => window.open(invoice.pdf_url!, '_blank')} className="h-8">
                       <Download className="h-3.5 w-3.5" />
                     </Button>
                   )}
                   {invoice.hosted_invoice_url && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
-                      className="h-8 touch-feedback"
-                    >
+                    <Button size="sm" variant="outline" onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')} className="h-8">
                       <ExternalLink className="h-3.5 w-3.5" />
                     </Button>
                   )}
                 </div>
               </div>
             ))}
+            {sortedInvoices.length > 50 && (
+              <p className="text-center text-xs text-muted-foreground py-4">
+                Mostrando 50 de {sortedInvoices.length} facturas. Usa el buscador para filtrar.
+              </p>
+            )}
           </div>
 
-          {/* Desktop Table - Enriched */}
+          {/* Desktop Table */}
           <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
@@ -421,18 +409,18 @@ export function InvoicesPage() {
                     <TableHead className="text-muted-foreground">Monto</TableHead>
                     <TableHead className="text-muted-foreground">Moneda</TableHead>
                     <TableHead className="text-muted-foreground">Estado</TableHead>
-                    <TableHead className="text-muted-foreground">Plan</TableHead>
+                    <TableHead className="text-muted-foreground">Frecuencia</TableHead>
                     <TableHead className="text-muted-foreground">Factura</TableHead>
                     <TableHead className="text-muted-foreground">Cliente</TableHead>
                     <TableHead className="text-muted-foreground">Email</TableHead>
-                    <TableHead className="text-muted-foreground">Intentos</TableHead>
-                    <TableHead className="text-muted-foreground">Creada</TableHead>
-                    <TableHead className="text-muted-foreground">Próximo intento</TableHead>
+                    <TableHead className="text-muted-foreground">Vence</TableHead>
+                    <TableHead className="text-muted-foreground">Creada (Stripe)</TableHead>
+                    <TableHead className="text-muted-foreground">Finalización</TableHead>
                     <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredInvoices.map((invoice) => (
+                  {sortedInvoices.slice(0, 100).map((invoice) => (
                     <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
                       <TableCell>
                         <span className="text-lg font-semibold text-foreground">
@@ -440,26 +428,12 @@ export function InvoicesPage() {
                         </span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs text-muted-foreground uppercase">
-                          {invoice.currency}
-                        </span>
+                        <span className="text-xs text-muted-foreground uppercase">{invoice.currency}</span>
                       </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={
-                          invoice.status === 'open' 
-                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                            : invoice.status === 'draft'
-                            ? 'bg-gray-500/10 text-gray-400 border-gray-500/30'
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                        }>
-                          {invoice.status === 'draft' ? 'Borrador' : invoice.status === 'open' ? 'Abierta' : invoice.status}
-                        </Badge>
-                      </TableCell>
+                      <TableCell>{getStatusBadge(invoice.status)}</TableCell>
                       <TableCell>
                         <div className="flex flex-col">
-                          <span className="text-sm font-medium text-foreground">
-                            {invoice.plan_interval || 'N/A'}
-                          </span>
+                          <span className="text-sm font-medium text-foreground">{invoice.plan_interval || 'N/A'}</span>
                           <span className="text-xs text-muted-foreground truncate max-w-[120px]">
                             {invoice.product_name || invoice.plan_name || '—'}
                           </span>
@@ -471,77 +445,65 @@ export function InvoicesPage() {
                         </span>
                       </TableCell>
                       <TableCell>
-                        <p className="font-medium text-foreground truncate max-w-[150px]">
-                          {invoice.customer_name || '—'}
-                        </p>
+                        <p className="font-medium text-foreground truncate max-w-[150px]">{invoice.customer_name || '—'}</p>
                       </TableCell>
                       <TableCell>
-                        <p className="text-sm text-muted-foreground truncate max-w-[180px]">
-                          {invoice.customer_email || '—'}
-                        </p>
+                        <p className="text-sm text-muted-foreground truncate max-w-[180px]">{invoice.customer_email || '—'}</p>
                       </TableCell>
                       <TableCell>
-                        {invoice.attempt_count && invoice.attempt_count > 0 ? (
-                          <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
-                            <RefreshCw className="h-2.5 w-2.5 mr-1" />
-                            {invoice.attempt_count}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {invoice.created_at ? (
+                        {invoice.due_date ? (
                           <span className="text-xs text-muted-foreground">
-                            {format(new Date(invoice.created_at), 'dd MMM HH:mm', { locale: es })}
+                            {format(new Date(invoice.due_date), 'dd MMM yy', { locale: es })}
                           </span>
                         ) : '—'}
                       </TableCell>
                       <TableCell>
-                        {invoice.next_payment_attempt ? (
+                        {invoice.stripe_created_at ? (
+                          <span className="text-xs text-muted-foreground">
+                            {format(new Date(invoice.stripe_created_at), 'dd MMM yy HH:mm', { locale: es })}
+                          </span>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        {invoice.automatically_finalizes_at ? (
                           <div className="flex flex-col">
                             <span className="text-xs text-muted-foreground">
-                              {format(new Date(invoice.next_payment_attempt), 'dd MMM HH:mm', { locale: es })}
+                              {format(new Date(invoice.automatically_finalizes_at), 'dd MMM HH:mm', { locale: es })}
                             </span>
                             <span className="text-[10px] text-muted-foreground/60">
-                              {formatDistanceToNow(new Date(invoice.next_payment_attempt), { addSuffix: true, locale: es })}
+                              {formatDistanceToNow(new Date(invoice.automatically_finalizes_at), { addSuffix: true, locale: es })}
                             </span>
                           </div>
+                        ) : invoice.finalized_at ? (
+                          <span className="text-xs text-emerald-400">Finalizada</span>
                         ) : (
-                          <span className="text-xs text-muted-foreground">Sin programar</span>
+                          <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => handleChargeInvoice(invoice)}
-                            disabled={chargingInvoice === invoice.id || invoice.status !== 'open'}
-                            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
-                          >
-                            {chargingInvoice === invoice.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <DollarSign className="h-4 w-4" />
-                            )}
-                            Cobrar
-                          </Button>
-                          {invoice.pdf_url && (
+                          {invoice.status === 'open' && (
                             <Button
                               size="sm"
-                              variant="ghost"
-                              onClick={() => window.open(invoice.pdf_url!, '_blank')}
-                              title="Descargar PDF"
+                              onClick={() => handleChargeInvoice(invoice)}
+                              disabled={chargingInvoice === invoice.id}
+                              className="gap-2 bg-emerald-600 hover:bg-emerald-700"
                             >
+                              {chargingInvoice === invoice.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <DollarSign className="h-4 w-4" />
+                              )}
+                              Cobrar
+                            </Button>
+                          )}
+                          {invoice.pdf_url && (
+                            <Button size="sm" variant="ghost" onClick={() => window.open(invoice.pdf_url!, '_blank')} title="Descargar PDF">
                               <Download className="h-4 w-4" />
                             </Button>
                           )}
                           {invoice.hosted_invoice_url && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
-                            >
+                            <Button size="sm" variant="outline" onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}>
                               <ExternalLink className="h-4 w-4" />
                             </Button>
                           )}
@@ -552,6 +514,13 @@ export function InvoicesPage() {
                 </TableBody>
               </Table>
             </div>
+            {sortedInvoices.length > 100 && (
+              <div className="p-4 border-t border-border/50 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Mostrando 100 de {sortedInvoices.length} facturas. Usa filtros o exporta CSV para ver todas.
+                </p>
+              </div>
+            )}
           </div>
         </>
       )}

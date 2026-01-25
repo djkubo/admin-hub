@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,34 +6,37 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// SECURITY: JWT-based admin verification using getUser()
-async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
-  const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { valid: false, error: 'Missing or invalid Authorization header' };
-  }
+// ============= TYPES =============
 
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authHeader } }
-  });
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  userId?: string;
+}
 
-  // Use getUser() instead of getClaims() for compatibility
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
-  if (userError || !user) {
-    return { valid: false, error: 'Invalid or expired token' };
-  }
+interface FetchInvoicesRequest {
+  mode?: 'full' | 'range' | 'recent';
+  startDate?: string; // ISO date
+  endDate?: string;   // ISO date
+  cursor?: string;    // Stripe starting_after cursor
+  syncRunId?: string;
+}
 
-  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
-  if (adminError || !isAdmin) {
-    return { valid: false, error: 'User is not an admin' };
-  }
-
-  return { valid: true };
+interface FetchInvoicesResponse {
+  success: boolean;
+  synced: number;
+  upserted: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  syncRunId: string | null;
+  error?: string;
+  stats?: {
+    draft: number;
+    open: number;
+    paid: number;
+    void: number;
+    uncollectible: number;
+  };
 }
 
 interface StripeLineItem {
@@ -46,15 +49,16 @@ interface StripeLineItem {
     id: string;
     nickname: string | null;
     unit_amount: number | null;
-    recurring?: {
-      interval: string;
-      interval_count: number;
-    } | null;
-    product?: string | {
-      id: string;
-      name: string;
-    };
+    recurring?: { interval: string; interval_count: number } | null;
+    product?: string | { id: string; name: string };
   };
+}
+
+interface StripeCustomer {
+  id: string;
+  email: string | null;
+  name: string | null;
+  phone: string | null;
 }
 
 interface StripeInvoice {
@@ -62,7 +66,7 @@ interface StripeInvoice {
   number: string | null;
   customer_email: string | null;
   customer_name: string | null;
-  customer: string;
+  customer: string | StripeCustomer;
   amount_due: number;
   amount_paid: number;
   amount_remaining: number;
@@ -70,6 +74,7 @@ interface StripeInvoice {
   total: number;
   currency: string;
   status: string;
+  created: number;
   period_end: number;
   next_payment_attempt: number | null;
   due_date: number | null;
@@ -83,6 +88,8 @@ interface StripeInvoice {
   charge: string | null;
   default_payment_method: string | { id: string } | null;
   last_finalization_error: { message: string; code: string } | null;
+  finalized_at: number | null;
+  automatically_finalizes_at: number | null;
   subscription?: {
     id: string;
     status: string;
@@ -91,52 +98,71 @@ interface StripeInvoice {
         price?: {
           id: string;
           nickname: string | null;
-          recurring?: {
-            interval: string;
-          } | null;
-          product?: string | {
-            id: string;
-            name: string;
-          };
+          recurring?: { interval: string } | null;
+          product?: string | { id: string; name: string };
         };
       }>;
     };
   } | string | null;
-  lines?: {
-    data: StripeLineItem[];
-  };
+  lines?: { data: StripeLineItem[] };
 }
 
-const EXCLUDED_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired", "unpaid"];
-const EXCLUDED_INVOICE_STATUSES = ["void", "uncollectible", "paid"];
+// ============= SECURITY =============
 
-// Helper to extract plan info from subscription or lines
+async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
+
+// ============= HELPERS =============
+
 function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; planInterval: string | null; productName: string | null } {
   let planName: string | null = null;
   let planInterval: string | null = null;
   let productName: string | null = null;
 
-  // Try from subscription first (expanded)
+  // Try from subscription first
   if (invoice.subscription && typeof invoice.subscription === 'object') {
     const sub = invoice.subscription;
     if (sub.items?.data?.[0]?.price) {
       const price = sub.items.data[0].price;
       planName = price.nickname || null;
       planInterval = price.recurring?.interval || null;
-      
       if (price.product && typeof price.product === 'object') {
         productName = price.product.name;
       }
     }
   }
 
-  // Fallback: try from invoice lines
+  // Fallback: invoice lines
   if (!planName && invoice.lines?.data?.length) {
     const firstLine = invoice.lines.data[0];
     if (firstLine.price) {
       planName = firstLine.price.nickname || firstLine.description || null;
       planInterval = firstLine.price.recurring?.interval || null;
-      
       if (firstLine.price.product && typeof firstLine.price.product === 'object') {
         productName = firstLine.price.product.name;
       }
@@ -159,6 +185,52 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
   return { planName, planInterval, productName };
 }
 
+async function resolveClientId(
+  supabase: SupabaseClient,
+  stripeCustomerId: string | null,
+  email: string | null,
+  phone: string | null
+): Promise<string | null> {
+  if (!stripeCustomerId && !email && !phone) return null;
+
+  // Priority 1: stripe_customer_id
+  if (stripeCustomerId) {
+    const { data } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('stripe_customer_id', stripeCustomerId)
+      .limit(1)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+
+  // Priority 2: email
+  if (email) {
+    const { data } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('email', email.toLowerCase())
+      .limit(1)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+
+  // Priority 3: phone (normalized)
+  if (phone) {
+    const { data } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('phone_e164', phone)
+      .limit(1)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+
+  return null;
+}
+
+// ============= MAIN HANDLER =============
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -170,7 +242,7 @@ Deno.serve(async (req) => {
     if (!authCheck.valid) {
       console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -186,87 +258,114 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log("🧾 Starting ENRICHED Stripe Invoices fetch...");
+    // Parse request
+    let mode: 'full' | 'range' | 'recent' = 'recent';
+    let startDate: string | null = null;
+    let endDate: string | null = null;
+    let cursor: string | null = null;
+    let syncRunId: string | null = null;
 
-    // Fetch draft invoices with valid expansion (max 4 levels)
-    const draftResponse = await fetch(
-      "https://api.stripe.com/v1/invoices?status=draft&limit=100" +
-      "&expand[]=data.subscription" +
-      "&expand[]=data.lines.data.price" +
-      "&expand[]=data.customer",
-      {
-        headers: {
-          Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
-    );
-
-    if (!draftResponse.ok) {
-      const error = await draftResponse.text();
-      throw new Error(`Stripe API error (draft): ${error}`);
+    try {
+      const body: FetchInvoicesRequest = await req.json();
+      mode = body.mode || 'recent';
+      cursor = body.cursor || null;
+      syncRunId = body.syncRunId || null;
+      
+      if (body.startDate) startDate = body.startDate;
+      if (body.endDate) endDate = body.endDate;
+    } catch {
+      // Default to recent mode
     }
 
-    const draftData = await draftResponse.json();
-    console.log(`📄 Found ${draftData.data.length} draft invoices (raw)`);
+    console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
 
-    // Fetch open invoices with valid expansion (max 4 levels)
-    const openResponse = await fetch(
-      "https://api.stripe.com/v1/invoices?status=open&limit=100" +
-      "&expand[]=data.subscription" +
-      "&expand[]=data.lines.data.price" +
-      "&expand[]=data.customer",
-      {
-        headers: {
-          Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
-    );
-
-    if (!openResponse.ok) {
-      const error = await openResponse.text();
-      throw new Error(`Stripe API error (open): ${error}`);
+    // Create sync run if not provided
+    if (!syncRunId) {
+      const { data: syncRun } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'stripe_invoices',
+          status: 'running',
+          metadata: { mode, startDate, endDate }
+        })
+        .select('id')
+        .single();
+      syncRunId = syncRun?.id || null;
     }
 
-    const openData = await openResponse.json();
-    console.log(`📄 Found ${openData.data.length} open invoices (raw)`);
+    // Build Stripe API URL - fetch ALL statuses
+    const params = new URLSearchParams();
+    params.set('limit', '100');
+    params.set('expand[]', 'data.subscription');
+    params.append('expand[]', 'data.lines.data.price');
+    params.append('expand[]', 'data.customer');
 
-    const allRawInvoices: StripeInvoice[] = [...draftData.data, ...openData.data];
-    console.log(`📊 Total raw invoices: ${allRawInvoices.length}`);
+    // Date filters for range mode
+    if (mode === 'range' && startDate) {
+      params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
+    }
+    if (mode === 'range' && endDate) {
+      params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
+    }
 
-    // Filter out invoices from canceled subscriptions
-    const filteredInvoices = allRawInvoices.filter((invoice) => {
-      if (!invoice.subscription) {
-        console.log(`✅ Invoice ${invoice.id}: No subscription, including`);
-        return true;
-      }
+    // Recent mode: last 90 days
+    if (mode === 'recent') {
+      const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+      params.set('created[gte]', String(ninetyDaysAgo));
+    }
 
-      const sub = invoice.subscription;
-      if (typeof sub === "object" && sub.status) {
-        const isExcluded = EXCLUDED_SUBSCRIPTION_STATUSES.includes(sub.status);
-        if (isExcluded) {
-          console.log(`🚫 Invoice ${invoice.id}: Subscription ${sub.id} is ${sub.status}, EXCLUDING`);
-          return false;
-        }
-        console.log(`✅ Invoice ${invoice.id}: Subscription ${sub.id} is ${sub.status}, including`);
-        return true;
-      }
+    // Cursor for pagination
+    if (cursor) {
+      params.set('starting_after', cursor);
+    }
 
-      console.log(`⚠️ Invoice ${invoice.id}: Subscription is string ID, including`);
-      return true;
+    const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
+    
+    const response = await fetch(stripeUrl, {
+      headers: {
+        Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
     });
 
-    console.log(`📊 Filtered invoices (actionable): ${filteredInvoices.length}`);
-    console.log(`🚫 Excluded: ${allRawInvoices.length - filteredInvoices.length} invoices from canceled/inactive subscriptions`);
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Stripe API error: ${error}`);
+    }
 
+    const stripeData = await response.json();
+    const invoices: StripeInvoice[] = stripeData.data || [];
+    const hasMore = stripeData.has_more || false;
+    const nextCursor = hasMore && invoices.length > 0 ? invoices[invoices.length - 1].id : null;
+
+    console.log(`📄 Fetched ${invoices.length} invoices, hasMore: ${hasMore}`);
+
+    // Stats counters
+    const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
     let upsertedCount = 0;
     let errorCount = 0;
 
-    for (const invoice of filteredInvoices) {
+    for (const invoice of invoices) {
+      // Count by status
+      if (invoice.status === 'draft') stats.draft++;
+      else if (invoice.status === 'open') stats.open++;
+      else if (invoice.status === 'paid') stats.paid++;
+      else if (invoice.status === 'void') stats.void++;
+      else if (invoice.status === 'uncollectible') stats.uncollectible++;
+
       // Extract enriched plan info
       const { planName, planInterval, productName } = extractPlanInfo(invoice);
       
+      // Get customer info
+      const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
+      const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
+      const customerEmail = invoice.customer_email || customer?.email || null;
+      const customerName = invoice.customer_name || customer?.name || null;
+      const customerPhone = customer?.phone || null;
+
+      // Resolve client_id
+      const clientId = await resolveClientId(supabase, stripeCustomerId, customerEmail, customerPhone);
+
       // Get subscription ID
       const subscriptionId = invoice.subscription 
         ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
@@ -282,7 +381,7 @@ Deno.serve(async (req) => {
         ? (typeof invoice.default_payment_method === 'object' ? invoice.default_payment_method.id : invoice.default_payment_method)
         : null;
 
-      // Extract line items for storage
+      // Extract line items
       const lineItems = invoice.lines?.data?.map(line => ({
         id: line.id,
         amount: line.amount,
@@ -301,9 +400,11 @@ Deno.serve(async (req) => {
       const invoiceRecord = {
         stripe_invoice_id: invoice.id,
         invoice_number: invoice.number,
-        customer_email: invoice.customer_email,
-        customer_name: invoice.customer_name,
-        stripe_customer_id: invoice.customer,
+        customer_email: customerEmail?.toLowerCase() || null,
+        customer_name: customerName,
+        customer_phone: customerPhone,
+        stripe_customer_id: stripeCustomerId,
+        client_id: clientId,
         amount_due: invoice.amount_due,
         amount_paid: invoice.amount_paid,
         amount_remaining: invoice.amount_remaining,
@@ -311,6 +412,15 @@ Deno.serve(async (req) => {
         total: invoice.total,
         currency: invoice.currency,
         status: invoice.status,
+        stripe_created_at: invoice.created 
+          ? new Date(invoice.created * 1000).toISOString() 
+          : null,
+        finalized_at: invoice.finalized_at 
+          ? new Date(invoice.finalized_at * 1000).toISOString() 
+          : null,
+        automatically_finalizes_at: invoice.automatically_finalizes_at 
+          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
+          : null,
         period_end: invoice.period_end 
           ? new Date(invoice.period_end * 1000).toISOString() 
           : null,
@@ -335,6 +445,7 @@ Deno.serve(async (req) => {
         default_payment_method: defaultPaymentMethod,
         last_finalization_error: invoice.last_finalization_error?.message || null,
         lines: lineItems,
+        raw_data: invoice as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       };
 
@@ -346,76 +457,57 @@ Deno.serve(async (req) => {
         });
 
       if (error) {
-        console.error(`❌ Error upserting invoice ${invoice.id}:`, error);
+        console.error(`❌ Error upserting invoice ${invoice.id}:`, error.message);
         errorCount++;
       } else {
         upsertedCount++;
-        console.log(`✅ Upserted: ${invoice.number || invoice.id} - ${invoice.customer_name || invoice.customer_email} - ${planName || 'N/A'} (${planInterval || 'N/A'})`);
       }
     }
 
-    // Cleanup old/settled invoices
-    const currentValidInvoiceIds = filteredInvoices.map((i) => i.id);
-    
-    const { data: existingInvoices } = await supabase
-      .from("invoices")
-      .select("stripe_invoice_id, status");
-
-    if (existingInvoices) {
-      const toRemove = existingInvoices
-        .filter((inv) => {
-          if (!currentValidInvoiceIds.includes(inv.stripe_invoice_id)) {
-            return true;
-          }
-          if (EXCLUDED_INVOICE_STATUSES.includes(inv.status)) {
-            return true;
-          }
-          return false;
+    // Update sync run
+    if (syncRunId) {
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: hasMore ? 'continuing' : 'completed',
+          total_fetched: invoices.length,
+          total_inserted: upsertedCount,
+          checkpoint: hasMore ? { cursor: nextCursor } : null,
+          completed_at: hasMore ? null : new Date().toISOString(),
         })
-        .map((inv) => inv.stripe_invoice_id);
-
-      if (toRemove.length > 0) {
-        const { error: deleteError } = await supabase
-          .from("invoices")
-          .delete()
-          .in("stripe_invoice_id", toRemove);
-
-        if (deleteError) {
-          console.error("❌ Error cleaning up old invoices:", deleteError);
-        } else {
-          console.log(`🧹 Cleaned up ${toRemove.length} settled/excluded invoices`);
-        }
-      }
+        .eq('id', syncRunId);
     }
 
-    const totalPending = filteredInvoices.reduce((sum, inv) => sum + inv.amount_due, 0);
+    console.log(`✅ Sync page complete: ${upsertedCount} upserted, ${errorCount} errors`);
+    console.log(`📊 Stats: ${JSON.stringify(stats)}`);
 
-    console.log(`✅ ENRICHED Sync complete: ${upsertedCount} upserted, ${errorCount} errors`);
-    console.log(`💰 Total pending amount (actionable): $${(totalPending / 100).toFixed(2)}`);
+    const result: FetchInvoicesResponse = {
+      success: true,
+      synced: invoices.length,
+      upserted: upsertedCount,
+      hasMore,
+      nextCursor,
+      syncRunId,
+      stats,
+    };
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        message: `Synced ${upsertedCount} pending invoices with enriched data`,
-        synced: upsertedCount,
-        draftCount: filteredInvoices.filter(i => i.status === "draft").length,
-        openCount: filteredInvoices.filter(i => i.status === "open").length,
-        excludedCount: allRawInvoices.length - filteredInvoices.length,
-        totalPending: totalPending,
-        errors: errorCount,
-        enrichedFields: [
-          'customer_name', 'invoice_number', 'plan_name', 'plan_interval', 
-          'product_name', 'attempt_count', 'billing_reason', 'pdf_url', 
-          'payment_intent_id', 'lines'
-        ],
-      }),
+      JSON.stringify(result),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
     return new Response(
-      JSON.stringify({ success: false, error: errorMessage }),
+      JSON.stringify({ 
+        success: false, 
+        synced: 0,
+        upserted: 0,
+        hasMore: false,
+        nextCursor: null,
+        syncRunId: null,
+        error: errorMessage 
+      }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
