@@ -3,20 +3,34 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// SECURITY: Simple admin key guard
-function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
-  const adminKey = Deno.env.get("ADMIN_API_KEY");
-  if (!adminKey) {
-    return { valid: false, error: "ADMIN_API_KEY not configured" };
+// SECURITY: JWT + is_admin() verification
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
   }
-  const providedKey = req.headers.get("x-admin-key");
-  if (!providedKey || providedKey !== adminKey) {
-    return { valid: false, error: "Invalid or missing x-admin-key" };
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
   }
-  return { valid: true };
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true, userId: user.id };
 }
 
 interface TriggerPayload {
@@ -73,8 +87,8 @@ serve(async (req: Request) => {
   }
 
   try {
-    // SECURITY: Verify x-admin-key
-    const authCheck = verifyAdminKey(req);
+    // SECURITY: Verify JWT + is_admin()
+    const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
       console.error("❌ Auth failed:", authCheck.error);
       return new Response(
@@ -83,7 +97,7 @@ serve(async (req: Request) => {
       );
     }
 
-    console.log("✅ Admin key verified");
+    console.log("✅ Admin verified via JWT");
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
