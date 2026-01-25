@@ -48,6 +48,67 @@ let subscriptionDataCache: SubscriptionData[] = [];
 // Use Map with transaction ID as key to prevent duplicates
 let paypalTransactionsCache: Map<string, { email: string; amount: number; status: string; date: Date }> = new Map();
 
+// ============= BOM & HEADER NORMALIZATION =============
+
+/**
+ * Strips BOM (Byte Order Mark) from CSV content and normalizes headers.
+ * This ensures compatibility with files exported from Excel, Google Sheets, etc.
+ * 
+ * Handles:
+ * - UTF-8 BOM (\uFEFF)
+ * - Trailing/leading quotes on headers
+ * - Extra whitespace
+ */
+export function normalizeCSV(csvText: string): string {
+  // Strip UTF-8 BOM if present
+  let normalized = csvText.startsWith('\uFEFF') ? csvText.slice(1) : csvText;
+  
+  // Normalize line endings to \n
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Get first line (headers) and normalize it
+  const lines = normalized.split('\n');
+  if (lines.length > 0) {
+    // Normalize header line: trim, remove dangling quotes, normalize whitespace
+    const headerLine = lines[0];
+    const normalizedHeader = headerLine
+      .split(',')
+      .map(h => {
+        // Remove leading/trailing whitespace and quotes
+        let cleaned = h.trim();
+        // Remove surrounding quotes if they exist
+        if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || 
+            (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+          cleaned = cleaned.slice(1, -1).trim();
+        }
+        // Remove any remaining quotes at start/end
+        cleaned = cleaned.replace(/^["']+|["']+$/g, '').trim();
+        return cleaned;
+      })
+      .join(',');
+    
+    lines[0] = normalizedHeader;
+    normalized = lines.join('\n');
+  }
+  
+  return normalized;
+}
+
+/**
+ * Parses CSV with BOM stripping and header normalization.
+ * Use this instead of raw Papa.parse for all CSV imports.
+ */
+export function parseCSVSafe(csvText: string): Papa.ParseResult<Record<string, string>> {
+  const normalizedText = normalizeCSV(csvText);
+  
+  return Papa.parse(normalizedText, {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+    transform: (value) => value?.trim() || ''
+  });
+}
+
 // ============= ROBUST CURRENCY PARSER (Always returns CENTS) =============
 
 /**
@@ -251,12 +312,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     errors: []
   };
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
+  // Use safe parser with BOM stripping and header normalization
+  const parsed = parseCSVSafe(csvText);
 
   interface ParsedPayPalRow {
     email: string;
@@ -515,12 +572,8 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     errors: []
   };
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
+  // Use safe parser with BOM stripping and header normalization
+  const parsed = parseCSVSafe(csvText);
 
   interface ParsedWebUser {
     email: string;
@@ -683,12 +736,8 @@ export async function processSubscriptionsCSV(csvText: string): Promise<Processi
     errors: []
   };
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
+  // Use safe parser with BOM stripping and header normalization
+  const parsed = parseCSVSafe(csvText);
 
   subscriptionDataCache = [];
 
@@ -888,12 +937,8 @@ export async function processPaymentCSV(
     errors: []
   };
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
+  // Use safe parser with BOM stripping and header normalization
+  const parsed = parseCSVSafe(csvText);
 
   interface ParsedStripeRow {
     email: string;
@@ -1100,6 +1145,385 @@ export async function processWebCSV(csvText: string): Promise<ProcessingResult> 
   return processWebUsersCSV(csvText);
 }
 
+// ============= Stripe Payments CSV Processing (unified_payments.csv) =============
+
+/**
+ * Known columns for Stripe unified_payments.csv
+ * Anything not in this list goes to raw_data for preservation
+ */
+const KNOWN_STRIPE_PAYMENTS_COLUMNS = new Set([
+  'id', 'amount', 'amount refunded', 'application', 'application fee amount',
+  'balance transaction', 'captured', 'card id', 'created (utc)', 'currency',
+  'customer description', 'customer email', 'customer id', 'customer name',
+  'description', 'destination', 'dispute status', 'disputed', 'failure code',
+  'failure message', 'invoice id', 'is link payment', 'metadata', 'on behalf of',
+  'payment method type', 'payment source type', 'refunded', 'seller message',
+  'source', 'status', 'statement descriptor', 'transfer', 'transfer group'
+].map(c => c.toLowerCase()));
+
+export interface StripePaymentsResult extends ProcessingResult {
+  totalAmountCents: number;
+  uniqueCustomers: number;
+  refundedCount: number;
+}
+
+/**
+ * Processes unified_payments.csv from Stripe.
+ * This file contains the complete payment history from Stripe.
+ * 
+ * COLUMNS: id (ch_/py_), Amount, Amount Refunded, Currency, Customer Email, 
+ *          Customer ID, Description, Status, Created (UTC), Invoice ID, etc.
+ * 
+ * DEDUPLICATION: Uses payment_key = id (ch_xxx or py_xxx) with source='stripe'
+ */
+export async function processStripePaymentsCSV(csvText: string): Promise<StripePaymentsResult> {
+  const result: StripePaymentsResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    transactionsCreated: 0,
+    transactionsSkipped: 0,
+    errors: [],
+    totalAmountCents: 0,
+    uniqueCustomers: 0,
+    refundedCount: 0
+  };
+
+  const parsed = parseCSVSafe(csvText);
+  
+  console.log(`[Stripe Payments CSV] Parsed ${parsed.data.length} rows`);
+  console.log(`[Stripe Payments CSV] Headers:`, Object.keys(parsed.data[0] || {}).slice(0, 10));
+
+  interface ParsedStripePayment {
+    id: string;
+    email: string;
+    stripeCustomerId: string | null;
+    customerName: string | null;
+    amount: number;
+    amountRefunded: number;
+    currency: string;
+    status: string;
+    createdAt: string;
+    description: string | null;
+    invoiceId: string | null;
+    failureCode: string | null;
+    failureMessage: string | null;
+    paymentMethodType: string | null;
+    isRefunded: boolean;
+    rawData: Record<string, string>;
+  }
+
+  const parsedRowsMap = new Map<string, ParsedStripePayment>();
+  const uniqueEmailsSet = new Set<string>();
+
+  for (const row of parsed.data as Record<string, string>[]) {
+    // Payment ID - the unique charge/payment ID (ch_ or py_)
+    const id = (
+      row['id'] || row['ID'] || 
+      row['Charge ID'] || row['charge_id'] ||
+      ''
+    ).trim();
+
+    if (!id) continue;
+
+    // Customer email
+    const email = (
+      row['Customer Email'] || row['customer_email'] ||
+      row['Email'] || row['email'] ||
+      ''
+    ).toLowerCase().trim();
+
+    if (!email) continue;
+
+    // Skip duplicates within the same file
+    if (parsedRowsMap.has(id)) {
+      result.transactionsSkipped++;
+      continue;
+    }
+
+    // Customer ID for identity linking
+    const stripeCustomerId = (
+      row['Customer ID'] || row['customer_id'] ||
+      row['Customer'] || ''
+    ).trim() || null;
+
+    // Customer name
+    const customerName = (
+      row['Customer Name'] || row['customer_name'] ||
+      row['Name'] || ''
+    ).trim() || null;
+
+    // Amount - Stripe exports in DOLLARS (e.g., 19.50)
+    const rawAmount = row['Amount'] || row['amount'] || '0';
+    const amountCents = parseCurrency(rawAmount, false);
+
+    // Amount refunded
+    const rawAmountRefunded = row['Amount Refunded'] || row['amount_refunded'] || '0';
+    const amountRefundedCents = parseCurrency(rawAmountRefunded, false);
+
+    // Currency (normalize to lowercase)
+    const currency = (
+      row['Currency'] || row['currency'] || 'usd'
+    ).toLowerCase().trim();
+
+    // Status normalization
+    const rawStatus = (row['Status'] || row['status'] || '').toLowerCase();
+    let status = 'pending';
+    if (rawStatus === 'paid' || rawStatus === 'succeeded') {
+      status = 'succeeded';
+    } else if (rawStatus === 'failed' || rawStatus === 'requires_payment_method') {
+      status = 'failed';
+    } else if (rawStatus === 'pending' || rawStatus === 'processing') {
+      status = 'pending';
+    } else if (rawStatus === 'refunded') {
+      status = 'refunded';
+    }
+
+    // Created date
+    const createdAt = (
+      row['Created (UTC)'] || row['created (utc)'] ||
+      row['Created'] || row['created'] ||
+      row['Date'] || ''
+    ).trim() || new Date().toISOString();
+
+    // Description
+    const description = (
+      row['Description'] || row['description'] || ''
+    ).trim() || null;
+
+    // Invoice ID for linking
+    const invoiceId = (
+      row['Invoice ID'] || row['invoice_id'] ||
+      row['Invoice'] || ''
+    ).trim() || null;
+
+    // Failure info
+    const failureCode = (row['Failure Code'] || row['failure_code'] || '').trim() || null;
+    const failureMessage = (row['Failure Message'] || row['failure_message'] || '').trim() || null;
+
+    // Payment method type
+    const paymentMethodType = (
+      row['Payment Method Type'] || row['payment_method_type'] ||
+      row['Payment Source Type'] || row['payment_source_type'] || ''
+    ).trim() || null;
+
+    // Is refunded
+    const isRefunded = (
+      row['Refunded'] || row['refunded'] || ''
+    ).toLowerCase() === 'true' || amountRefundedCents > 0;
+
+    // CATCH-ALL: Extract unmapped columns to raw_data
+    const rawData: Record<string, string> = {};
+    for (const [key, value] of Object.entries(row)) {
+      const keyLower = key.toLowerCase().trim();
+      if (!KNOWN_STRIPE_PAYMENTS_COLUMNS.has(keyLower) && value && value.trim()) {
+        rawData[key] = value.trim();
+      }
+    }
+
+    uniqueEmailsSet.add(email);
+    if (isRefunded) result.refundedCount++;
+    if (status === 'succeeded') result.totalAmountCents += amountCents;
+
+    parsedRowsMap.set(id, {
+      id,
+      email,
+      stripeCustomerId,
+      customerName,
+      amount: amountCents,
+      amountRefunded: amountRefundedCents,
+      currency,
+      status,
+      createdAt,
+      description,
+      invoiceId,
+      failureCode,
+      failureMessage,
+      paymentMethodType,
+      isRefunded,
+      rawData
+    });
+  }
+
+  const parsedRows = Array.from(parsedRowsMap.values());
+  result.uniqueCustomers = uniqueEmailsSet.size;
+  console.log(`[Stripe Payments CSV] Valid payments: ${parsedRows.length}, Unique customers: ${uniqueEmailsSet.size}`);
+
+  const uniqueEmails = [...uniqueEmailsSet];
+  const EMAIL_BATCH_SIZE = 500;
+  
+  // Load existing clients in batches
+  const clientMap = new Map<string, any>();
+  for (let i = 0; i < uniqueEmails.length; i += EMAIL_BATCH_SIZE) {
+    const emailBatch = uniqueEmails.slice(i, i + EMAIL_BATCH_SIZE);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', emailBatch);
+    
+    existingClients?.forEach(c => clientMap.set(c.email, c));
+  }
+  
+  console.log(`[Stripe Payments CSV] Loaded ${clientMap.size} existing clients from DB`);
+
+  // Aggregate payments per email
+  const emailPayments = new Map<string, { 
+    paidAmountCents: number; 
+    hasFailed: boolean; 
+    hasPaid: boolean;
+    stripeCustomerId: string | null;
+    customerName: string | null;
+  }>();
+  
+  for (const row of parsedRows) {
+    const existing = emailPayments.get(row.email) || { 
+      paidAmountCents: 0, 
+      hasFailed: false, 
+      hasPaid: false,
+      stripeCustomerId: null,
+      customerName: null
+    };
+    
+    if (row.status === 'succeeded') {
+      existing.paidAmountCents += row.amount;
+      existing.hasPaid = true;
+    }
+    if (row.status === 'failed') {
+      existing.hasFailed = true;
+    }
+    // Keep the first non-null customer ID and name
+    if (!existing.stripeCustomerId && row.stripeCustomerId) {
+      existing.stripeCustomerId = row.stripeCustomerId;
+    }
+    if (!existing.customerName && row.customerName) {
+      existing.customerName = row.customerName;
+    }
+    emailPayments.set(row.email, existing);
+  }
+
+  // Prepare clients for upsert with lifecycle_stage
+  const clientsToUpsert: Array<{
+    email: string;
+    stripe_customer_id?: string;
+    full_name?: string;
+    payment_status: string;
+    total_paid: number;
+    status: string;
+    lifecycle_stage: LifecycleStage;
+    last_sync: string;
+  }> = [];
+
+  for (const [email, payments] of emailPayments) {
+    const existingClient = clientMap.get(email);
+    const newTotalPaid = (existingClient?.total_paid || 0) + (payments.paidAmountCents / 100);
+    
+    let paymentStatus = existingClient?.payment_status || 'none';
+    if (payments.hasPaid) {
+      paymentStatus = 'paid';
+    } else if (payments.hasFailed && paymentStatus !== 'paid') {
+      paymentStatus = 'failed';
+    }
+
+    const history: ClientHistory = {
+      hasSubscription: false,
+      hasTrialPlan: false,
+      hasActivePaidPlan: false,
+      hasPaidTransaction: payments.hasPaid || (existingClient?.payment_status === 'paid'),
+      hasFailedTransaction: payments.hasFailed,
+      hasExpiredOrCanceledSubscription: false,
+      latestSubscriptionStatus: null
+    };
+    
+    const lifecycle = calculateLifecycleStage(history);
+
+    const clientData: any = {
+      email,
+      payment_status: paymentStatus,
+      total_paid: newTotalPaid,
+      status: existingClient?.status || 'active',
+      lifecycle_stage: lifecycle,
+      last_sync: new Date().toISOString()
+    };
+
+    // Only set stripe_customer_id and full_name if they don't exist
+    if (payments.stripeCustomerId && !existingClient?.stripe_customer_id) {
+      clientData.stripe_customer_id = payments.stripeCustomerId;
+    }
+    if (payments.customerName && !existingClient?.full_name) {
+      clientData.full_name = payments.customerName;
+    }
+
+    clientsToUpsert.push(clientData);
+
+    if (existingClient) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  if (clientsToUpsert.length > 0) {
+    const clientBatchResult = await processBatches(clientsToUpsert, BATCH_SIZE, async (batch) => {
+      const { error } = await supabase
+        .from('clients')
+        .upsert(batch, { onConflict: 'email', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert clients: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.errors.push(...clientBatchResult.allErrors);
+  }
+
+  // Prepare transactions with CANONICAL payment_key
+  const transactionsToUpsert = parsedRows.map(row => ({
+    customer_email: row.email,
+    amount: row.amount,
+    status: row.status,
+    source: 'stripe',
+    payment_key: row.id, // CANONICAL dedup key (ch_xxx or py_xxx)
+    external_transaction_id: row.id,
+    stripe_payment_intent_id: row.id, // For backwards compat
+    stripe_customer_id: row.stripeCustomerId,
+    stripe_created_at: new Date(row.createdAt).toISOString(),
+    currency: row.currency,
+    subscription_id: row.invoiceId, // Use invoice_id for subscription linking
+    failure_code: row.failureCode,
+    failure_message: row.failureMessage,
+    payment_type: row.invoiceId ? 'renewal' : 'new', // Simple heuristic
+    metadata: Object.keys(row.rawData).length > 0 ? { 
+      csv_raw: row.rawData,
+      payment_method_type: row.paymentMethodType,
+      description: row.description,
+      amount_refunded: row.amountRefunded
+    } : {
+      payment_method_type: row.paymentMethodType,
+      description: row.description,
+      amount_refunded: row.amountRefunded
+    }
+  }));
+
+  if (transactionsToUpsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
+      // Use UNIQUE constraint: (source, payment_key)
+      const { error } = await supabase
+        .from('transactions')
+        .upsert(batch, { onConflict: 'source,payment_key', ignoreDuplicates: false });
+      
+      if (error) {
+        return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
+      }
+      return { success: batch.length, errors: [] };
+    });
+    result.transactionsCreated = txBatchResult.totalSuccess;
+    result.errors.push(...txBatchResult.allErrors);
+  }
+
+  console.log(`[Stripe Payments CSV] Complete: ${result.transactionsCreated} transactions, ${result.clientsCreated} new clients, ${result.clientsUpdated} updated`);
+
+  return result;
+}
+
 // ============= Stripe Unified Customers CSV Processing (LTV Master Data) =============
 
 export interface StripeCustomerResult extends ProcessingResult {
@@ -1130,12 +1554,8 @@ export async function processStripeCustomersCSV(csvText: string): Promise<Stripe
     delinquentCount: 0
   };
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim(),
-    transform: (value) => value?.trim() || ''
-  });
+  // Use safe parser with BOM stripping and header normalization
+  const parsed = parseCSVSafe(csvText);
 
   interface StripeCustomerRow {
     email: string;
@@ -1654,7 +2074,9 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
     errors: []
   };
 
-  const parsed = Papa.parse(csvText, {
+  // Use safe parser with BOM stripping (keep lowercase for GHL headers)
+  const normalizedText = normalizeCSV(csvText);
+  const parsed = Papa.parse(normalizedText, {
     header: true,
     skipEmptyLines: 'greedy',
     transformHeader: (header) => header.trim().toLowerCase(),
