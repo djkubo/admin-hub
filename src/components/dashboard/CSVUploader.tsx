@@ -1,20 +1,8 @@
 import { useState, useRef } from 'react';
-import { Upload, FileText, Check, AlertCircle, Loader2, X, Users } from 'lucide-react';
+import { Upload, FileText, Check, AlertCircle, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { 
-  processWebUsersCSV, 
-  processPayPalCSV, 
-  processPaymentCSV,
-  processSubscriptionsCSV,
-  processStripeCustomersCSV,
-  processStripePaymentsCSV,
-  processGoHighLevelCSV,
-  ProcessingResult,
-  StripeCustomerResult,
-  StripePaymentsResult,
-  GHLProcessingResult
-} from '@/lib/csvProcessor';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 
 type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl';
@@ -24,15 +12,20 @@ interface CSVFile {
   type: CSVFileType;
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
-  result?: ProcessingResult | StripeCustomerResult | StripePaymentsResult | GHLProcessingResult;
-  subscriptionCount?: number;
-  duplicatesResolved?: number;
-  ghlStats?: { withEmail: number; withPhone: number; withTags: number };
-  stripePaymentsStats?: { totalAmount: number; uniqueCustomers: number; refundedCount: number };
+  result?: CSVImportResult;
 }
 
 interface CSVUploaderProps {
   onProcessingComplete: () => void;
+}
+
+interface CSVImportResult {
+  clientsCreated: number;
+  clientsUpdated: number;
+  transactionsCreated: number;
+  transactionsSkipped: number;
+  subscriptionsUpserted: number;
+  errors: string[];
 }
 
 export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
@@ -222,116 +215,55 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
       try {
         const text = await file.file.text();
+        let cursor: number | null = 0;
+        let hasMore = true;
+        let syncRunId: string | null = null;
+        const aggregate: CSVImportResult = {
+          clientsCreated: 0,
+          clientsUpdated: 0,
+          transactionsCreated: 0,
+          transactionsSkipped: 0,
+          subscriptionsUpserted: 0,
+          errors: [],
+        };
 
-        if (file.type === 'stripe_customers') {
-          // Process Stripe Customers (LTV Master Data)
-          const customerResult = await processStripeCustomersCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: customerResult,
-              duplicatesResolved: customerResult.duplicatesResolved
-            } : f
-          ));
-          toast.success(
-            `${file.name}: ${customerResult.clientsUpdated} clientes actualizados con LTV. ` +
-            `${customerResult.duplicatesResolved} duplicados resueltos. ` +
-            `Total LTV: $${(customerResult.totalLTV / 100).toFixed(2)}`
-          );
-          
-          if (customerResult.delinquentCount > 0) {
-            toast.warning(`⚠️ ${customerResult.delinquentCount} clientes morosos detectados`);
-          }
-          
-          if (customerResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
-          }
-        } else if (file.type === 'subscriptions') {
-          const subsResult = await processSubscriptionsCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: subsResult,
-              subscriptionCount: subsResult.clientsCreated + subsResult.clientsUpdated
-            } : f
-          ));
-          toast.success(`${file.name}: ${subsResult.clientsCreated + subsResult.clientsUpdated} suscripciones procesadas`);
-          
-          if (subsResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${subsResult.errors.length} errores`);
-          }
-        } else if (file.type === 'ghl') {
-          // Process GoHighLevel CSV
-          const ghlResult = await processGoHighLevelCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: ghlResult,
-              ghlStats: {
-                withEmail: ghlResult.withEmail,
-                withPhone: ghlResult.withPhone,
-                withTags: ghlResult.withTags
-              }
-            } : f
-          ));
-          toast.success(
-            `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
-            `Total: ${ghlResult.totalContacts} contactos GHL`
-          );
-          
-          if (ghlResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
-          }
-        } else if (file.type === 'stripe_payments') {
-          // Process Stripe Payments (unified_payments.csv)
-          const paymentsResult = await processStripePaymentsCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: paymentsResult,
-              stripePaymentsStats: {
-                totalAmount: paymentsResult.totalAmountCents,
-                uniqueCustomers: paymentsResult.uniqueCustomers,
-                refundedCount: paymentsResult.refundedCount
-              }
-            } : f
-          ));
-          toast.success(
-            `${file.name}: ${paymentsResult.transactionsCreated} transacciones importadas. ` +
-            `${paymentsResult.uniqueCustomers} clientes únicos. ` +
-            `Total: $${(paymentsResult.totalAmountCents / 100).toLocaleString()}`
-          );
-          
-          if (paymentsResult.refundedCount > 0) {
-            toast.info(`📋 ${paymentsResult.refundedCount} transacciones con reembolsos`);
-          }
-          
-          if (paymentsResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${paymentsResult.errors.length} errores`);
-          }
-        } else {
-          let result: ProcessingResult;
+        while (hasMore) {
+          const response = await invokeWithAdminKey<{
+            success: boolean;
+            hasMore?: boolean;
+            nextCursor?: number | null;
+            syncRunId?: string | null;
+            stats?: Record<string, number>;
+            error?: string;
+          }>('process-csv', {
+            csvText: text,
+            fileType: file.type,
+            fileName: file.name,
+            cursor: cursor ?? 0,
+            limit: 500,
+            syncRunId,
+          });
 
-          if (file.type === 'web') {
-            result = await processWebUsersCSV(text);
-          } else if (file.type === 'paypal') {
-            result = await processPayPalCSV(text);
-          } else {
-            result = await processPaymentCSV(text, 'stripe');
+          if (!response.success) {
+            throw new Error(response.error || 'CSV import failed');
           }
 
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { ...f, status: 'done', result } : f
-          ));
+          const stats = response.stats || {};
+          aggregate.clientsUpdated += stats.clientsUpdated || 0;
+          aggregate.clientsCreated += stats.clientsCreated || 0;
+          aggregate.transactionsCreated += stats.transactionsCreated || 0;
+          aggregate.transactionsSkipped += stats.transactionsSkipped || 0;
+          aggregate.subscriptionsUpserted += stats.subscriptionsUpserted || 0;
 
-          if (result.errors.length > 0) {
-            toast.warning(`${file.name}: ${result.errors.length} errores`);
-          }
+          syncRunId = response.syncRunId ?? syncRunId;
+          hasMore = response.hasMore === true && response.nextCursor !== null && response.nextCursor !== undefined;
+          cursor = response.nextCursor ?? null;
         }
+
+        setFiles(prev => prev.map((f, idx) => 
+          idx === originalIndex ? { ...f, status: 'done', result: aggregate } : f
+        ));
+        toast.success(`${file.name}: ${aggregate.transactionsCreated + aggregate.subscriptionsUpserted} registros importados`);
       } catch (error) {
         console.error('Error processing file:', error);
         setFiles(prev => prev.map((f, idx) => 
@@ -385,28 +317,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     if (f.result) {
       acc.clientsCreated += f.result.clientsCreated;
       acc.clientsUpdated += f.result.clientsUpdated;
-      // Only add transactions if they exist on the result type
-      if ('transactionsCreated' in f.result) {
-        acc.transactionsCreated += f.result.transactionsCreated;
-      }
-      if ('transactionsSkipped' in f.result) {
-        acc.transactionsSkipped += f.result.transactionsSkipped;
-      }
-      // Total unique clients = new + updated
+      acc.transactionsCreated += f.result.transactionsCreated;
+      acc.transactionsSkipped += f.result.transactionsSkipped;
+      acc.subscriptions += f.result.subscriptionsUpserted;
       acc.uniqueClients += f.result.clientsCreated + f.result.clientsUpdated;
     }
-    if (f.subscriptionCount) {
-      acc.subscriptions += f.subscriptionCount;
-    }
-    if (f.duplicatesResolved) {
-      acc.duplicatesResolved += f.duplicatesResolved;
-    }
-    if (f.ghlStats) {
-      acc.ghlContacts += f.result?.clientsCreated || 0;
-      acc.ghlContacts += f.result?.clientsUpdated || 0;
-    }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0, ghlContacts: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0 });
 
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
@@ -503,12 +420,6 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             <div className="text-gray-400">
               Suscripciones: <span className="text-white font-medium ml-1">{totalResults.subscriptions}</span>
             </div>
-            {totalResults.duplicatesResolved > 0 && (
-              <div className="text-gray-400 col-span-2">
-                <Users className="inline h-3 w-3 mr-1" />
-                Duplicados LTV resueltos: <span className="text-amber-400 font-medium ml-1">{totalResults.duplicatesResolved}</span>
-              </div>
-            )}
           </div>
         </div>
       )}

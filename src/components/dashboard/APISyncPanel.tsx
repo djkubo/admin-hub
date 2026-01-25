@@ -34,6 +34,49 @@ export function APISyncPanel() {
   const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts - now with per-service progress
+  const runPagedSync = async (
+    service: 'stripe' | 'paypal',
+    body: FetchStripeBody | FetchPayPalBody,
+  ) => {
+    let cursor: string | null = null;
+    let syncRunId: string | null = null;
+    let totalTransactions = 0;
+    let paidCount = 0;
+    let failedCount = 0;
+
+    while (true) {
+      if (service === 'stripe') {
+        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>('fetch-stripe', {
+          ...body,
+          cursor,
+          syncRunId,
+        });
+        if (!data?.success) break;
+        totalTransactions += data.synced_transactions ?? 0;
+        paidCount += data.paid_count ?? 0;
+        failedCount += data.failed_count ?? 0;
+        syncRunId = data.syncRunId ?? syncRunId;
+        cursor = data.nextCursor ?? null;
+        if (!data.hasMore || !cursor) break;
+      } else {
+        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>('fetch-paypal', {
+          ...body,
+          cursor,
+          syncRunId,
+        });
+        if (!data?.success) break;
+        totalTransactions += data.synced_transactions ?? 0;
+        paidCount += data.paid_count ?? 0;
+        failedCount += data.failed_count ?? 0;
+        syncRunId = data.syncRunId ?? syncRunId;
+        cursor = data.nextCursor ?? null;
+        if (!data.hasMore || !cursor) break;
+      }
+    }
+
+    return { synced_transactions: totalTransactions, paid_count: paidCount, failed_count: failedCount };
+  };
+
   const syncInChunks = async (
     service: 'stripe' | 'paypal',
     years: number,
@@ -53,35 +96,14 @@ export function APISyncPanel() {
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
       
       try {
-        if (service === 'stripe') {
-          const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-            'fetch-stripe',
-            { 
-              fetchAll: true,
-              startDate: startDate.toISOString(),
-              endDate: endDate.toISOString()
-            }
-          );
-          if (data?.success) {
-            allResults.synced_transactions += data.synced_transactions ?? 0;
-            allResults.paid_count += data.paid_count ?? 0;
-            allResults.failed_count += data.failed_count ?? 0;
-          }
-        } else {
-          const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-            'fetch-paypal',
-            { 
-              fetchAll: true,
-              startDate: startDate.toISOString(),
-              endDate: endDate.toISOString()
-            }
-          );
-          if (data?.success) {
-            allResults.synced_transactions += data.synced_transactions ?? 0;
-            allResults.paid_count += data.paid_count ?? 0;
-            allResults.failed_count += data.failed_count ?? 0;
-          }
-        }
+        const data = await runPagedSync(service, { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString()
+        });
+        allResults.synced_transactions += data.synced_transactions;
+        allResults.paid_count += data.paid_count;
+        allResults.failed_count += data.failed_count;
       } catch (err) {
         console.error(`Chunk ${i + 1} failed:`, err);
         // Continue with next chunk
@@ -107,38 +129,26 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-          'fetch-stripe', 
-          { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+        const data = await runPagedSync('stripe', { 
+          fetchAll: true,
+          startDate: yesterday.toISOString(),
+          endDate: now.toISOString()
+        });
 
-        setStripeResult(data);
-        
-        if (data.success) {
-          toast.success(`Stripe (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
+        setStripeResult({ success: true, ...data });
+        toast.success(`Stripe (24h): ${data.synced_transactions} transacciones sincronizadas`);
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-          'fetch-stripe', 
-          { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+        const data = await runPagedSync('stripe', { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: now.toISOString()
+        });
 
-        setStripeResult(data);
-        
-        if (data.success) {
-          toast.success(`Stripe (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
+        setStripeResult({ success: true, ...data });
+        toast.success(`Stripe (31 días): ${data.synced_transactions} transacciones sincronizadas`);
       } else if (mode === 'all6months') {
         const results = await syncInChunks('stripe', 0.5, setStripeResult, setStripeProgress);
         toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
@@ -172,38 +182,26 @@ export function APISyncPanel() {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-          'fetch-paypal', 
-          { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+        const data = await runPagedSync('paypal', { 
+          fetchAll: true,
+          startDate: yesterday.toISOString(),
+          endDate: now.toISOString()
+        });
 
-        setPaypalResult(data);
-        
-        if (data.success) {
-          toast.success(`PayPal (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
+        setPaypalResult({ success: true, ...data });
+        toast.success(`PayPal (24h): ${data.synced_transactions} transacciones sincronizadas`);
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         
-        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-          'fetch-paypal', 
-          { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+        const data = await runPagedSync('paypal', { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: now.toISOString()
+        });
 
-        setPaypalResult(data);
-        
-        if (data.success) {
-          toast.success(`PayPal (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
+        setPaypalResult({ success: true, ...data });
+        toast.success(`PayPal (31 días): ${data.synced_transactions} transacciones sincronizadas`);
       } else if (mode === 'all6months') {
         const results = await syncInChunks('paypal', 0.5, setPaypalResult, setPaypalProgress);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
@@ -377,6 +375,11 @@ export function APISyncPanel() {
       let totalUpserted = 0;
       let page = 0;
       const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+      const endDate = new Date().toISOString();
+      const startDate = mode === 'recent'
+        ? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+        : undefined;
+      const fetchAll = mode === 'full';
 
       while (hasMore) {
         page++;
@@ -390,7 +393,9 @@ export function APISyncPanel() {
           nextCursor: string | null;
           stats?: typeof stats;
         }>('fetch-invoices', {
-          mode,
+          fetchAll,
+          startDate,
+          endDate,
           cursor,
         });
 

@@ -166,7 +166,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   }, [refetch]);
 
   // Full paginated sync - handles 10,000+ invoices
-  const syncInvoicesFull = useCallback(async (mode: 'full' | 'recent' = 'recent') => {
+  const syncInvoicesFull = useCallback(async (options: { fetchAll?: boolean; startDate?: string; endDate?: string } = {}) => {
     if (isSyncing) {
       toast({
         title: "Sincronización en progreso",
@@ -190,7 +190,9 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         pageCount++;
         
         const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
-          mode,
+          fetchAll: options.fetchAll,
+          startDate: options.startDate,
+          endDate: options.endDate,
           cursor,
           syncRunId,
         });
@@ -249,10 +251,12 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     }
   }, [isSyncing, queryClient, toast]);
 
-  // Quick sync - uses same paginated approach but with 'recent' mode (last 30 days)
+  // Quick sync - last 30 days
   const syncInvoices = useMutation({
     mutationFn: async () => {
-      return await syncInvoicesFull('recent');
+      const endDate = new Date().toISOString();
+      const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      return await syncInvoicesFull({ startDate, endDate });
     },
   });
 

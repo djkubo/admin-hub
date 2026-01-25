@@ -9,9 +9,11 @@ const corsHeaders = {
 // ============= TYPE DEFINITIONS =============
 
 interface SyncConfig {
-  mode: 'today' | '7d' | 'month' | 'full';
   startDate?: string;
   endDate?: string;
+  fetchAll?: boolean;
+  cursor?: string | null;
+  limit?: number;
   includeContacts?: boolean;
 }
 
@@ -42,6 +44,9 @@ interface GenericSyncResponse {
   synced?: number;
   upserted?: number;
   unified?: number;
+  syncRunId?: string;
+  hasMore?: boolean;
+  nextCursor?: string | null;
 }
 
 interface SyncStepResult {
@@ -51,9 +56,9 @@ interface SyncStepResult {
 }
 
 interface SyncRunMetadata {
-  mode: string;
   startDate: string;
   endDate: string;
+  fetchAll: boolean;
   authMethod: string;
   userEmail: string;
   steps: string[];
@@ -144,48 +149,36 @@ Deno.serve(async (req: Request) => {
     });
 
     // ============ PARSE CONFIG ============
-    let config: SyncConfig = { mode: 'today' };
+    let config: SyncConfig = {};
     try {
       const body = await req.json() as Partial<SyncConfig>;
       config = {
-        mode: body.mode ?? 'today',
         startDate: body.startDate,
         endDate: body.endDate,
+        fetchAll: body.fetchAll ?? false,
+        cursor: body.cursor ?? null,
+        limit: body.limit,
         includeContacts: body.includeContacts ?? false,
       };
     } catch {
       // Use defaults
     }
 
-    // Calculate date range based on mode
+    // Calculate date range defaults
     const now = new Date();
-    let startDate: Date;
+    let startDate = new Date(now);
     let endDate = now;
-    
-    switch (config.mode) {
-      case 'today':
-        startDate = new Date(now);
-        startDate.setHours(0, 0, 0, 0);
-        break;
-      case '7d':
-        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case 'month':
-        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case 'full':
-        startDate = new Date(now.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
-        break;
-    }
+
+    startDate.setHours(0, 0, 0, 0);
 
     if (config.startDate) startDate = new Date(config.startDate);
     if (config.endDate) endDate = new Date(config.endDate);
 
     // ============ CREATE MASTER SYNC RUN ============
     const initialMetadata: SyncRunMetadata = {
-      mode: config.mode,
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
+      fetchAll: config.fetchAll ?? false,
       authMethod: "jwt+is_admin",
       userEmail,
       steps: [],
@@ -254,9 +247,10 @@ Deno.serve(async (req: Request) => {
       while (hasMore) {
         const response = await invokeClient.functions.invoke('fetch-stripe', {
           body: {
-            fetchAll: true,
+            fetchAll: config.fetchAll ?? false,
             startDate: startDate.toISOString(),
             endDate: endDate.toISOString(),
+            limit: config.limit,
             cursor,
             syncRunId: stripeSyncId,
           }
@@ -287,11 +281,25 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE SUBSCRIPTIONS ============
     try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-subscriptions');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["subscriptions"] = { success: true, count: respData?.synced ?? respData?.upserted ?? 0 };
-      await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
+      let totalSubs = 0;
+      let hasMore = true;
+      let cursor: string | null = null;
+      let subsSyncId: string | null = null;
+
+      while (hasMore) {
+        const response = await invokeClient.functions.invoke('fetch-subscriptions', {
+          body: { cursor, syncRunId: subsSyncId }
+        });
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        totalSubs += respData?.upserted ?? respData?.synced ?? 0;
+        subsSyncId = (respData as { syncRunId?: string })?.syncRunId ?? subsSyncId;
+        cursor = (respData as { nextCursor?: string | null })?.nextCursor ?? null;
+        hasMore = (respData as { hasMore?: boolean })?.hasMore === true && cursor !== null;
+        await updateProgress("stripe-subscriptions", `${totalSubs} suscripciones`);
+      }
+
+      results["subscriptions"] = { success: true, count: totalSubs };
     } catch (e) {
       console.error("Subscriptions sync error:", e);
       results["subscriptions"] = { success: false, count: 0, error: String(e) };
@@ -300,11 +308,34 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE INVOICES ============
     try {
       await updateProgress("stripe-invoices", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-invoices');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["invoices"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
+      let totalInvoices = 0;
+      let hasMore = true;
+      let cursor: string | null = null;
+      let invoicesSyncId: string | null = null;
+
+      while (hasMore) {
+        const response = await invokeClient.functions.invoke('fetch-invoices', {
+          body: {
+            fetchAll: config.fetchAll ?? false,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            cursor,
+            syncRunId: invoicesSyncId,
+            limit: config.limit,
+          }
+        });
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+
+        totalInvoices += respData?.synced ?? 0;
+        invoicesSyncId = (respData as { syncRunId?: string })?.syncRunId ?? invoicesSyncId;
+        cursor = (respData as { nextCursor?: string | null })?.nextCursor ?? null;
+        hasMore = (respData as { hasMore?: boolean })?.hasMore === true && cursor !== null;
+
+        await updateProgress("stripe-invoices", `${totalInvoices} facturas`);
+      }
+
+      results["invoices"] = { success: true, count: totalInvoices };
     } catch (e) {
       console.error("Invoices sync error:", e);
       results["invoices"] = { success: false, count: 0, error: String(e) };
@@ -379,16 +410,17 @@ Deno.serve(async (req: Request) => {
       await updateProgress("paypal-transactions", "Iniciando...");
       let totalPaypal = 0;
       let hasMore = true;
-      let page = 1;
+      let cursor: string | null = null;
       let paypalSyncId: string | null = null;
       
-      while (hasMore && page <= 100) {
+      while (hasMore) {
         const response = await invokeClient.functions.invoke('fetch-paypal', {
           body: {
-            fetchAll: true,
+            fetchAll: config.fetchAll ?? false,
             startDate: formatPayPalDate(startDate),
             endDate: formatPayPalDate(endDate),
-            page,
+            cursor,
+            limit: config.limit,
             syncRunId: paypalSyncId,
           }
         });
@@ -402,8 +434,8 @@ Deno.serve(async (req: Request) => {
         
         totalPaypal += respData?.synced_transactions ?? 0;
         paypalSyncId = respData?.syncRunId ?? paypalSyncId;
-        hasMore = respData?.hasMore === true;
-        page = respData?.nextPage ?? page + 1;
+        cursor = respData?.nextCursor ?? null;
+        hasMore = respData?.hasMore === true && cursor !== null;
         
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
       }
@@ -527,7 +559,6 @@ Deno.serve(async (req: Request) => {
         success: true,
         status: finalStatus,
         syncRunId,
-        mode: config.mode,
         totalRecords: totalFetched,
         results,
         failedSteps: failedSteps.length > 0 ? failedSteps : undefined,

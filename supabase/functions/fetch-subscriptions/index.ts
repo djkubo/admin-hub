@@ -39,133 +39,78 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
   return { valid: true };
 }
 
-// Background sync function
-async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
-  try {
-    console.log("📊 Starting background sync...");
-    
-    let subscriptions: Stripe.Subscription[] = [];
-    let hasMore = true;
-    let startingAfter: string | undefined;
-    const limit = 100;
+async function processPage(
+  serviceClient: SupabaseClient,
+  stripe: Stripe,
+  cursor: string | null,
+  limit: number
+): Promise<{ upserted: number; hasMore: boolean; nextCursor: string | null }> {
+  const params: Stripe.SubscriptionListParams = {
+    limit: Math.min(limit, 100),
+    expand: ["data.customer", "data.plan.product"],
+  };
+  if (cursor) params.starting_after = cursor;
 
-    while (hasMore) {
-      const params: Stripe.SubscriptionListParams = {
-        limit,
-        expand: ["data.customer", "data.plan.product"],
-      };
-      if (startingAfter) params.starting_after = startingAfter;
+  const response = await stripe.subscriptions.list(params);
+  const subscriptions = response.data;
+  const hasMore = response.has_more;
+  const nextCursor = subscriptions.length > 0 ? subscriptions[subscriptions.length - 1].id : null;
 
-      const response = await stripe.subscriptions.list(params);
-      subscriptions = subscriptions.concat(response.data);
-      hasMore = response.has_more;
+  const records = subscriptions.map((sub) => {
+    const customer = sub.customer;
+    const plan = sub.plan;
+    const product = plan?.product;
 
-      if (response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
-      }
-
-      console.log(`📦 Fetched ${subscriptions.length} subscriptions so far...`);
-
-      // Update progress in sync_runs
-      await serviceClient.from("sync_runs").update({
-        total_fetched: subscriptions.length,
-        checkpoint: { last_id: startingAfter },
-      }).eq("id", syncRunId);
-
-      if (subscriptions.length >= 5000) {
-        console.log("⚠️ Reached 5000 subscription limit");
-        break;
-      }
+    let planName = "Unknown Plan";
+    if (typeof product === "object" && product?.name) {
+      planName = product.name;
+    } else if (plan?.nickname) {
+      planName = plan.nickname;
+    } else if (typeof product === "string") {
+      planName = product;
     }
 
-    console.log(`✅ Total subscriptions fetched: ${subscriptions.length}`);
+    return {
+      stripe_subscription_id: sub.id,
+      stripe_customer_id: typeof customer === "string" ? customer : customer?.id,
+      customer_email: typeof customer === "object" ? customer?.email : null,
+      plan_name: planName,
+      plan_id: plan?.id || null,
+      amount: plan?.amount || 0,
+      currency: (plan?.currency || "usd").toLowerCase(),
+      interval: plan?.interval || "month",
+      status: sub.status,
+      provider: 'stripe',
+      trial_start: sub.trial_start ? new Date(sub.trial_start * 1000).toISOString() : null,
+      trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
+      current_period_start: sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : null,
+      current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+      canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
+      cancel_reason: sub.cancellation_details?.reason || null,
+      updated_at: new Date().toISOString(),
+    };
+  });
 
-    const records = subscriptions.map((sub) => {
-      const customer = sub.customer;
-      const plan = sub.plan;
-      const product = plan?.product;
+  if (records.length > 0) {
+    const { error: upsertError } = await serviceClient
+      .from("subscriptions")
+      .upsert(records, { onConflict: "stripe_subscription_id" });
 
-      let planName = "Unknown Plan";
-      if (typeof product === "object" && product?.name) {
-        planName = product.name;
-      } else if (plan?.nickname) {
-        planName = plan.nickname;
-      } else if (typeof product === "string") {
-        planName = product;
-      }
-
-      return {
-        stripe_subscription_id: sub.id,
-        stripe_customer_id: typeof customer === "string" ? customer : customer?.id,
-        customer_email: typeof customer === "object" ? customer?.email : null,
-        plan_name: planName,
-        plan_id: plan?.id || null,
-        amount: plan?.amount || 0,
-        currency: (plan?.currency || "usd").toLowerCase(),
-        interval: plan?.interval || "month",
-        status: sub.status,
-        provider: 'stripe',
-        trial_start: sub.trial_start ? new Date(sub.trial_start * 1000).toISOString() : null,
-        trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
-        current_period_start: sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : null,
-        current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
-        canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-        cancel_reason: sub.cancellation_details?.reason || null,
-        updated_at: new Date().toISOString(),
-      };
-    });
-
-    const BATCH_SIZE = 500;
-    let upserted = 0;
-
-    for (let i = 0; i < records.length; i += BATCH_SIZE) {
-      const batch = records.slice(i, i + BATCH_SIZE);
-      const { error: upsertError } = await serviceClient
-        .from("subscriptions")
-        .upsert(batch, { onConflict: "stripe_subscription_id" });
-
-      if (upsertError) {
-        console.error("❌ Upsert error:", upsertError);
-        throw upsertError;
-      }
-
-      upserted += batch.length;
-      
-      // Update progress
-      await serviceClient.from("sync_runs").update({
-        total_inserted: upserted,
-      }).eq("id", syncRunId);
-      
-      console.log(`📝 Upserted ${upserted}/${records.length} subscriptions`);
+    if (upsertError) {
+      console.error("❌ Upsert error:", upsertError);
+      throw upsertError;
     }
-
-    // Mark as completed
-    await serviceClient.from("sync_runs").update({
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      total_fetched: subscriptions.length,
-      total_inserted: upserted,
-      metadata: { planCount: records.length },
-    }).eq("id", syncRunId);
-
-    console.log("✅ Background sync completed successfully");
-    
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("❌ Background sync error:", errorMessage);
-    
-    await serviceClient.from("sync_runs").update({
-      status: "failed",
-      completed_at: new Date().toISOString(),
-      error_message: errorMessage,
-    }).eq("id", syncRunId);
   }
+
+  return { upserted: records.length, hasMore, nextCursor };
 }
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  const startTime = Date.now();
 
   try {
     // SECURITY: Verify JWT + admin role
@@ -192,88 +137,92 @@ serve(async (req: Request) => {
 
     const serviceClient = createClient(supabaseUrl, serviceRoleKey);
 
-    // Check if there's already a running sync
-    const { data: runningSyncs } = await serviceClient
-      .from("sync_runs")
-      .select("id, started_at")
-      .eq("source", "subscriptions")
-      .eq("status", "running")
-      .order("started_at", { ascending: false })
-      .limit(1);
+    const body = await req.json().catch(() => ({}));
+    const cursor = body.cursor ?? null;
+    const syncRunId = body.syncRunId ?? null;
+    const limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
 
-    if (runningSyncs && runningSyncs.length > 0) {
-      const runningSync = runningSyncs[0];
-      const startedAt = new Date(runningSync.started_at);
-      const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
-      
-      // If sync is stuck for more than 10 minutes, allow new one
-      if (minutesAgo < 10) {
-        return new Response(
-          JSON.stringify({ 
-            success: true, 
-            message: "Sync already in progress",
-            syncRunId: runningSync.id,
-            status: "running"
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } else {
-        // Mark old sync as failed
+    let activeSyncId = syncRunId;
+
+    if (!activeSyncId) {
+      const { data: runningSyncs } = await serviceClient
+        .from("sync_runs")
+        .select("id, started_at")
+        .eq("source", "subscriptions")
+        .eq("status", "running")
+        .order("started_at", { ascending: false })
+        .limit(1);
+
+      if (runningSyncs && runningSyncs.length > 0) {
+        const runningSync = runningSyncs[0];
+        const startedAt = new Date(runningSync.started_at);
+        const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
+        
+        if (minutesAgo < 10) {
+          return new Response(
+            JSON.stringify({ 
+              success: false, 
+              error: "sync_already_running",
+              syncRunId: runningSync.id,
+              status: "running"
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
         await serviceClient.from("sync_runs").update({
           status: "failed",
           error_message: "Timeout - sync took too long",
           completed_at: new Date().toISOString(),
         }).eq("id", runningSync.id);
       }
+
+      const { data: syncRun, error: syncRunError } = await serviceClient
+        .from("sync_runs")
+        .insert({
+          source: "subscriptions",
+          status: "running",
+          started_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (syncRunError) {
+        throw syncRunError;
+      }
+
+      activeSyncId = syncRun.id;
+      console.log("📝 Created sync run:", activeSyncId);
     }
 
-    // Create sync run record
-    const { data: syncRun, error: syncRunError } = await serviceClient
+    const result = await processPage(serviceClient, stripe, cursor, limit);
+
+    const { data: currentRun } = await serviceClient
       .from("sync_runs")
-      .insert({
-        source: "subscriptions",
-        status: "running",
-        started_at: new Date().toISOString(),
-      })
-      .select()
+      .select("total_fetched, total_inserted")
+      .eq("id", activeSyncId)
       .single();
 
-    if (syncRunError) {
-      throw syncRunError;
-    }
+    await serviceClient.from("sync_runs").update({
+      status: result.hasMore ? "continuing" : "completed",
+      completed_at: result.hasMore ? null : new Date().toISOString(),
+      checkpoint: result.hasMore ? { cursor: result.nextCursor } : null,
+      total_fetched: (currentRun?.total_fetched || 0) + result.upserted,
+      total_inserted: (currentRun?.total_inserted || 0) + result.upserted,
+    }).eq("id", activeSyncId);
 
-    console.log("📝 Created sync run:", syncRun.id);
-
-    // Use EdgeRuntime.waitUntil for background processing
-    // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
-    if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
-      // @ts-ignore
-      EdgeRuntime.waitUntil(runSync(serviceClient, stripe, syncRun.id));
-      
-      // Return immediately
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Sync started in background",
-          syncRunId: syncRun.id,
-          status: "running",
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    } else {
-      // Fallback: run synchronously if EdgeRuntime not available
-      await runSync(serviceClient, stripe, syncRun.id);
-      
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Sync completed",
-          syncRunId: syncRun.id,
-          status: "completed",
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    return new Response(
+      JSON.stringify({
+        success: true,
+        syncRunId: activeSyncId,
+        status: result.hasMore ? "continuing" : "completed",
+        upserted: result.upserted,
+        hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
+        duration_ms: Date.now() - startTime,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";

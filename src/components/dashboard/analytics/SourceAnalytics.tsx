@@ -32,91 +32,24 @@ export function SourceAnalytics() {
   const fetchSourceMetrics = async () => {
     setLoading(true);
     try {
-      // Get all clients with acquisition_source
-      const { data: clients } = await supabase
-        .from('clients')
-        .select('id, acquisition_source, lifecycle_stage, total_spend');
+      const { data, error } = await supabase.rpc('source_metrics', { p_days: 30 });
+      if (error) throw error;
 
-      // Get transactions for revenue calculation (last 30 days)
-      // FIX: Use stripe_created_at for accurate date filtering and include both 'succeeded' and 'paid' statuses
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: transactions } = await supabase
-        .from('transactions')
-        .select('customer_email, amount, status, currency, stripe_created_at')
-        .in('status', ['succeeded', 'paid'])
-        .gte('stripe_created_at', thirtyDaysAgo);
-
-      if (!clients) {
-        setMetrics([]);
-        return;
-      }
-
-      // Build email to source mapping
-      const { data: clientsWithEmail } = await supabase
-        .from('clients')
-        .select('email, acquisition_source');
-
-      const emailToSource: Record<string, string> = {};
-      clientsWithEmail?.forEach(c => {
-        if (c.email && c.acquisition_source) {
-          emailToSource[c.email.toLowerCase()] = c.acquisition_source;
-        }
-      });
-
-      // Aggregate by source
-      const sourceMap = new Map<string, {
-        leads: number;
-        trials: number;
-        customers: number;
-        revenue: number;
-        totalSpend: number;
-        customerCount: number;
-      }>();
-
-      clients.forEach(client => {
-        const source = client.acquisition_source || 'unknown';
-        if (!sourceMap.has(source)) {
-          sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
-        }
-        const data = sourceMap.get(source)!;
-        
-        if (client.lifecycle_stage === 'LEAD') data.leads++;
-        else if (client.lifecycle_stage === 'TRIAL') data.trials++;
-        else if (client.lifecycle_stage === 'CUSTOMER') {
-          data.customers++;
-          data.customerCount++;
-          data.totalSpend += client.total_spend || 0;
-        }
-      });
-
-      // Add transaction revenue
-      transactions?.forEach(tx => {
-        if (tx.customer_email) {
-          const source = emailToSource[tx.customer_email.toLowerCase()] || 'unknown';
-          if (!sourceMap.has(source)) {
-            sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
-          }
-          // Convert to USD (rough MXN conversion)
-          let amountUSD = (tx.amount || 0) / 100;
-          if (tx.currency === 'mxn') amountUSD = amountUSD / 17;
-          sourceMap.get(source)!.revenue += amountUSD;
-        }
-      });
-
-      // Convert to array and calculate derived metrics
-      const result: SourceMetrics[] = Array.from(sourceMap.entries())
-        .map(([source, data]) => {
-          const totalPipeline = data.leads + data.trials + data.customers;
+      const rows = Array.isArray(data) ? data : [];
+      const result: SourceMetrics[] = rows
+        .map((row) => {
+          const totalPipeline = Number(row.leads ?? 0) + Number(row.trials ?? 0) + Number(row.customers ?? 0);
+          const customerCount = Number(row.customer_count ?? 0);
           return {
-            source,
-            leads: data.leads,
-            trials: data.trials,
-            customers: data.customers,
-            revenue: Math.round(data.revenue),
-            ltv: data.customerCount > 0 ? Math.round(data.totalSpend / data.customerCount / 100) : 0,
-            conversionRate: totalPipeline > 0 ? Math.round((data.customers / totalPipeline) * 100) : 0,
-            trialToPaid: data.trials + data.customers > 0 
-              ? Math.round((data.customers / (data.trials + data.customers)) * 100) 
+            source: row.source || 'unknown',
+            leads: Number(row.leads ?? 0),
+            trials: Number(row.trials ?? 0),
+            customers: Number(row.customers ?? 0),
+            revenue: Math.round(Number(row.revenue ?? 0) / 100),
+            ltv: customerCount > 0 ? Math.round(Number(row.total_spend ?? 0) / customerCount / 100) : 0,
+            conversionRate: totalPipeline > 0 ? Math.round((Number(row.customers ?? 0) / totalPipeline) * 100) : 0,
+            trialToPaid: Number(row.trials ?? 0) + Number(row.customers ?? 0) > 0 
+              ? Math.round((Number(row.customers ?? 0) / (Number(row.trials ?? 0) + Number(row.customers ?? 0))) * 100) 
               : 0,
           };
         })

@@ -20,6 +20,8 @@ export interface BaseSyncResponse {
   status?: SyncStatus;
   syncRunId?: string;
   hasMore?: boolean;
+  nextCursor?: string | null;
+  stats?: Record<string, unknown> | null;
   duration_ms?: number;
   error?: string;
   error_message?: string;
@@ -28,9 +30,11 @@ export interface BaseSyncResponse {
 // ============= SYNC COMMAND CENTER =============
 
 export interface SyncCommandCenterBody {
-  mode?: 'today' | '7d' | 'month' | 'full';
   startDate?: string;
   endDate?: string;
+  fetchAll?: boolean;
+  cursor?: string | null;
+  limit?: number;
   includeContacts?: boolean;
 }
 
@@ -41,7 +45,6 @@ export interface SyncStepResult {
 }
 
 export interface SyncCommandCenterResponse extends BaseSyncResponse {
-  mode?: string;
   totalRecords?: number;
   results?: Record<string, SyncStepResult>;
   failedSteps?: string[];
@@ -54,6 +57,7 @@ export interface FetchStripeBody {
   startDate?: string;
   endDate?: string;
   cursor?: string | null;
+  limit?: number;
   syncRunId?: string | null;
   previousTotal?: number;
   cleanupStale?: boolean;
@@ -66,7 +70,6 @@ export interface FetchStripeResponse extends BaseSyncResponse {
   paid_count?: number;
   failed_count?: number;
   skipped?: number;
-  nextCursor?: string | null;
   total_so_far?: number;
   previousTotal?: number;
   // Cleanup response
@@ -80,7 +83,8 @@ export interface FetchPayPalBody {
   fetchAll?: boolean;
   startDate?: string;
   endDate?: string;
-  page?: number;
+  cursor?: string | null;
+  limit?: number;
   syncRunId?: string | null;
   cleanupStale?: boolean;
   [key: string]: unknown;
@@ -93,7 +97,6 @@ export interface FetchPayPalResponse extends BaseSyncResponse {
   failed_count?: number;
   currentPage?: number;
   totalPages?: number;
-  nextPage?: number;
   // Cleanup response
   cleaned?: number;
   existingSyncId?: string;
@@ -104,6 +107,7 @@ export interface FetchPayPalResponse extends BaseSyncResponse {
 
 export interface FetchSubscriptionsBody {
   limit?: number;
+  cursor?: string | null;
   syncRunId?: string | null;
 }
 
@@ -117,10 +121,11 @@ export interface FetchSubscriptionsResponse extends BaseSyncResponse {
 // ============= INVOICES =============
 
 export interface FetchInvoicesBody {
-  mode?: 'full' | 'range' | 'recent';
   startDate?: string;
   endDate?: string;
+  fetchAll?: boolean;
   cursor?: string | null;
+  limit?: number;
   syncRunId?: string | null;
   [key: string]: unknown;
 }
@@ -128,7 +133,6 @@ export interface FetchInvoicesBody {
 export interface FetchInvoicesResponse extends BaseSyncResponse {
   synced?: number;
   upserted?: number;
-  nextCursor?: string | null;
   draftCount?: number;
   openCount?: number;
   excludedCount?: number;

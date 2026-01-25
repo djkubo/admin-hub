@@ -173,7 +173,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               fetchAll, 
               startDate: startDate.toISOString(), 
               endDate: endDate.toISOString(),
-              page,
+              cursor: String(page),
               syncRunId
             }
           );
@@ -187,7 +187,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           results.paypal += paypalData?.synced_transactions ?? 0;
           syncRunId = paypalData?.syncRunId ?? syncRunId;
           hasMore = paypalData?.hasMore === true;
-          page = paypalData?.nextPage ?? page + 1;
+          page = paypalData?.nextCursor ? Number(paypalData.nextCursor) : page + 1;
           
           if (hasMore) {
             setSyncProgress(`PayPal... ${results.paypal} tx`);
@@ -219,7 +219,9 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         while (invoicesHasMore && invoicesAttempts < 50) {
           invoicesAttempts++;
           const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse, FetchInvoicesBody>('fetch-invoices', {
-            mode: 'recent',
+            fetchAll,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
             cursor: invoicesCursor,
             syncRunId: invoicesSyncRunId,
           });
