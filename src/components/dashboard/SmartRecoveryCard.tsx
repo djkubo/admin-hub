@@ -10,8 +10,7 @@ import {
   RefreshCw,
   StopCircle,
   Layers,
-  PlayCircle,
-  Cloud
+  PlayCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,19 +30,14 @@ import {
   type HoursLookback 
 } from "@/hooks/useSmartRecovery";
 
-// Ranges that should use background processing (>= 7 days = 168 hours)
-const BACKGROUND_THRESHOLD_HOURS = 168;
-
 export function SmartRecoveryCard() {
   const { 
     isRunning, 
-    isBackgroundRunning,
     result, 
     selectedRange,
     progress,
     hasPendingResume,
     runRecovery,
-    runRecoveryBackground,
     resumeRecovery,
     cancelRecovery,
     dismissPendingResume,
@@ -53,12 +47,7 @@ export function SmartRecoveryCard() {
   const [activeTab, setActiveTab] = useState<"succeeded" | "failed" | "skipped">("succeeded");
 
   const handleRunRecovery = (hours: HoursLookback) => {
-    // Use background mode for longer ranges to avoid timeout
-    if (hours >= BACKGROUND_THRESHOLD_HOURS) {
-      runRecoveryBackground(hours);
-    } else {
-      runRecovery(hours, false);
-    }
+    runRecovery(hours, false);
   };
 
   return (
@@ -91,47 +80,28 @@ export function SmartRecoveryCard() {
 
       {/* Range Buttons */}
       <div className="mb-6 flex flex-wrap gap-2">
-        {RECOVERY_RANGES.map(({ hours, label }) => {
-          const isBackground = hours >= BACKGROUND_THRESHOLD_HOURS;
-          return (
-            <Button
-              key={hours}
-              variant={selectedRange === hours ? "default" : "outline"}
-              size="sm"
-              onClick={() => handleRunRecovery(hours)}
-              disabled={isRunning}
-              className={
-                selectedRange === hours 
-                  ? "bg-red-600 hover:bg-red-700 text-white border-red-600" 
-                  : "border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-              }
-              title={isBackground ? "Ejecuta en segundo plano - puedes cerrar la página" : undefined}
-            >
-              {isRunning && selectedRange === hours ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : isBackground ? (
-                <Cloud className="h-4 w-4 mr-2" />
-              ) : (
-                <Zap className="h-4 w-4 mr-2" />
-              )}
-              {label}
-            </Button>
-          );
-        })}
+        {RECOVERY_RANGES.map(({ hours, label }) => (
+          <Button
+            key={hours}
+            variant={selectedRange === hours ? "default" : "outline"}
+            size="sm"
+            onClick={() => handleRunRecovery(hours)}
+            disabled={isRunning}
+            className={
+              selectedRange === hours 
+                ? "bg-red-600 hover:bg-red-700 text-white border-red-600" 
+                : "border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+            }
+          >
+            {isRunning && selectedRange === hours ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Zap className="h-4 w-4 mr-2" />
+            )}
+            {label}
+          </Button>
+        ))}
       </div>
-
-      {/* Background Mode Indicator */}
-      {isBackgroundRunning && (
-        <div className="mb-4 rounded-lg bg-blue-500/10 border border-blue-500/30 p-3 flex items-center gap-3">
-          <Cloud className="h-5 w-5 text-blue-400 animate-pulse" />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-blue-300">Procesando en segundo plano</p>
-            <p className="text-xs text-muted-foreground">
-              Puedes cerrar o recargar la página. El proceso continuará en el servidor.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* Loading State with Progress */}
       {isRunning && (
