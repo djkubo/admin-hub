@@ -320,8 +320,34 @@ Deno.serve(async (req) => {
 
     console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
 
-    // Create sync run if not provided
+    // Check for existing running sync (prevent duplicates)
     if (!syncRunId) {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      
+      const { data: existingSync } = await supabase
+        .from('sync_runs')
+        .select('id, started_at, total_fetched, checkpoint')
+        .eq('source', 'stripe_invoices')
+        .in('status', ['running', 'continuing'])
+        .gte('started_at', tenMinutesAgo)
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (existingSync) {
+        console.log('⚠️ Sync already running:', existingSync.id);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'sync_already_running',
+            existingSyncId: existingSync.id,
+            message: 'A sync is already in progress. Please wait.',
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      
+      // Create new sync run
       const { data: syncRun } = await supabase
         .from('sync_runs')
         .insert({

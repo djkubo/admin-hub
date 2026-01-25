@@ -43,6 +43,7 @@ import type {
   FetchPayPalBody, 
   FetchPayPalResponse,
   FetchSubscriptionsResponse,
+  FetchInvoicesBody,
   FetchInvoicesResponse 
 } from '@/types/edgeFunctions';
 
@@ -207,11 +208,37 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         results.errors++;
       }
 
-      // 4. Invoices
+      // 4. Invoices - with pagination
       setSyncProgress('Facturas...');
       try {
-        const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse>('fetch-invoices', {});
-        results.invoices = invoicesData?.synced ?? 0;
+        let invoicesCursor: string | null = null;
+        let invoicesSyncRunId: string | null = null;
+        let invoicesHasMore = true;
+        let invoicesAttempts = 0;
+        
+        while (invoicesHasMore && invoicesAttempts < 50) {
+          invoicesAttempts++;
+          const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse, FetchInvoicesBody>('fetch-invoices', {
+            mode: 'recent',
+            cursor: invoicesCursor,
+            syncRunId: invoicesSyncRunId,
+          });
+          
+          if (!invoicesData || invoicesData.error) {
+            console.error('[Invoices] Error:', invoicesData?.error);
+            results.errors++;
+            break;
+          }
+          
+          results.invoices += invoicesData.upserted ?? invoicesData.synced ?? 0;
+          invoicesCursor = invoicesData.nextCursor;
+          invoicesSyncRunId = invoicesData.syncRunId;
+          invoicesHasMore = invoicesData.hasMore === true && !!invoicesCursor;
+          
+          if (invoicesHasMore) {
+            setSyncProgress(`Facturas... ${results.invoices}`);
+          }
+        }
       } catch (e) {
         console.error('Invoices sync error:', e);
         results.errors++;

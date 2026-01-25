@@ -117,18 +117,31 @@ export interface FetchSubscriptionsResponse extends BaseSyncResponse {
 // ============= INVOICES =============
 
 export interface FetchInvoicesBody {
-  limit?: number;
-  status?: string;
+  mode?: 'full' | 'range' | 'recent';
+  startDate?: string;
+  endDate?: string;
+  cursor?: string | null;
+  syncRunId?: string | null;
+  [key: string]: unknown;
 }
 
 export interface FetchInvoicesResponse extends BaseSyncResponse {
   synced?: number;
+  upserted?: number;
+  nextCursor?: string | null;
   draftCount?: number;
   openCount?: number;
   excludedCount?: number;
   totalPending?: number;
   total_fetched?: number;
   total_inserted?: number;
+  stats?: {
+    draft: number;
+    open: number;
+    paid: number;
+    void: number;
+    uncollectible: number;
+  };
 }
 
 // ============= CUSTOMERS =============
