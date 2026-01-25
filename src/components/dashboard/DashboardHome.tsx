@@ -124,102 +124,34 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      // 1. Stripe (with simple, reliable pagination)
+      // 1. Stripe - now runs entirely in background on backend
       setSyncProgress('Stripe...');
       try {
-        let hasMore = true;
-        let cursor: string | null = null;
-        let syncRunId: string | null = null;
-        let previousTotal = 0;
-        let pageAttempts = 0;
-        const maxPageAttempts = 1000;
-        let consecutiveErrors = 0;
-        const maxConsecutiveErrors = 3;
+        const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll, 
+            startDate: startDate.toISOString(), 
+            endDate: endDate.toISOString()
+          }
+        );
         
-        while (hasMore && pageAttempts < maxPageAttempts) {
-          pageAttempts++;
-          
-          // Refresh session periodically during long syncs
-          if (pageAttempts % 20 === 0) {
-            await supabase.auth.refreshSession();
-          }
-          
-          try {
-            const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-              'fetch-stripe', 
-              { 
-                fetchAll, 
-                startDate: startDate.toISOString(), 
-                endDate: endDate.toISOString(),
-                cursor,
-                syncRunId,
-                previousTotal
-              }
-            );
-            
-            // Handle null response
-            if (!stripeData) {
-              console.error('[Stripe] Null response from API');
-              consecutiveErrors++;
-              if (consecutiveErrors >= maxConsecutiveErrors) {
-                toast.error('Stripe sync falló - respuesta vacía');
-                break;
-              }
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              continue;
-            }
-            
-            // Reset error counter on any response
-            consecutiveErrors = 0;
-            
-            if (stripeData.error === 'sync_already_running') {
-              toast.warning('Ya hay un sync de Stripe en progreso');
-              break;
-            }
-            
-            if (!stripeData.success && stripeData.error) {
-              console.error('[Stripe] Error:', stripeData.error);
-              results.errors++;
-              break;
-            }
-            
-            // Update totals
-            const thisPageTx = stripeData.synced_transactions ?? 0;
-            if (stripeData.total_so_far) {
-              results.stripe = stripeData.total_so_far;
-              previousTotal = stripeData.total_so_far;
-            } else {
-              results.stripe += thisPageTx;
-              previousTotal = results.stripe;
-            }
-            
-            syncRunId = stripeData.syncRunId ?? syncRunId;
-            cursor = stripeData.nextCursor ?? null;
-            hasMore = stripeData.hasMore === true && cursor !== null;
-            
-            console.log(`[Stripe] Page ${pageAttempts}: ${results.stripe} tx, hasMore: ${hasMore}, cursor: ${cursor?.slice(0, 15)}`);
-            setSyncProgress(`Stripe... ${results.stripe} tx (página ${pageAttempts})`);
-            
-            // Small delay between pages
-            if (hasMore) {
-              await new Promise(resolve => setTimeout(resolve, 50));
-            }
-          } catch (pageError) {
-            consecutiveErrors++;
-            console.error(`[Stripe] Page ${pageAttempts} error (${consecutiveErrors}/${maxConsecutiveErrors}):`, pageError);
-            
-            if (consecutiveErrors >= maxConsecutiveErrors) {
-              toast.error(`Stripe sync falló después de ${consecutiveErrors} errores`);
-              break;
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveErrors));
-          }
+        if (!stripeData) {
+          toast.error('Error al iniciar sync de Stripe');
+          results.errors++;
+        } else if (stripeData.error === 'sync_already_running') {
+          toast.warning('Stripe sync ya está en progreso. Revisa el panel de sync.');
+        } else if (stripeData.status === 'running') {
+          toast.success('Stripe sync iniciado en segundo plano. Monitorea el progreso en el panel.');
+          results.stripe = 0; // Will update via realtime
+        } else if (stripeData.status === 'completed') {
+          results.stripe = stripeData.synced_transactions ?? 0;
+        } else if (stripeData.error) {
+          console.error('[Stripe] Error:', stripeData.error);
+          results.errors++;
         }
-        
-        console.log(`[Stripe] Complete: ${results.stripe} tx in ${pageAttempts} pages`);
       } catch (e) {
-        console.error('[Stripe] Fatal error:', e);
+        console.error('[Stripe] Error:', e);
         results.errors++;
       }
 
