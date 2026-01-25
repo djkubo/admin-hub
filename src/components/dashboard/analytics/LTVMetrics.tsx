@@ -1,104 +1,99 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DollarSign, TrendingUp, Users, Calendar } from "lucide-react";
-import { subMonths, startOfMonth, endOfMonth, format } from "date-fns";
+import { subMonths, startOfMonth, endOfMonth } from "date-fns";
+import { supabase } from "@/integrations/supabase/client";
 
-interface Transaction {
-  id: string;
-  amount: number;
-  status: string;
-  stripe_created_at: string | null;
-  customer_email: string | null;
+interface MetricsResponse {
+  mrr: number;
+  arpu: number;
+  churnRate: number;
+  ltv: number;
+  ltvCacRatio: number;
+  activeCustomers: number;
+  avgLifespanMonths: number;
 }
 
-interface LTVMetricsProps {
-  transactions: Transaction[];
-}
+export function LTVMetrics() {
+  const [metrics, setMetrics] = useState<MetricsResponse>({
+    mrr: 0,
+    arpu: 0,
+    churnRate: 0,
+    ltv: 0,
+    ltvCacRatio: 0,
+    activeCustomers: 0,
+    avgLifespanMonths: 0,
+  });
+  const [loading, setLoading] = useState(true);
 
-export function LTVMetrics({ transactions }: LTVMetricsProps) {
-  const metrics = useMemo(() => {
-    const now = new Date();
-    const currentMonthStart = startOfMonth(now);
-    const lastMonthStart = startOfMonth(subMonths(now, 1));
-    const lastMonthEnd = endOfMonth(subMonths(now, 1));
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      setLoading(true);
+      const now = new Date();
+      const lastMonthStart = startOfMonth(subMonths(now, 1));
+      const lastMonthEnd = endOfMonth(subMonths(now, 1));
 
-    // Get successful transactions
-    const successfulTx = transactions.filter(
-      (tx) =>
-        tx.status === "succeeded" ||
-        tx.status === "paid"
-    );
+      try {
+        const [{ data: mrrRows, error: mrrError }, { data: churnRows, error: churnError }] =
+          await Promise.all([
+            supabase.rpc("metrics_mrr", {
+              start_date: lastMonthStart.toISOString(),
+              end_date: lastMonthEnd.toISOString(),
+            }),
+            supabase.rpc("metrics_churn", {
+              start_date: lastMonthStart.toISOString(),
+              end_date: lastMonthEnd.toISOString(),
+            }),
+          ]);
 
-    // Calculate MRR (Monthly Recurring Revenue) - last month's revenue
-    const lastMonthTx = successfulTx.filter((tx) => {
-      if (!tx.stripe_created_at) return false;
-      const txDate = new Date(tx.stripe_created_at);
-      return txDate >= lastMonthStart && txDate <= lastMonthEnd;
-    });
+        if (mrrError) throw mrrError;
+        if (churnError) throw churnError;
 
-    const mrr = lastMonthTx.reduce((sum, tx) => sum + tx.amount / 100, 0);
+        const mrrRow = Array.isArray(mrrRows) ? mrrRows[0] : mrrRows;
+        const churnRow = Array.isArray(churnRows) ? churnRows[0] : churnRows;
+        const mrrValue = Number(mrrRow?.mrr ?? 0) / 100;
+        const activeCustomers = Number(mrrRow?.active_customers ?? 0);
+        const arpu = activeCustomers > 0 ? mrrValue / activeCustomers : 0;
+        const churnRate = Number(churnRow?.churn_rate ?? 0);
 
-    // Get unique paying customers last month
-    const lastMonthCustomers = new Set(
-      lastMonthTx
-        .filter((tx) => tx.customer_email)
-        .map((tx) => tx.customer_email!.toLowerCase())
-    );
-    const activeCustomers = lastMonthCustomers.size;
+        const effectiveChurnRate = Math.max(churnRate, 5) / 100;
+        const ltv = arpu / effectiveChurnRate;
+        const estimatedCAC = arpu * 0.3;
+        const ltvCacRatio = estimatedCAC > 0 ? ltv / estimatedCAC : 0;
+        const avgLifespanMonths = churnRate > 0 ? 100 / churnRate : 20;
 
-    // Calculate ARPU (Average Revenue Per User)
-    const arpu = activeCustomers > 0 ? mrr / activeCustomers : 0;
-
-    // Calculate User Churn Rate
-    // Compare active customers 2 months ago vs those who churned last month
-    const twoMonthsAgoStart = startOfMonth(subMonths(now, 2));
-    const twoMonthsAgoEnd = endOfMonth(subMonths(now, 2));
-
-    const twoMonthsAgoCustomers = new Set(
-      successfulTx
-        .filter((tx) => {
-          if (!tx.stripe_created_at || !tx.customer_email) return false;
-          const txDate = new Date(tx.stripe_created_at);
-          return txDate >= twoMonthsAgoStart && txDate <= twoMonthsAgoEnd;
-        })
-        .map((tx) => tx.customer_email!.toLowerCase())
-    );
-
-    // Churned = customers from 2 months ago who didn't pay last month
-    let churnedCount = 0;
-    twoMonthsAgoCustomers.forEach((email) => {
-      if (!lastMonthCustomers.has(email)) {
-        churnedCount++;
+        setMetrics({
+          mrr: mrrValue,
+          arpu,
+          churnRate,
+          ltv,
+          ltvCacRatio,
+          activeCustomers,
+          avgLifespanMonths,
+        });
+      } catch (error) {
+        console.error("Error fetching LTV metrics:", error);
+      } finally {
+        setLoading(false);
       }
-    });
-
-    const churnRate =
-      twoMonthsAgoCustomers.size > 0
-        ? (churnedCount / twoMonthsAgoCustomers.size) * 100
-        : 0;
-
-    // Calculate LTV (Lifetime Value) = ARPU / Churn Rate
-    // If churn rate is 0, use a minimum of 5% to avoid infinity
-    const effectiveChurnRate = Math.max(churnRate, 5) / 100;
-    const ltv = arpu / effectiveChurnRate;
-
-    // Calculate LTV:CAC ratio (assuming CAC is ~1 month revenue for simplicity)
-    // This is a simplified estimate
-    const estimatedCAC = arpu * 0.3; // Assume 30% of ARPU goes to acquisition
-    const ltvCacRatio = estimatedCAC > 0 ? ltv / estimatedCAC : 0;
-
-    // Calculate average customer lifespan in months
-    const avgLifespanMonths = churnRate > 0 ? 100 / churnRate : 20;
-
-    return {
-      mrr,
-      arpu,
-      churnRate,
-      ltv,
-      ltvCacRatio,
-      activeCustomers,
-      avgLifespanMonths,
     };
-  }, [transactions]);
+
+    fetchMetrics();
+  }, []);
+
+  const loadingState = useMemo(
+    () => (
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, idx) => (
+          <div key={idx} className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-5">
+            <div className="h-8 w-8 rounded-lg bg-muted/30 mb-3" />
+            <div className="h-5 w-20 bg-muted/30 rounded mb-2" />
+            <div className="h-3 w-24 bg-muted/20 rounded" />
+          </div>
+        ))}
+      </div>
+    ),
+    []
+  );
 
   const MetricCard = ({
     icon: Icon,
@@ -138,48 +133,52 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <MetricCard
-          icon={DollarSign}
-          label="LTV"
-          value={`$${metrics.ltv.toLocaleString(undefined, {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0,
-          })}`}
-          subtext="Valor por cliente"
-          color="bg-emerald-500/20 text-emerald-400"
-        />
+      {loading ? (
+        loadingState
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <MetricCard
+            icon={DollarSign}
+            label="LTV"
+            value={`$${metrics.ltv.toLocaleString(undefined, {
+              minimumFractionDigits: 0,
+              maximumFractionDigits: 0,
+            })}`}
+            subtext="Valor por cliente"
+            color="bg-emerald-500/20 text-emerald-400"
+          />
 
-        <MetricCard
-          icon={TrendingUp}
-          label="MRR"
-          value={`$${metrics.mrr.toLocaleString(undefined, {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0,
-          })}`}
-          subtext="Último mes"
-          color="bg-indigo-500/20 text-indigo-400"
-        />
+          <MetricCard
+            icon={TrendingUp}
+            label="MRR"
+            value={`$${metrics.mrr.toLocaleString(undefined, {
+              minimumFractionDigits: 0,
+              maximumFractionDigits: 0,
+            })}`}
+            subtext="Último mes"
+            color="bg-indigo-500/20 text-indigo-400"
+          />
 
-        <MetricCard
-          icon={Users}
-          label="ARPU"
-          value={`$${metrics.arpu.toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}`}
-          subtext={`${metrics.activeCustomers} activos`}
-          color="bg-purple-500/20 text-purple-400"
-        />
+          <MetricCard
+            icon={Users}
+            label="ARPU"
+            value={`$${metrics.arpu.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`}
+            subtext={`${metrics.activeCustomers} activos`}
+            color="bg-purple-500/20 text-purple-400"
+          />
 
-        <MetricCard
-          icon={Calendar}
-          label="Churn"
-          value={`${metrics.churnRate.toFixed(1)}%`}
-          subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m vida`}
-          color="bg-rose-500/20 text-rose-400"
-        />
-      </div>
+          <MetricCard
+            icon={Calendar}
+            label="Churn"
+            value={`${metrics.churnRate.toFixed(1)}%`}
+            subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m vida`}
+            color="bg-rose-500/20 text-rose-400"
+          />
+        </div>
+      )}
 
       {/* LTV Formula Explanation - Hidden on mobile */}
       <div className="hidden sm:block rounded-lg bg-gray-800/30 border border-gray-700/50 p-3 sm:p-4 mt-3 sm:mt-4">

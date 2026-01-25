@@ -53,7 +53,7 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
 
         <TabsContent value="ltv" className="space-y-4 sm:space-y-6">
           {/* LTV Metrics Row */}
-          <LTVMetrics transactions={transactions} />
+          <LTVMetrics />
 
           {/* Revenue by Plan Chart - Pareto Analysis */}
           <RevenueByPlanChart />
