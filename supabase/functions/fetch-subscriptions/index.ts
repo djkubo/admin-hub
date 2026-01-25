@@ -138,7 +138,7 @@ serve(async (req: Request) => {
     const serviceClient = createClient(supabaseUrl, serviceRoleKey);
 
     const body = await req.json().catch(() => ({}));
-    const cursor = body.cursor ?? null;
+    let cursor = body.cursor ?? null;
     const syncRunId = body.syncRunId ?? null;
     const limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
 
@@ -193,6 +193,16 @@ serve(async (req: Request) => {
 
       activeSyncId = syncRun.id;
       console.log("📝 Created sync run:", activeSyncId);
+    }
+
+    if (activeSyncId && !cursor) {
+      const { data: syncRun } = await serviceClient
+        .from("sync_runs")
+        .select("checkpoint")
+        .eq("id", activeSyncId)
+        .single();
+      const checkpoint = (syncRun?.checkpoint as { cursor?: string | null } | null) ?? null;
+      cursor = checkpoint?.cursor ?? null;
     }
 
     const result = await processPage(serviceClient, stripe, cursor, limit);

@@ -477,23 +477,34 @@ Deno.serve(async (req) => {
       console.log(`📊 NEW SYNC: ${syncRunId}`);
     }
 
+    if (syncRunId && !cursor) {
+      const { data: syncRun } = await supabase
+        .from('sync_runs')
+        .select('checkpoint')
+        .eq('id', syncRunId)
+        .single();
+      const checkpoint = (syncRun?.checkpoint as { cursor?: string | null } | null) ?? null;
+      cursor = checkpoint?.cursor ?? null;
+    }
+
     const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor, limit);
 
     const { data: currentRun } = await supabase
       .from('sync_runs')
-      .select('total_fetched')
+      .select('total_fetched, total_inserted')
       .eq('id', syncRunId)
       .single();
 
-    const updatedTotal = (currentRun?.total_fetched || 0) + result.transactions;
+    const updatedTotalFetched = (currentRun?.total_fetched || 0) + result.transactions;
+    const updatedTotalInserted = (currentRun?.total_inserted || 0) + result.transactions;
 
     await supabase
       .from('sync_runs')
       .update({
         status: result.hasMore ? 'continuing' : 'completed',
         completed_at: result.hasMore ? null : new Date().toISOString(),
-        total_fetched: updatedTotal,
-        total_inserted: updatedTotal,
+        total_fetched: updatedTotalFetched,
+        total_inserted: updatedTotalInserted,
         checkpoint: result.hasMore ? { cursor: result.nextCursor } : null,
       })
       .eq('id', syncRunId);
