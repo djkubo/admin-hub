@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users } from 'lucide-react';
+import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,12 +23,15 @@ export function APISyncPanel() {
   const [paypalSyncing, setPaypalSyncing] = useState(false);
   const [manychatSyncing, setManychatSyncing] = useState(false);
   const [ghlSyncing, setGhlSyncing] = useState(false);
+  const [invoicesSyncing, setInvoicesSyncing] = useState(false);
   const [stripeResult, setStripeResult] = useState<SyncResult | null>(null);
   const [paypalResult, setPaypalResult] = useState<SyncResult | null>(null);
   const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
   const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
+  const [invoicesResult, setInvoicesResult] = useState<SyncResult | null>(null);
   const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number } | null>(null);
   const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number } | null>(null);
+  const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts - now with per-service progress
   const syncInChunks = async (
@@ -310,6 +313,80 @@ export function APISyncPanel() {
     }
   };
 
+  const syncInvoices = async (mode: 'recent' | 'full') => {
+    setInvoicesSyncing(true);
+    setInvoicesResult(null);
+    
+    try {
+      let hasMore = true;
+      let cursor: string | null = null;
+      let totalSynced = 0;
+      let totalUpserted = 0;
+      let page = 0;
+      const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+
+      while (hasMore) {
+        page++;
+        setInvoicesProgress({ current: page, total: 0 }); // Unknown total
+        
+        const data = await invokeWithAdminKey<{
+          success: boolean;
+          synced: number;
+          upserted: number;
+          hasMore: boolean;
+          nextCursor: string | null;
+          stats?: typeof stats;
+        }>('fetch-invoices', {
+          mode,
+          cursor,
+        });
+
+        if (!data.success) {
+          throw new Error('Fetch invoices failed');
+        }
+
+        totalSynced += data.synced || 0;
+        totalUpserted += data.upserted || 0;
+        
+        if (data.stats) {
+          stats.draft += data.stats.draft || 0;
+          stats.open += data.stats.open || 0;
+          stats.paid += data.stats.paid || 0;
+          stats.void += data.stats.void || 0;
+          stats.uncollectible += data.stats.uncollectible || 0;
+        }
+
+        hasMore = data.hasMore && !!data.nextCursor;
+        cursor = data.nextCursor;
+        
+        // Safety: limit to 50 pages (5000 invoices per sync)
+        if (page >= 50) {
+          console.log('Reached page limit, stopping');
+          break;
+        }
+      }
+
+      setInvoicesResult({
+        success: true,
+        synced_transactions: totalSynced,
+        total_inserted: totalUpserted,
+        message: `${totalUpserted} facturas sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas, ${stats.draft} borradores)`
+      });
+      
+      toast.success(`Facturas: ${totalUpserted} sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas)`);
+      
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      setInvoicesResult({ success: false, error: errorMessage });
+      toast.error(`Error sincronizando facturas: ${errorMessage}`);
+    } finally {
+      setInvoicesSyncing(false);
+      setInvoicesProgress(null);
+    }
+  };
+
   const syncAllHistory = async () => {
     // Run sequentially to avoid rate limits
     await syncStripe('allHistory');
@@ -509,7 +586,68 @@ export function APISyncPanel() {
           </div>
         </div>
 
-        {/* ManyChat Sync */}
+        {/* Invoices/Facturas Sync */}
+        <div className="p-4 bg-[#0f1225] rounded-lg border border-cyan-500/30 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                <FileText className="h-5 w-5 text-cyan-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-white">Facturas Stripe</h4>
+                <p className="text-xs text-gray-400">
+                  {invoicesResult?.success 
+                    ? invoicesResult.message
+                    : 'Sincroniza todas las facturas (draft, open, paid, void)'
+                  }
+                </p>
+              </div>
+            </div>
+            {invoicesResult && (
+              <Badge variant={invoicesResult.success ? 'default' : 'destructive'} className="gap-1">
+                {invoicesResult.success ? (
+                  <><CheckCircle className="h-3 w-3" /> OK</>
+                ) : (
+                  <><AlertCircle className="h-3 w-3" /> Error</>
+                )}
+              </Badge>
+            )}
+          </div>
+          
+          {invoicesProgress && (
+            <div className="flex items-center gap-2 text-xs text-cyan-400">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Página {invoicesProgress.current}...</span>
+            </div>
+          )}
+          
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => syncInvoices('recent')}
+              disabled={invoicesSyncing}
+              className="gap-2 border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/10"
+            >
+              {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+              Últimos 90 días
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => syncInvoices('full')}
+              disabled={invoicesSyncing}
+              className="gap-2 bg-cyan-600 hover:bg-cyan-700"
+            >
+              {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
+              Todo Historial
+            </Button>
+          </div>
+          
+          <p className="text-xs text-gray-500">
+            📄 Sincroniza facturas con status, paid_at, raw_data y client_id vinculado
+          </p>
+        </div>
+
         <div className="p-4 bg-[#0f1225] rounded-lg border border-blue-500/30 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">

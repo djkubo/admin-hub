@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import Stripe from 'https://esm.sh/stripe@14.21.0';
 
 const corsHeaders = {
@@ -91,12 +91,19 @@ Deno.serve(async (req) => {
       }
       case 'invoice.paid': {
         const invoice = event.data.object as Stripe.Invoice;
-        await handleInvoicePaid(supabase, invoice);
+        await handleInvoicePaid(supabase, stripe, invoice);
         break;
       }
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
         await handleInvoicePaymentFailed(supabase, stripe, invoice);
+        break;
+      }
+      case 'invoice.created':
+      case 'invoice.updated':
+      case 'invoice.finalized': {
+        const invoice = event.data.object as Stripe.Invoice;
+        await handleInvoiceUpsert(supabase, stripe, invoice);
         break;
       }
       case 'customer.subscription.created':
@@ -165,6 +172,43 @@ async function getCustomerDetails(stripe: Stripe, customerId: string | null): Pr
 }
 
 // ============================================
+// HELPER: Resolve client via unify_identity
+// ============================================
+async function resolveClientViaUnify(
+  supabase: SupabaseClient,
+  stripeCustomerId: string | null,
+  email: string | null,
+  phone: string | null,
+  fullName: string | null
+): Promise<string | null> {
+  if (!stripeCustomerId && !email && !phone) return null;
+
+  try {
+    const { data, error } = await supabase.rpc('unify_identity', {
+      p_source: 'stripe',
+      p_stripe_customer_id: stripeCustomerId,
+      p_email: email?.toLowerCase() || null,
+      p_phone: phone,
+      p_full_name: fullName,
+    });
+
+    if (error) {
+      console.warn('unify_identity error:', error.message);
+      return null;
+    }
+
+    if (data?.success && data?.client_id) {
+      console.log(`✅ unify_identity: ${data.action} -> ${data.client_id}`);
+      return data.client_id;
+    }
+  } catch (e) {
+    console.warn('unify_identity failed:', e);
+  }
+
+  return null;
+}
+
+// ============================================
 // HELPER: Extract card info from PaymentIntent
 // ============================================
 function extractPaymentMethodInfo(pi: Stripe.PaymentIntent): {
@@ -225,10 +269,9 @@ async function getInvoiceDescription(stripe: Stripe, invoiceId: string | null): 
 // ============================================
 // HELPER: Determine payment type
 // ============================================
-async function determinePaymentType(supabase: any, email: string | null, invoiceInfo: any): Promise<string> {
+async function determinePaymentType(supabase: SupabaseClient, email: string | null, invoiceInfo: any): Promise<string> {
   if (!email) return 'renewal';
   
-  // Check if this is their first payment
   const { data: existingPayments, error } = await supabase
     .from('transactions')
     .select('id, status')
@@ -237,12 +280,10 @@ async function determinePaymentType(supabase: any, email: string | null, invoice
     .limit(1);
   
   if (error || !existingPayments || existingPayments.length === 0) {
-    return 'new'; // First payment
+    return 'new';
   }
   
-  // Check if it's from a subscription
   if (invoiceInfo?.subscriptionId) {
-    // Could check trial status here
     return 'renewal';
   }
   
@@ -250,68 +291,51 @@ async function determinePaymentType(supabase: any, email: string | null, invoice
 }
 
 // ============================================
-// HELPER: Update client record with full info
+// HELPER: Extract plan info from invoice
 // ============================================
-async function upsertClient(supabase: any, data: {
-  email: string;
-  name?: string | null;
-  phone?: string | null;
-  stripeCustomerId?: string | null;
-  isPaying?: boolean;
-  paymentAmount?: number;
-}) {
-  const email = data.email.toLowerCase().trim();
-  
-  // Get existing client
-  const { data: existing } = await supabase
-    .from('clients')
-    .select('id, total_paid, lifecycle_stage, full_name, phone')
-    .eq('email', email)
-    .single();
-  
-  const updateData: any = {
-    email,
-    last_sync: new Date().toISOString(),
-  };
-  
-  // Only update name if we have it and don't already have one
-  if (data.name && !existing?.full_name) {
-    updateData.full_name = data.name;
-  }
-  
-  // Only update phone if we have it and don't already have one
-  if (data.phone && !existing?.phone) {
-    updateData.phone = data.phone;
-  }
-  
-  if (data.stripeCustomerId) {
-    updateData.stripe_customer_id = data.stripeCustomerId;
-  }
-  
-  if (data.isPaying) {
-    updateData.lifecycle_stage = 'CUSTOMER';
-    updateData.total_paid = (existing?.total_paid || 0) + (data.paymentAmount || 0);
-    if (!existing?.first_payment_at) {
-      updateData.first_payment_at = new Date().toISOString();
+function extractPlanInfo(invoice: Stripe.Invoice): { 
+  planName: string | null; 
+  planInterval: string | null; 
+  productName: string | null 
+} {
+  let planName: string | null = null;
+  let planInterval: string | null = null;
+  let productName: string | null = null;
+
+  if (invoice.lines?.data?.length) {
+    const firstLine = invoice.lines.data[0];
+    if (firstLine.price) {
+      planName = firstLine.price.nickname || firstLine.description || null;
+      planInterval = firstLine.price.recurring?.interval || null;
+      if (firstLine.price.product && typeof firstLine.price.product === 'object') {
+        productName = (firstLine.price.product as any).name;
+      }
+    } else if (firstLine.description) {
+      planName = firstLine.description;
     }
   }
-  
-  const { error } = await supabase
-    .from('clients')
-    .upsert(updateData, { onConflict: 'email' });
-  
-  if (error) console.error('Error upserting client:', error);
+
+  if (planInterval) {
+    const intervalMap: Record<string, string> = {
+      'day': 'Diario',
+      'week': 'Semanal',
+      'month': 'Mensual',
+      'year': 'Anual',
+    };
+    planInterval = intervalMap[planInterval] || planInterval;
+  }
+
+  return { planName, planInterval, productName };
 }
 
 // ============================================
 // HANDLER: Payment Succeeded - ENHANCED
 // ============================================
-async function handlePaymentSucceeded(supabase: any, stripe: Stripe, pi: Stripe.PaymentIntent) {
+async function handlePaymentSucceeded(supabase: SupabaseClient, stripe: Stripe, pi: Stripe.PaymentIntent) {
   console.log(`💰 Processing payment_intent.succeeded: ${pi.id}`);
   
   const paymentKey = pi.invoice ? String(pi.invoice) : pi.id;
   
-  // Get all enrichment data in parallel
   const [customerDetails, invoiceInfo] = await Promise.all([
     getCustomerDetails(stripe, pi.customer ? String(pi.customer) : null),
     getInvoiceDescription(stripe, pi.invoice ? String(pi.invoice) : null)
@@ -320,7 +344,15 @@ async function handlePaymentSucceeded(supabase: any, stripe: Stripe, pi: Stripe.
   const cardInfo = extractPaymentMethodInfo(pi);
   const paymentType = await determinePaymentType(supabase, customerDetails.email, invoiceInfo);
 
-  // Build comprehensive metadata
+  // Resolve client via unify_identity
+  const clientId = await resolveClientViaUnify(
+    supabase,
+    customerDetails.stripeCustomerId,
+    customerDetails.email,
+    customerDetails.phone,
+    customerDetails.name
+  );
+
   const enrichedMetadata = {
     ...pi.metadata,
     card_last4: cardInfo.cardLast4,
@@ -330,6 +362,7 @@ async function handlePaymentSucceeded(supabase: any, stripe: Stripe, pi: Stripe.
     product_name: invoiceInfo.productName,
     customer_name: customerDetails.name,
     customer_phone: customerDetails.phone,
+    client_id: clientId,
   };
 
   const { error } = await supabase.from('transactions').upsert({
@@ -337,7 +370,7 @@ async function handlePaymentSucceeded(supabase: any, stripe: Stripe, pi: Stripe.
     payment_key: paymentKey,
     payment_type: paymentType,
     subscription_id: invoiceInfo.subscriptionId,
-    amount: pi.amount, // Keep in cents
+    amount: pi.amount,
     currency: pi.currency?.toLowerCase() || 'usd',
     status: 'succeeded',
     stripe_customer_id: customerDetails.stripeCustomerId,
@@ -352,31 +385,18 @@ async function handlePaymentSucceeded(supabase: any, stripe: Stripe, pi: Stripe.
     console.error('Error upserting transaction:', error);
   } else {
     console.log(`✅ Transaction upserted: ${pi.id} (${paymentType}, $${pi.amount/100})`);
-    
-    // Update client record
-    if (customerDetails.email) {
-      await upsertClient(supabase, {
-        email: customerDetails.email,
-        name: customerDetails.name,
-        phone: customerDetails.phone,
-        stripeCustomerId: customerDetails.stripeCustomerId,
-        isPaying: true,
-        paymentAmount: pi.amount,
-      });
-    }
   }
 }
 
 // ============================================
 // HANDLER: Payment Failed - ENHANCED
 // ============================================
-async function handlePaymentFailed(supabase: any, stripe: Stripe, pi: Stripe.PaymentIntent) {
+async function handlePaymentFailed(supabase: SupabaseClient, stripe: Stripe, pi: Stripe.PaymentIntent) {
   console.log(`❌ Processing payment_intent.payment_failed: ${pi.id}`);
   
   const paymentKey = pi.invoice ? String(pi.invoice) : pi.id;
   const lastError = pi.last_payment_error;
   
-  // Get enrichment data
   const [customerDetails, invoiceInfo] = await Promise.all([
     getCustomerDetails(stripe, pi.customer ? String(pi.customer) : null),
     getInvoiceDescription(stripe, pi.invoice ? String(pi.invoice) : null)
@@ -384,7 +404,6 @@ async function handlePaymentFailed(supabase: any, stripe: Stripe, pi: Stripe.Pay
   
   const cardInfo = extractPaymentMethodInfo(pi);
 
-  // Map Stripe decline codes to Spanish
   const declineReasonMap: Record<string, string> = {
     'insufficient_funds': 'Fondos insuficientes',
     'card_declined': 'Tarjeta rechazada',
@@ -403,6 +422,14 @@ async function handlePaymentFailed(supabase: any, stripe: Stripe, pi: Stripe.Pay
   const failureCode = lastError?.code || pi.status;
   const failureMessage = declineReasonMap[failureCode] || lastError?.message || failureCode;
 
+  const clientId = await resolveClientViaUnify(
+    supabase,
+    customerDetails.stripeCustomerId,
+    customerDetails.email,
+    customerDetails.phone,
+    customerDetails.name
+  );
+
   const enrichedMetadata = {
     ...pi.metadata,
     card_last4: cardInfo.cardLast4,
@@ -411,6 +438,7 @@ async function handlePaymentFailed(supabase: any, stripe: Stripe, pi: Stripe.Pay
     product_name: invoiceInfo.productName,
     customer_name: customerDetails.name,
     decline_reason_es: failureMessage,
+    client_id: clientId,
   };
 
   const { error } = await supabase.from('transactions').upsert({
@@ -432,67 +460,126 @@ async function handlePaymentFailed(supabase: any, stripe: Stripe, pi: Stripe.Pay
 
   if (error) console.error('Error upserting failed transaction:', error);
   else console.log(`✅ Failed transaction logged: ${pi.id} - ${failureMessage}`);
-
-  // Update client if we have email
-  if (customerDetails.email) {
-    await upsertClient(supabase, {
-      email: customerDetails.email,
-      name: customerDetails.name,
-      phone: customerDetails.phone,
-      stripeCustomerId: customerDetails.stripeCustomerId,
-    });
-  }
 }
 
 // ============================================
-// HANDLER: Invoice Paid
+// HANDLER: Invoice Paid - UPSERT (NO DELETE!)
 // ============================================
-async function handleInvoicePaid(supabase: any, invoice: Stripe.Invoice) {
+async function handleInvoicePaid(supabase: SupabaseClient, stripe: Stripe, invoice: Stripe.Invoice) {
   console.log(`📄 Processing invoice.paid: ${invoice.id}`);
   
-  // Remove from pending invoices
-  const { error } = await supabase
-    .from('invoices')
-    .delete()
-    .eq('stripe_invoice_id', invoice.id);
+  // Get customer details for enrichment
+  const customerDetails = await getCustomerDetails(stripe, invoice.customer ? String(invoice.customer) : null);
+  
+  // Resolve client via unify_identity
+  const clientId = await resolveClientViaUnify(
+    supabase,
+    customerDetails.stripeCustomerId,
+    invoice.customer_email || customerDetails.email,
+    customerDetails.phone,
+    invoice.customer_name || customerDetails.name
+  );
 
-  if (error) console.error('Error removing paid invoice:', error);
-  else console.log(`✅ Removed paid invoice: ${invoice.id}`);
+  const { planName, planInterval, productName } = extractPlanInfo(invoice);
+
+  // Get subscription ID
+  const subscriptionId = invoice.subscription 
+    ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
+    : null;
+
+  // Get payment intent ID
+  const paymentIntentId = invoice.payment_intent
+    ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
+    : null;
+
+  // UPSERT with status=paid and paid_at - NEVER DELETE
+  const { error } = await supabase.from('invoices').upsert({
+    stripe_invoice_id: invoice.id,
+    invoice_number: invoice.number,
+    stripe_customer_id: customerDetails.stripeCustomerId,
+    customer_email: (invoice.customer_email || customerDetails.email)?.toLowerCase(),
+    customer_name: invoice.customer_name || customerDetails.name,
+    customer_phone: customerDetails.phone,
+    client_id: clientId,
+    amount_due: invoice.amount_due,
+    amount_paid: invoice.amount_paid,
+    amount_remaining: invoice.amount_remaining || 0,
+    subtotal: invoice.subtotal,
+    total: invoice.total,
+    currency: invoice.currency?.toLowerCase() || 'usd',
+    status: 'paid',
+    paid_at: new Date().toISOString(),
+    stripe_created_at: invoice.created 
+      ? new Date(invoice.created * 1000).toISOString() 
+      : null,
+    finalized_at: invoice.status_transitions?.finalized_at
+      ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+      : null,
+    period_end: invoice.period_end 
+      ? new Date(invoice.period_end * 1000).toISOString() 
+      : null,
+    hosted_invoice_url: invoice.hosted_invoice_url,
+    pdf_url: invoice.invoice_pdf,
+    subscription_id: subscriptionId,
+    payment_intent_id: paymentIntentId,
+    plan_name: planName,
+    plan_interval: planInterval,
+    product_name: productName,
+    attempt_count: invoice.attempt_count || 0,
+    billing_reason: invoice.billing_reason,
+    collection_method: invoice.collection_method,
+    raw_data: invoice as unknown as Record<string, unknown>,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'stripe_invoice_id' });
+
+  if (error) console.error('Error upserting paid invoice:', error);
+  else console.log(`✅ Invoice marked as paid: ${invoice.id} (client: ${clientId})`);
 }
 
 // ============================================
 // HANDLER: Invoice Payment Failed - ENHANCED
 // ============================================
-async function handleInvoicePaymentFailed(supabase: any, stripe: Stripe, invoice: Stripe.Invoice) {
+async function handleInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stripe, invoice: Stripe.Invoice) {
   console.log(`📄 Processing invoice.payment_failed: ${invoice.id}`);
   
-  // Get customer details for phone
   const customerDetails = await getCustomerDetails(stripe, invoice.customer ? String(invoice.customer) : null);
   
-  // Get product name from line items
-  let productName = null;
-  if (invoice.lines?.data?.[0]?.description) {
-    productName = invoice.lines.data[0].description;
-  }
+  const clientId = await resolveClientViaUnify(
+    supabase,
+    customerDetails.stripeCustomerId,
+    invoice.customer_email || customerDetails.email,
+    customerDetails.phone,
+    invoice.customer_name || customerDetails.name
+  );
+
+  const { planName, planInterval, productName } = extractPlanInfo(invoice);
 
   const { error } = await supabase.from('invoices').upsert({
     stripe_invoice_id: invoice.id,
     stripe_customer_id: invoice.customer ? String(invoice.customer) : null,
-    customer_email: invoice.customer_email?.toLowerCase(),
+    customer_email: (invoice.customer_email || customerDetails.email)?.toLowerCase(),
     customer_phone: customerDetails.phone,
-    customer_name: customerDetails.name,
-    amount_due: invoice.amount_due || 0, // Keep in cents
+    customer_name: invoice.customer_name || customerDetails.name,
+    client_id: clientId,
+    amount_due: invoice.amount_due || 0,
     currency: invoice.currency?.toLowerCase() || 'usd',
     status: 'open',
     hosted_invoice_url: invoice.hosted_invoice_url,
     invoice_number: invoice.number,
-    description: productName || `Invoice ${invoice.number}`,
+    plan_name: planName,
+    plan_interval: planInterval,
+    product_name: productName,
     next_payment_attempt: invoice.next_payment_attempt 
       ? new Date(invoice.next_payment_attempt * 1000).toISOString() 
       : null,
     period_end: invoice.period_end 
       ? new Date(invoice.period_end * 1000).toISOString() 
       : null,
+    stripe_created_at: invoice.created 
+      ? new Date(invoice.created * 1000).toISOString() 
+      : null,
+    raw_data: invoice as unknown as Record<string, unknown>,
+    updated_at: new Date().toISOString(),
   }, { onConflict: 'stripe_invoice_id' });
 
   if (error) console.error('Error upserting failed invoice:', error);
@@ -500,9 +587,87 @@ async function handleInvoicePaymentFailed(supabase: any, stripe: Stripe, invoice
 }
 
 // ============================================
+// HANDLER: Invoice Created/Updated/Finalized
+// ============================================
+async function handleInvoiceUpsert(supabase: SupabaseClient, stripe: Stripe, invoice: Stripe.Invoice) {
+  console.log(`📄 Processing invoice upsert: ${invoice.id} (${invoice.status})`);
+  
+  const customerDetails = await getCustomerDetails(stripe, invoice.customer ? String(invoice.customer) : null);
+  
+  const clientId = await resolveClientViaUnify(
+    supabase,
+    customerDetails.stripeCustomerId,
+    invoice.customer_email || customerDetails.email,
+    customerDetails.phone,
+    invoice.customer_name || customerDetails.name
+  );
+
+  const { planName, planInterval, productName } = extractPlanInfo(invoice);
+
+  const subscriptionId = invoice.subscription 
+    ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
+    : null;
+
+  const paymentIntentId = invoice.payment_intent
+    ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
+    : null;
+
+  const { error } = await supabase.from('invoices').upsert({
+    stripe_invoice_id: invoice.id,
+    invoice_number: invoice.number,
+    stripe_customer_id: customerDetails.stripeCustomerId,
+    customer_email: (invoice.customer_email || customerDetails.email)?.toLowerCase(),
+    customer_name: invoice.customer_name || customerDetails.name,
+    customer_phone: customerDetails.phone,
+    client_id: clientId,
+    amount_due: invoice.amount_due,
+    amount_paid: invoice.amount_paid || 0,
+    amount_remaining: invoice.amount_remaining,
+    subtotal: invoice.subtotal,
+    total: invoice.total,
+    currency: invoice.currency?.toLowerCase() || 'usd',
+    status: invoice.status,
+    stripe_created_at: invoice.created 
+      ? new Date(invoice.created * 1000).toISOString() 
+      : null,
+    finalized_at: invoice.status_transitions?.finalized_at
+      ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+      : null,
+    automatically_finalizes_at: invoice.automatically_finalizes_at
+      ? new Date(invoice.automatically_finalizes_at * 1000).toISOString()
+      : null,
+    period_end: invoice.period_end 
+      ? new Date(invoice.period_end * 1000).toISOString() 
+      : null,
+    due_date: invoice.due_date
+      ? new Date(invoice.due_date * 1000).toISOString()
+      : null,
+    next_payment_attempt: invoice.next_payment_attempt
+      ? new Date(invoice.next_payment_attempt * 1000).toISOString()
+      : null,
+    hosted_invoice_url: invoice.hosted_invoice_url,
+    pdf_url: invoice.invoice_pdf,
+    subscription_id: subscriptionId,
+    payment_intent_id: paymentIntentId,
+    plan_name: planName,
+    plan_interval: planInterval,
+    product_name: productName,
+    attempt_count: invoice.attempt_count || 0,
+    billing_reason: invoice.billing_reason,
+    collection_method: invoice.collection_method,
+    description: invoice.description,
+    raw_data: invoice as unknown as Record<string, unknown>,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'stripe_invoice_id' });
+
+  if (error) console.error('Error upserting invoice:', error);
+  else console.log(`✅ Invoice upserted: ${invoice.id} (${invoice.status})`);
+}
+
+// ============================================
 // HANDLER: Subscription Update - ENHANCED
 // ============================================
-async function handleSubscriptionUpdate(supabase: any, stripe: Stripe, sub: Stripe.Subscription) {
+async function handleSubscriptionUpdate(supabase: SupabaseClient, stripe: Stripe, sub: Stripe.Subscription) {
   console.log(`📦 Processing subscription update: ${sub.id} (${sub.status})`);
   
   let planName = 'Unknown Plan';
@@ -512,11 +677,10 @@ async function handleSubscriptionUpdate(supabase: any, stripe: Stripe, sub: Stri
   
   const customerDetails = await getCustomerDetails(stripe, sub.customer ? String(sub.customer) : null);
 
-  // Get plan details
   if (sub.items?.data?.[0]?.price) {
     const price = sub.items.data[0].price;
     planId = price.id;
-    amount = price.unit_amount || 0; // Keep in cents
+    amount = price.unit_amount || 0;
     interval = price.recurring?.interval || null;
     
     if (price.product) {
@@ -533,8 +697,6 @@ async function handleSubscriptionUpdate(supabase: any, stripe: Stripe, sub: Stri
     stripe_subscription_id: sub.id,
     stripe_customer_id: sub.customer ? String(sub.customer) : null,
     customer_email: customerDetails.email?.toLowerCase(),
-    customer_name: customerDetails.name,
-    customer_phone: customerDetails.phone,
     status: sub.status,
     plan_name: planName,
     plan_id: planId,
@@ -562,22 +724,12 @@ async function handleSubscriptionUpdate(supabase: any, stripe: Stripe, sub: Stri
 
   if (error) console.error('Error upserting subscription:', error);
   else console.log(`✅ Subscription upserted: ${sub.id} - ${planName}`);
-
-  // Update client
-  if (customerDetails.email) {
-    await upsertClient(supabase, {
-      email: customerDetails.email,
-      name: customerDetails.name,
-      phone: customerDetails.phone,
-      stripeCustomerId: customerDetails.stripeCustomerId,
-    });
-  }
 }
 
 // ============================================
 // HANDLER: Subscription Deleted
 // ============================================
-async function handleSubscriptionDeleted(supabase: any, sub: Stripe.Subscription) {
+async function handleSubscriptionDeleted(supabase: SupabaseClient, sub: Stripe.Subscription) {
   console.log(`🗑️ Processing subscription.deleted: ${sub.id}`);
   
   const { error } = await supabase
@@ -595,7 +747,7 @@ async function handleSubscriptionDeleted(supabase: any, sub: Stripe.Subscription
 // ============================================
 // HANDLER: Refund
 // ============================================
-async function handleRefund(supabase: any, charge: Stripe.Charge) {
+async function handleRefund(supabase: SupabaseClient, charge: Stripe.Charge) {
   console.log(`💸 Processing charge.refunded: ${charge.id}`);
   
   const piId = charge.payment_intent ? String(charge.payment_intent) : null;
@@ -619,21 +771,19 @@ async function handleRefund(supabase: any, charge: Stripe.Charge) {
 // ============================================
 // HANDLER: Dispute (Chargeback)
 // ============================================
-async function handleDispute(supabase: any, dispute: Stripe.Dispute) {
+async function handleDispute(supabase: SupabaseClient, dispute: Stripe.Dispute) {
   console.log(`⚠️ Processing charge.dispute.created: ${dispute.id}`);
   
-  const chargeId = dispute.charge ? String(dispute.charge) : null;
-  
-  // Log dispute
   const { error } = await supabase.from('disputes').upsert({
-    stripe_dispute_id: dispute.id,
-    stripe_charge_id: chargeId,
+    external_dispute_id: dispute.id,
+    charge_id: dispute.charge ? String(dispute.charge) : null,
     amount: dispute.amount,
     currency: dispute.currency?.toLowerCase() || 'usd',
     status: dispute.status,
     reason: dispute.reason,
-    created_at: new Date(dispute.created * 1000).toISOString(),
-  }, { onConflict: 'stripe_dispute_id' });
+    source: 'stripe',
+    created_at_external: new Date(dispute.created * 1000).toISOString(),
+  }, { onConflict: 'external_dispute_id' });
 
   if (error) console.error('Error upserting dispute:', error);
   else console.log(`✅ Dispute logged: ${dispute.id} - ${dispute.reason}`);

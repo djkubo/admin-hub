@@ -713,6 +713,7 @@ export type Database = {
           last_finalization_error: string | null
           lines: Json | null
           next_payment_attempt: string | null
+          paid_at: string | null
           payment_intent_id: string | null
           pdf_url: string | null
           period_end: string | null
@@ -754,6 +755,7 @@ export type Database = {
           last_finalization_error?: string | null
           lines?: Json | null
           next_payment_attempt?: string | null
+          paid_at?: string | null
           payment_intent_id?: string | null
           pdf_url?: string | null
           period_end?: string | null
@@ -795,6 +797,7 @@ export type Database = {
           last_finalization_error?: string | null
           lines?: Json | null
           next_payment_attempt?: string | null
+          paid_at?: string | null
           payment_intent_id?: string | null
           pdf_url?: string | null
           period_end?: string | null

@@ -16,9 +16,9 @@ interface AdminVerifyResult {
 
 interface FetchInvoicesRequest {
   mode?: 'full' | 'range' | 'recent';
-  startDate?: string; // ISO date
-  endDate?: string;   // ISO date
-  cursor?: string;    // Stripe starting_after cursor
+  startDate?: string;
+  endDate?: string;
+  cursor?: string;
   syncRunId?: string;
 }
 
@@ -90,6 +90,12 @@ interface StripeInvoice {
   last_finalization_error: { message: string; code: string } | null;
   finalized_at: number | null;
   automatically_finalizes_at: number | null;
+  status_transitions?: {
+    finalized_at?: number | null;
+    paid_at?: number | null;
+    marked_uncollectible_at?: number | null;
+    voided_at?: number | null;
+  };
   subscription?: {
     id: string;
     status: string;
@@ -104,7 +110,7 @@ interface StripeInvoice {
       }>;
     };
   } | string | null;
-  lines?: { data: StripeLineItem[] };
+  lines?: { data: StripeLineItem[]; has_more?: boolean };
 }
 
 // ============= SECURITY =============
@@ -185,7 +191,42 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
   return { planName, planInterval, productName };
 }
 
-async function resolveClientId(
+// Resolve client via unify_identity RPC
+async function resolveClientViaUnify(
+  supabase: SupabaseClient,
+  stripeCustomerId: string | null,
+  email: string | null,
+  phone: string | null,
+  fullName: string | null
+): Promise<string | null> {
+  if (!stripeCustomerId && !email && !phone) return null;
+
+  try {
+    const { data, error } = await supabase.rpc('unify_identity', {
+      p_source: 'stripe',
+      p_stripe_customer_id: stripeCustomerId,
+      p_email: email?.toLowerCase() || null,
+      p_phone: phone,
+      p_full_name: fullName,
+    });
+
+    if (error) {
+      console.warn('unify_identity error:', error.message);
+      return null;
+    }
+
+    if (data?.success && data?.client_id) {
+      return data.client_id;
+    }
+  } catch (e) {
+    console.warn('unify_identity failed:', e);
+  }
+
+  return null;
+}
+
+// Fallback: simple lookup (for when unify_identity not available)
+async function resolveClientFallback(
   supabase: SupabaseClient,
   stripeCustomerId: string | null,
   email: string | null,
@@ -215,7 +256,7 @@ async function resolveClientId(
     if (data?.id) return data.id;
   }
 
-  // Priority 3: phone (normalized)
+  // Priority 3: phone
   if (phone) {
     const { data } = await supabase
       .from('clients')
@@ -314,6 +355,8 @@ Deno.serve(async (req) => {
       params.set('created[gte]', String(ninetyDaysAgo));
     }
 
+    // Full mode: no date filter, get everything
+
     // Cursor for pagination
     if (cursor) {
       params.set('starting_after', cursor);
@@ -363,8 +406,19 @@ Deno.serve(async (req) => {
       const customerName = invoice.customer_name || customer?.name || null;
       const customerPhone = customer?.phone || null;
 
-      // Resolve client_id
-      const clientId = await resolveClientId(supabase, stripeCustomerId, customerEmail, customerPhone);
+      // Resolve client_id via unify_identity (preferred) or fallback
+      let clientId = await resolveClientViaUnify(
+        supabase, 
+        stripeCustomerId, 
+        customerEmail, 
+        customerPhone,
+        customerName
+      );
+      
+      // Fallback if unify_identity didn't work
+      if (!clientId) {
+        clientId = await resolveClientFallback(supabase, stripeCustomerId, customerEmail, customerPhone);
+      }
 
       // Get subscription ID
       const subscriptionId = invoice.subscription 
@@ -397,6 +451,15 @@ Deno.serve(async (req) => {
           : null,
       })) || null;
 
+      // Extract status transitions
+      const paidAt = invoice.status_transitions?.paid_at
+        ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
+        : (invoice.status === 'paid' ? new Date().toISOString() : null);
+      
+      const finalizedAt = invoice.status_transitions?.finalized_at
+        ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+        : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
+
       const invoiceRecord = {
         stripe_invoice_id: invoice.id,
         invoice_number: invoice.number,
@@ -415,9 +478,8 @@ Deno.serve(async (req) => {
         stripe_created_at: invoice.created 
           ? new Date(invoice.created * 1000).toISOString() 
           : null,
-        finalized_at: invoice.finalized_at 
-          ? new Date(invoice.finalized_at * 1000).toISOString() 
-          : null,
+        finalized_at: finalizedAt,
+        paid_at: paidAt,
         automatically_finalizes_at: invoice.automatically_finalizes_at 
           ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
           : null,
@@ -498,16 +560,9 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
+    
     return new Response(
-      JSON.stringify({ 
-        success: false, 
-        synced: 0,
-        upserted: 0,
-        hasMore: false,
-        nextCursor: null,
-        syncRunId: null,
-        error: errorMessage 
-      }),
+      JSON.stringify({ success: false, error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
