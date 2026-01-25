@@ -233,6 +233,8 @@ Deno.serve(async (req) => {
     let cleanupStale = false;
 
     const now = new Date();
+    // PayPal API rejects future dates - use 5 minutes ago as safe end boundary
+    const safeEndDate = new Date(now.getTime() - 5 * 60 * 1000);
     const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000);
 
     try {
@@ -248,14 +250,19 @@ Deno.serve(async (req) => {
           requestedStart = threeYearsAgo;
         }
         startDate = formatPayPalDate(requestedStart);
-        endDate = formatPayPalDate(new Date(body.endDate));
+        // Ensure end date is never in the future for PayPal
+        let requestedEnd = new Date(body.endDate);
+        if (requestedEnd > safeEndDate) {
+          requestedEnd = safeEndDate;
+        }
+        endDate = formatPayPalDate(requestedEnd);
       } else {
         startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
-        endDate = formatPayPalDate(now);
+        endDate = formatPayPalDate(safeEndDate);
       }
     } catch {
       startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
-      endDate = formatPayPalDate(now);
+      endDate = formatPayPalDate(safeEndDate);
     }
 
     // ============ CLEANUP STALE SYNCS ============
