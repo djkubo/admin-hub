@@ -1,45 +1,61 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// SECURITY: Simple admin key guard
-function verifyAdminKey(req: Request): { valid: boolean; error?: string } {
-  const adminKey = Deno.env.get("ADMIN_API_KEY");
-  if (!adminKey) {
-    return { valid: false, error: "ADMIN_API_KEY not configured" };
+// ============ VERIFY ADMIN ============
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
   }
-  const providedKey = req.headers.get("x-admin-key");
-  if (!providedKey || providedKey !== adminKey) {
-    return { valid: false, error: "Invalid or missing x-admin-key" };
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
   }
-  return { valid: true };
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true, userId: user.id };
 }
 
 interface SyncRequest {
   dry_run?: boolean;
+  cursor?: number;
+  syncRunId?: string;
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const startTime = Date.now();
+
   try {
-    // SECURITY: Verify x-admin-key
-    const authCheck = verifyAdminKey(req);
+    // SECURITY: Verify JWT + is_admin()
+    const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
-      console.error("❌ Auth failed:", authCheck.error);
       return new Response(
-        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ ok: false, error: authCheck.error }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log("✅ Admin key verified");
+    console.log("✅ Admin verified via JWT");
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -48,7 +64,8 @@ serve(async (req) => {
     if (!manychatApiKey) {
       return new Response(
         JSON.stringify({ 
-          success: false,
+          ok: false,
+          status: 'error',
           error: 'MANYCHAT_API_KEY required',
           help: 'Add your ManyChat API key in Settings → Secrets'
         }),
@@ -59,48 +76,57 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
     const body: SyncRequest = await req.json().catch(() => ({}));
     const dryRun = body.dry_run ?? false;
+    const cursor = body.cursor ?? 0;
+    let syncRunId = body.syncRunId;
 
-    console.log(`[sync-manychat] Starting sync, dry_run=${dryRun}`);
+    console.log(`[sync-manychat] Starting sync, dry_run=${dryRun}, cursor=${cursor}`);
 
-    const { data: syncRun, error: syncError } = await supabase
-      .from('sync_runs')
-      .insert({
-        source: 'manychat',
-        status: 'running',
-        dry_run: dryRun,
-        metadata: { method: 'subscriber_search_get' }
-      })
-      .select()
-      .single();
+    // Create or update sync run
+    if (!syncRunId) {
+      const { data: syncRun, error: syncError } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'manychat',
+          status: 'running',
+          dry_run: dryRun,
+          metadata: { method: 'subscriber_search_get' }
+        })
+        .select()
+        .single();
 
-    if (syncError) {
-      console.error('[sync-manychat] Failed to create sync run:', syncError);
-      throw syncError;
+      if (syncError) {
+        console.error('[sync-manychat] Failed to create sync run:', syncError);
+        throw syncError;
+      }
+
+      syncRunId = syncRun.id;
     }
 
-    const syncRunId = syncRun.id;
     let totalFetched = 0;
     let totalInserted = 0;
     let totalUpdated = 0;
     let totalSkipped = 0;
     let totalConflicts = 0;
 
+    // Fetch clients that need ManyChat linking
     const { data: existingClients, error: clientsError } = await supabase
       .from('clients')
       .select('email, phone, manychat_subscriber_id')
       .not('email', 'is', null)
       .is('manychat_subscriber_id', null)
-      .limit(200);
+      .range(cursor, cursor + 99)
+      .limit(100);
 
     if (clientsError) {
       console.error('[sync-manychat] Error fetching clients:', clientsError);
     }
 
     const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
+    const hasMore = emailsToSearch.length >= 100;
     
     console.log(`[sync-manychat] Found ${emailsToSearch.length} clients to search in ManyChat`);
 
-    for (const email of emailsToSearch.slice(0, 100)) {
+    for (const email of emailsToSearch) {
       try {
         const encodedEmail = encodeURIComponent(email);
         const searchResponse = await fetch(
@@ -190,11 +216,13 @@ serve(async (req) => {
       }
     }
 
+    // Update sync run
+    const status = hasMore ? 'continuing' : 'completed';
     await supabase
       .from('sync_runs')
       .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
+        status,
+        completed_at: hasMore ? null : new Date().toISOString(),
         total_fetched: totalFetched,
         total_inserted: totalInserted,
         total_updated: totalUpdated,
@@ -202,20 +230,24 @@ serve(async (req) => {
         total_conflicts: totalConflicts,
         metadata: { 
           method: 'subscriber_search_get',
-          emails_searched: Math.min(emailsToSearch.length, 100)
+          emails_searched: emailsToSearch.length
         }
       })
       .eq('id', syncRunId);
 
-    console.log(`[sync-manychat] Completed: ${totalFetched} found, ${totalInserted} inserted, ${totalUpdated} updated`);
+    console.log(`[sync-manychat] ${status}: ${totalFetched} found, ${totalInserted} inserted, ${totalUpdated} updated`);
 
     return new Response(
       JSON.stringify({
-        success: true,
-        sync_run_id: syncRunId,
-        dry_run: dryRun,
+        ok: true,
+        status,
+        syncRunId,
+        processed: totalFetched,
+        hasMore,
+        nextCursor: hasMore ? (cursor + 100).toString() : null,
+        duration_ms: Date.now() - startTime,
         stats: {
-          emails_searched: Math.min(emailsToSearch.length, 100),
+          emails_searched: emailsToSearch.length,
           total_fetched: totalFetched,
           total_inserted: totalInserted,
           total_updated: totalUpdated,
@@ -223,7 +255,7 @@ serve(async (req) => {
           total_conflicts: totalConflicts
         },
         note: totalFetched === 0 
-          ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients, or use the receive-lead webhook for real-time sync.'
+          ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients.'
           : `Found ${totalFetched} subscribers matching your client emails.`
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -233,9 +265,10 @@ serve(async (req) => {
     console.error('[sync-manychat] Error:', error);
     return new Response(
       JSON.stringify({ 
-        success: false,
+        ok: false,
+        status: 'error',
         error: error.message || 'Unknown error',
-        help: 'For real-time sync, configure ManyChat to send webhooks to your receive-lead endpoint.'
+        duration_ms: Date.now() - startTime
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

@@ -2,12 +2,39 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
 // ============ CONFIGURATION ============
 const CONTACTS_PER_PAGE = 100;
 const STALE_TIMEOUT_MINUTES = 30;
+
+// ============ VERIFY ADMIN ============
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
 
 // ============ PROCESS SINGLE PAGE ============
 async function processSinglePage(
@@ -33,7 +60,6 @@ async function processSinglePage(
   let conflicts = 0;
 
   try {
-    // Build GHL API URL
     const ghlUrl = new URL(`https://services.leadconnectorhq.com/contacts/`);
     ghlUrl.searchParams.set('locationId', ghlLocationId);
     ghlUrl.searchParams.set('limit', CONTACTS_PER_PAGE.toString());
@@ -153,7 +179,6 @@ async function processSinglePage(
       }
     }
 
-    // Determine if more pages
     const hasMore = contacts.length >= CONTACTS_PER_PAGE;
     const nextOffset = offset + contacts.length;
 
@@ -191,14 +216,12 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    // SECURITY: Verify x-admin-key
-    const adminKey = Deno.env.get("ADMIN_API_KEY");
-    const providedKey = req.headers.get("x-admin-key");
-    
-    if (!adminKey || !providedKey || providedKey !== adminKey) {
+    // SECURITY: Verify JWT + is_admin()
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ error: "Forbidden" }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ ok: false, error: authCheck.error }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -209,7 +232,7 @@ Deno.serve(async (req) => {
 
     if (!ghlApiKey || !ghlLocationId) {
       return new Response(
-        JSON.stringify({ error: 'GHL_API_KEY and GHL_LOCATION_ID secrets required' }),
+        JSON.stringify({ ok: false, error: 'GHL_API_KEY and GHL_LOCATION_ID secrets required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -249,7 +272,7 @@ Deno.serve(async (req) => {
         .select('id');
       
       return new Response(
-        JSON.stringify({ success: true, cleaned: staleSyncs?.length || 0 }),
+        JSON.stringify({ ok: true, status: 'cleaned', processed: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -258,7 +281,6 @@ Deno.serve(async (req) => {
     if (!syncRunId) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
       
-      // Mark stale syncs as failed
       await supabase
         .from('sync_runs')
         .update({
@@ -270,7 +292,6 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .lt('started_at', staleThreshold);
 
-      // Check for existing active sync
       const { data: existingRuns } = await supabase
         .from('sync_runs')
         .select('id')
@@ -281,10 +302,10 @@ Deno.serve(async (req) => {
       if (existingRuns && existingRuns.length > 0) {
         return new Response(
           JSON.stringify({ 
-            success: false, 
-            error: 'sync_already_running',
-            message: 'Ya hay un sync de GHL en progreso',
-            existingSyncId: existingRuns[0].id
+            ok: false, 
+            status: 'already_running',
+            error: 'Ya hay un sync de GHL en progreso',
+            syncRunId: existingRuns[0].id
           }),
           { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -306,7 +327,7 @@ Deno.serve(async (req) => {
 
       if (syncError) {
         return new Response(
-          JSON.stringify({ error: 'Failed to create sync record' }),
+          JSON.stringify({ ok: false, error: 'Failed to create sync record' }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -314,7 +335,6 @@ Deno.serve(async (req) => {
       syncRunId = syncRun?.id;
       console.log(`📊 NEW GHL SYNC RUN: ${syncRunId}`);
     } else {
-      // Update activity
       await supabase
         .from('sync_runs')
         .update({ 
@@ -336,7 +356,6 @@ Deno.serve(async (req) => {
       offset
     );
 
-    // Handle errors
     if (pageResult.error) {
       console.error(`❌ GHL sync failed:`, pageResult.error);
       
@@ -351,9 +370,11 @@ Deno.serve(async (req) => {
       
       return new Response(
         JSON.stringify({ 
-          success: false, 
+          ok: false, 
+          status: 'failed',
           error: pageResult.error,
-          syncRunId
+          syncRunId,
+          duration_ms: Date.now() - startTime
         }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -362,10 +383,7 @@ Deno.serve(async (req) => {
     console.log(`✅ GHL page: ${pageResult.contactsFetched} contacts, ${pageResult.inserted} inserted`);
 
     // ============ CHECK IF MORE PAGES ============
-    const hasMore = pageResult.hasMore;
-
-    if (hasMore) {
-      // Update checkpoint - frontend will call again with new offset
+    if (pageResult.hasMore) {
       await supabase
         .from('sync_runs')
         .update({
@@ -384,14 +402,12 @@ Deno.serve(async (req) => {
 
       return new Response(
         JSON.stringify({
-          success: true,
+          ok: true,
           status: 'continuing',
           syncRunId,
-          contactsFetched: pageResult.contactsFetched,
-          inserted: pageResult.inserted,
-          updated: pageResult.updated,
+          processed: pageResult.contactsFetched,
           hasMore: true,
-          nextOffset: pageResult.nextOffset,
+          nextCursor: pageResult.nextOffset.toString(),
           duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -417,16 +433,10 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        success: true,
+        ok: true,
         status: 'completed',
         syncRunId,
-        stats: {
-          total_fetched: pageResult.contactsFetched,
-          total_inserted: pageResult.inserted,
-          total_updated: pageResult.updated,
-          total_skipped: pageResult.skipped,
-          total_conflicts: pageResult.conflicts
-        },
+        processed: pageResult.contactsFetched,
         hasMore: false,
         duration_ms: Date.now() - startTime
       }),
@@ -436,7 +446,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("Fatal error:", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
