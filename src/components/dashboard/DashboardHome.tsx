@@ -123,7 +123,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      // 1. Stripe (with pagination loop and retry logic)
+      // 1. Stripe (with pagination loop and robust retry logic)
       setSyncProgress('Stripe...');
       try {
         let hasMore = true;
@@ -131,14 +131,26 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         let syncRunId: string | null = null;
         let previousTotal = 0;
         let pageAttempts = 0;
-        const maxPageAttempts = 500; // Safety limit for total pages
+        const maxPageAttempts = 1000; // Safety limit for total pages (100k transactions max)
         let consecutiveErrors = 0;
-        const maxConsecutiveErrors = 3;
+        const maxConsecutiveErrors = 5; // Increased tolerance for network issues
+        let lastSuccessTime = Date.now();
+        const staleTimeout = 60000; // 60 seconds without progress = stale
         
         while (hasMore && pageAttempts < maxPageAttempts) {
           pageAttempts++;
           
+          // Check for stale loop (safety valve)
+          if (Date.now() - lastSuccessTime > staleTimeout) {
+            console.error('Stripe sync loop appears stale - no progress in 60s');
+            toast.error('Sync de Stripe detenido por inactividad. Intenta de nuevo.');
+            results.errors++;
+            break;
+          }
+          
           try {
+            console.log(`[Stripe] Page ${pageAttempts}, cursor: ${cursor?.slice(0, 20)}..., total: ${previousTotal}`);
+            
             const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
               'fetch-stripe', 
               { 
@@ -151,8 +163,9 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               }
             );
             
-            // Reset consecutive error count on success
+            // Reset consecutive error count and update last success time
             consecutiveErrors = 0;
+            lastSuccessTime = Date.now();
             
             if (stripeData?.error === 'sync_already_running') {
               toast.warning('Ya hay un sync de Stripe en progreso');
@@ -181,28 +194,38 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             
             if (hasMore) {
               setSyncProgress(`Stripe... ${results.stripe} tx (página ${pageAttempts})`);
+              // Small delay between pages to prevent rate limiting
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
+            
+            console.log(`[Stripe] Page ${pageAttempts} complete: +${thisPageTx} tx, hasMore: ${hasMore}`);
           } catch (pageError) {
             consecutiveErrors++;
-            console.error(`Stripe page ${pageAttempts} error (${consecutiveErrors}/${maxConsecutiveErrors}):`, pageError);
+            const errorMsg = pageError instanceof Error ? pageError.message : String(pageError);
+            console.error(`[Stripe] Page ${pageAttempts} error (${consecutiveErrors}/${maxConsecutiveErrors}):`, errorMsg);
             
             if (consecutiveErrors >= maxConsecutiveErrors) {
-              toast.error(`Stripe sync falló después de ${consecutiveErrors} errores consecutivos`);
+              toast.error(`Stripe sync falló después de ${consecutiveErrors} errores consecutivos en página ${pageAttempts}`);
               hasMore = false;
               results.errors++;
               break;
             }
             
-            // Wait before retry
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+            const backoffMs = Math.min(2000 * Math.pow(2, consecutiveErrors - 1), 32000);
+            console.log(`[Stripe] Retrying in ${backoffMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
           }
         }
         
         if (pageAttempts >= maxPageAttempts) {
-          console.warn('Stripe sync reached max page limit');
+          console.warn('[Stripe] Sync reached max page limit');
+          toast.warning('Stripe sync alcanzó el límite de páginas');
         }
+        
+        console.log(`[Stripe] Sync complete: ${results.stripe} total transactions in ${pageAttempts} pages`);
       } catch (e) {
-        console.error('Stripe sync fatal error:', e);
+        console.error('[Stripe] Sync fatal error:', e);
         results.errors++;
       }
 
