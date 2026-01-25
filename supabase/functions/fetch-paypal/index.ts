@@ -232,10 +232,14 @@ Deno.serve(async (req) => {
     let syncRunId: string | null = null;
     let cleanupStale = false;
 
-    const now = new Date();
-    // PayPal API rejects future dates - use 5 minutes ago as safe end boundary
-    const safeEndDate = new Date(now.getTime() - 5 * 60 * 1000);
-    const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000);
+    // Calculate safe date boundaries BEFORE processing request
+    // PayPal API STRICTLY rejects future dates - must use past timestamp
+    const nowMs = Date.now();
+    // Use 10 minutes buffer to account for clock skew and API processing time
+    const safeEndMs = nowMs - 10 * 60 * 1000;
+    const safeEndDate = new Date(safeEndMs);
+    const threeYearsAgoMs = nowMs - (3 * 365 - 7) * 24 * 60 * 60 * 1000;
+    const threeYearsAgo = new Date(threeYearsAgoMs);
 
     try {
       const body = await req.json();
@@ -244,26 +248,33 @@ Deno.serve(async (req) => {
       page = body.page || 1;
       syncRunId = body.syncRunId || null;
       
-      if (body.startDate && body.endDate) {
+      if (body.startDate) {
         let requestedStart = new Date(body.startDate);
         if (requestedStart < threeYearsAgo) {
           requestedStart = threeYearsAgo;
         }
         startDate = formatPayPalDate(requestedStart);
-        // Ensure end date is never in the future for PayPal
-        let requestedEnd = new Date(body.endDate);
-        if (requestedEnd > safeEndDate) {
-          requestedEnd = safeEndDate;
-        }
-        endDate = formatPayPalDate(requestedEnd);
       } else {
-        startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
+        // Default: 31 days ago
+        startDate = formatPayPalDate(new Date(nowMs - 31 * 24 * 60 * 60 * 1000));
+      }
+      
+      // CRITICAL: Always cap end_date to safe past timestamp
+      // Never trust client-provided endDate - always enforce server-side cap
+      if (body.endDate) {
+        const requestedEnd = new Date(body.endDate);
+        // Always use the earlier of: requested date OR safe end date
+        endDate = formatPayPalDate(requestedEnd < safeEndDate ? requestedEnd : safeEndDate);
+      } else {
         endDate = formatPayPalDate(safeEndDate);
       }
     } catch {
-      startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
+      // Default range if no body: last 31 days
+      startDate = formatPayPalDate(new Date(nowMs - 31 * 24 * 60 * 60 * 1000));
       endDate = formatPayPalDate(safeEndDate);
     }
+
+    console.log(`📅 PayPal date range: ${startDate} → ${endDate}`);
 
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
