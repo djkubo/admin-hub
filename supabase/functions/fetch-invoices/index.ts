@@ -191,15 +191,17 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
   return { planName, planInterval, productName };
 }
 
-// Resolve client via unify_identity RPC
+// Resolve client via unify_identity RPC and enrich client data
 async function resolveClientViaUnify(
   supabase: SupabaseClient,
   stripeCustomerId: string | null,
   email: string | null,
   phone: string | null,
   fullName: string | null
-): Promise<string | null> {
-  if (!stripeCustomerId && !email && !phone) return null;
+): Promise<{ clientId: string | null; shouldEnrich: boolean }> {
+  if (!stripeCustomerId && !email && !phone) {
+    return { clientId: null, shouldEnrich: false };
+  }
 
   try {
     const { data, error } = await supabase.rpc('unify_identity', {
@@ -212,20 +214,88 @@ async function resolveClientViaUnify(
 
     if (error) {
       console.warn('unify_identity error:', error.message);
-      return null;
+      return { clientId: null, shouldEnrich: false };
     }
 
     if (data?.success && data?.client_id) {
-      return data.client_id;
+      // Check if this was a new client or an update that might need enrichment
+      const action = data?.action || 'unknown';
+      const shouldEnrich = action === 'created' || action === 'matched' || action === 'merged';
+      return { clientId: data.client_id, shouldEnrich };
     }
   } catch (e) {
     console.warn('unify_identity failed:', e);
   }
 
-  return null;
+  return { clientId: null, shouldEnrich: false };
 }
 
-// Fallback: simple lookup (for when unify_identity not available)
+// Enrich client data if name or phone are missing
+async function enrichClientIfNeeded(
+  supabase: SupabaseClient,
+  clientId: string,
+  customerName: string | null,
+  customerPhone: string | null,
+  stripeCustomerId: string | null
+): Promise<void> {
+  if (!clientId) return;
+  
+  try {
+    // Fetch current client data
+    const { data: client, error: fetchError } = await supabase
+      .from('clients')
+      .select('full_name, phone_e164, stripe_customer_id')
+      .eq('id', clientId)
+      .single();
+    
+    if (fetchError || !client) return;
+
+    // Build update object only with missing fields
+    const updates: Record<string, unknown> = {};
+    
+    // Enrich full_name if missing and we have it from Stripe
+    if (!client.full_name && customerName) {
+      updates.full_name = customerName;
+    }
+    
+    // Enrich phone_e164 if missing and we have it from Stripe
+    if (!client.phone_e164 && customerPhone) {
+      // Normalize phone to E.164 format
+      let normalizedPhone = customerPhone.replace(/[^\d+]/g, '');
+      if (normalizedPhone && !normalizedPhone.startsWith('+')) {
+        normalizedPhone = '+' + normalizedPhone;
+      }
+      if (normalizedPhone.length >= 10) {
+        updates.phone_e164 = normalizedPhone;
+        updates.phone = customerPhone; // Keep original format too
+      }
+    }
+    
+    // Ensure stripe_customer_id is set
+    if (!client.stripe_customer_id && stripeCustomerId) {
+      updates.stripe_customer_id = stripeCustomerId;
+    }
+    
+    // Only update if there's something to update
+    if (Object.keys(updates).length > 0) {
+      updates.last_sync = new Date().toISOString();
+      
+      const { error: updateError } = await supabase
+        .from('clients')
+        .update(updates)
+        .eq('id', clientId);
+      
+      if (updateError) {
+        console.warn(`Failed to enrich client ${clientId}:`, updateError.message);
+      } else {
+        console.log(`✨ Enriched client ${clientId}:`, Object.keys(updates).join(', '));
+      }
+    }
+  } catch (e) {
+    console.warn('enrichClientIfNeeded failed:', e);
+  }
+}
+
 async function resolveClientFallback(
   supabase: SupabaseClient,
   stripeCustomerId: string | null,
@@ -433,7 +503,7 @@ Deno.serve(async (req) => {
       const customerPhone = customer?.phone || null;
 
       // Resolve client_id via unify_identity (preferred) or fallback
-      let clientId = await resolveClientViaUnify(
+      const unifyResult = await resolveClientViaUnify(
         supabase, 
         stripeCustomerId, 
         customerEmail, 
@@ -441,9 +511,16 @@ Deno.serve(async (req) => {
         customerName
       );
       
+      let clientId = unifyResult.clientId;
+      
       // Fallback if unify_identity didn't work
       if (!clientId) {
         clientId = await resolveClientFallback(supabase, stripeCustomerId, customerEmail, customerPhone);
+      }
+      
+      // Enrich client data if we have new info from Stripe
+      if (clientId && (unifyResult.shouldEnrich || !unifyResult.clientId)) {
+        await enrichClientIfNeeded(supabase, clientId, customerName, customerPhone, stripeCustomerId);
       }
 
       // Get subscription ID
