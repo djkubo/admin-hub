@@ -181,16 +181,7 @@ export function useSendMessage() {
 
       if (msgError) throw msgError;
 
-      // Then send via appropriate channel
-      const { data: settings } = await supabase
-        .from("system_settings")
-        .select("value")
-        .eq("key", "admin_api_key")
-        .single();
-
-      const adminKey = settings?.value;
-      if (!adminKey) throw new Error("Admin API key not configured");
-
+      // Send via edge function using JWT authentication (no x-admin-key needed)
       const functionName = "send-sms"; // Single function handles both SMS and WhatsApp
       const payload = channel === "whatsapp" 
         ? { to: `whatsapp:${to}`, message: body, client_id: clientId }
@@ -198,7 +189,6 @@ export function useSendMessage() {
 
       const { error: sendError } = await supabase.functions.invoke(functionName, {
         body: payload,
-        headers: { "x-admin-key": adminKey },
       });
 
       if (sendError) {
