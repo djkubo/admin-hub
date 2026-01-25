@@ -693,8 +693,10 @@ export type Database = {
           amount_paid: number | null
           amount_remaining: number | null
           attempt_count: number | null
+          automatically_finalizes_at: string | null
           billing_reason: string | null
           charge_id: string | null
+          client_id: string | null
           collection_method: string | null
           created_at: string | null
           currency: string | null
@@ -704,6 +706,7 @@ export type Database = {
           default_payment_method: string | null
           description: string | null
           due_date: string | null
+          finalized_at: string | null
           hosted_invoice_url: string | null
           id: string
           invoice_number: string | null
@@ -718,6 +721,7 @@ export type Database = {
           product_name: string | null
           raw_data: Json | null
           status: string
+          stripe_created_at: string | null
           stripe_customer_id: string | null
           stripe_invoice_id: string
           subscription_id: string | null
@@ -730,8 +734,10 @@ export type Database = {
           amount_paid?: number | null
           amount_remaining?: number | null
           attempt_count?: number | null
+          automatically_finalizes_at?: string | null
           billing_reason?: string | null
           charge_id?: string | null
+          client_id?: string | null
           collection_method?: string | null
           created_at?: string | null
           currency?: string | null
@@ -741,6 +747,7 @@ export type Database = {
           default_payment_method?: string | null
           description?: string | null
           due_date?: string | null
+          finalized_at?: string | null
           hosted_invoice_url?: string | null
           id?: string
           invoice_number?: string | null
@@ -755,6 +762,7 @@ export type Database = {
           product_name?: string | null
           raw_data?: Json | null
           status: string
+          stripe_created_at?: string | null
           stripe_customer_id?: string | null
           stripe_invoice_id: string
           subscription_id?: string | null
@@ -767,8 +775,10 @@ export type Database = {
           amount_paid?: number | null
           amount_remaining?: number | null
           attempt_count?: number | null
+          automatically_finalizes_at?: string | null
           billing_reason?: string | null
           charge_id?: string | null
+          client_id?: string | null
           collection_method?: string | null
           created_at?: string | null
           currency?: string | null
@@ -778,6 +788,7 @@ export type Database = {
           default_payment_method?: string | null
           description?: string | null
           due_date?: string | null
+          finalized_at?: string | null
           hosted_invoice_url?: string | null
           id?: string
           invoice_number?: string | null
@@ -792,6 +803,7 @@ export type Database = {
           product_name?: string | null
           raw_data?: Json | null
           status?: string
+          stripe_created_at?: string | null
           stripe_customer_id?: string | null
           stripe_invoice_id?: string
           subscription_id?: string | null
@@ -799,7 +811,15 @@ export type Database = {
           total?: number | null
           updated_at?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "invoices_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       knowledge_base: {
         Row: {
