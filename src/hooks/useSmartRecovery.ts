@@ -28,25 +28,6 @@ export interface RecoverySkippedItem {
   subscription_status?: string;
 }
 
-export interface RecoverySummary {
-  total_invoices: number;
-  processed_invoices: number;
-  total_recovered: number;
-  total_failed_amount: number;
-  total_skipped_amount: number;
-  currency: string;
-  is_partial: boolean;
-  remaining_invoices: number;
-  next_starting_after?: string;
-}
-
-export interface RecoveryResult {
-  succeeded: RecoverySuccessItem[];
-  failed: RecoveryFailedItem[];
-  skipped: RecoverySkippedItem[];
-  summary: RecoverySummary;
-}
-
 export interface AggregatedResult {
   succeeded: RecoverySuccessItem[];
   failed: RecoveryFailedItem[];
@@ -59,6 +40,27 @@ export interface AggregatedResult {
     currency: string;
     batches_processed: number;
   };
+}
+
+// Standard response from backend
+interface StandardRecoveryResponse {
+  ok: boolean;
+  status: string;
+  syncRunId: string;
+  processed: number;
+  hasMore: boolean;
+  nextCursor?: string;
+  duration_ms: number;
+  recovered_amount: number;
+  failed_amount: number;
+  skipped_amount: number;
+  succeeded_count: number;
+  failed_count: number;
+  skipped_count: number;
+  error?: string;
+  succeeded: RecoverySuccessItem[];
+  failed: RecoveryFailedItem[];
+  skipped: RecoverySkippedItem[];
 }
 
 export type HoursLookback = 24 | 168 | 360 | 720 | 1440;
@@ -74,19 +76,13 @@ export const RECOVERY_RANGES: { hours: HoursLookback; label: string }[] = [
 // Storage keys for persistence
 const STORAGE_KEY_RESULT = "smart_recovery_result";
 const STORAGE_KEY_STATE = "smart_recovery_state";
-const STORAGE_KEY_BACKGROUND = "smart_recovery_background";
 
 interface PersistedState {
   hours_lookback: HoursLookback;
-  starting_after?: string;
+  sync_run_id: string;
+  cursor?: string;
   aggregated: AggregatedResult;
   timestamp: number;
-}
-
-interface BackgroundState {
-  sync_run_id: string;
-  hours_lookback: HoursLookback;
-  started_at: string;
 }
 
 function saveState(state: PersistedState) {
@@ -102,7 +98,8 @@ function loadState(): PersistedState | null {
     const raw = localStorage.getItem(STORAGE_KEY_STATE);
     if (!raw) return null;
     const state = JSON.parse(raw) as PersistedState;
-    if (Date.now() - state.timestamp > 60 * 60 * 1000) {
+    // Expire after 2 hours
+    if (Date.now() - state.timestamp > 2 * 60 * 60 * 1000) {
       localStorage.removeItem(STORAGE_KEY_STATE);
       return null;
     }
@@ -129,6 +126,7 @@ function loadResult(): AggregatedResult | null {
     const raw = localStorage.getItem(STORAGE_KEY_RESULT);
     if (!raw) return null;
     const { result, timestamp } = JSON.parse(raw);
+    // Expire after 24 hours
     if (Date.now() - timestamp > 24 * 60 * 60 * 1000) {
       localStorage.removeItem(STORAGE_KEY_RESULT);
       return null;
@@ -139,214 +137,37 @@ function loadResult(): AggregatedResult | null {
   }
 }
 
-function clearResult() {
+function clearResultStorage() {
   localStorage.removeItem(STORAGE_KEY_RESULT);
-}
-
-function saveBackgroundState(state: BackgroundState) {
-  try {
-    localStorage.setItem(STORAGE_KEY_BACKGROUND, JSON.stringify(state));
-  } catch (e) {
-    console.warn("Failed to save background state:", e);
-  }
-}
-
-function loadBackgroundState(): BackgroundState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_BACKGROUND);
-    if (!raw) return null;
-    const state = JSON.parse(raw) as BackgroundState;
-    const startedAt = new Date(state.started_at).getTime();
-    if (Date.now() - startedAt > 2 * 60 * 60 * 1000) {
-      localStorage.removeItem(STORAGE_KEY_BACKGROUND);
-      return null;
-    }
-    return state;
-  } catch {
-    return null;
-  }
-}
-
-function clearBackgroundState() {
-  localStorage.removeItem(STORAGE_KEY_BACKGROUND);
 }
 
 export function useSmartRecovery() {
   const [isRunning, setIsRunning] = useState(false);
-  const [isBackgroundRunning, setIsBackgroundRunning] = useState(false);
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [selectedRange, setSelectedRange] = useState<HoursLookback | null>(null);
   const [progress, setProgress] = useState<{ batch: number; message: string } | null>(null);
   const [hasPendingResume, setHasPendingResume] = useState(false);
-  const [backgroundSyncId, setBackgroundSyncId] = useState<string | null>(null);
+  const [currentSyncId, setCurrentSyncId] = useState<string | null>(null);
   const abortRef = useRef(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
-  const startPolling = useCallback((syncRunId: string) => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-    }
-    
-    const poll = async () => {
-      try {
-        const { data: syncRun, error } = await supabase
-          .from("sync_runs")
-          .select("*")
-          .eq("id", syncRunId)
-          .single();
-        
-        if (error || !syncRun) {
-          console.error("Error polling sync run:", error);
-          return;
-        }
-        
-        const checkpoint = syncRun.checkpoint as Record<string, unknown> | null;
-        const metadata = syncRun.metadata as Record<string, unknown> | null;
-        
-        // Use checkpoint for real-time progress (updated per-invoice), fallback to metadata
-        const progressData = checkpoint || metadata;
-        
-        if (progressData) {
-          const processed = (progressData.processed as number) || 0;
-          const recoveredAmt = (progressData.recovered_amount as number) || (progressData.recovered as number) || 0;
-          const failedCount = (progressData.failed_count as number) || 0;
-          const succeededCount = (progressData.succeeded_count as number) || 0;
-          
-          setProgress({
-            batch: processed,
-            message: `Procesando... ${processed} facturas (✅ ${succeededCount} | ❌ ${failedCount}) - $${recoveredAmt.toFixed(2)} recuperados`,
-          });
-        }
-        
-        if (syncRun.status === "completed" || syncRun.status === "partial" || syncRun.status === "failed") {
-          if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            pollingRef.current = null;
-          }
-          setIsBackgroundRunning(false);
-          setIsRunning(false);
-          clearBackgroundState();
-          
-          if (syncRun.status === "failed") {
-            toast({
-              title: "Error en Smart Recovery",
-              description: syncRun.error_message || "Error desconocido en proceso de fondo",
-              variant: "destructive",
-            });
-            setProgress(null);
-            setBackgroundSyncId(null);
-            return;
-          }
-          
-          if (metadata) {
-            const aggregated: AggregatedResult = {
-              succeeded: (metadata.succeeded as RecoverySuccessItem[]) || [],
-              failed: (metadata.failed as RecoveryFailedItem[]) || [],
-              skipped: (metadata.skipped as RecoverySkippedItem[]) || [],
-              summary: {
-                total_invoices: syncRun.total_fetched || 0,
-                total_recovered: ((metadata.recovered_amount as number) || 0) * 100,
-                total_failed_amount: ((metadata.failed_amount as number) || 0) * 100,
-                total_skipped_amount: ((metadata.skipped_amount as number) || 0) * 100,
-                currency: "usd",
-                batches_processed: 1,
-              },
-            };
-            
-            setResult(aggregated);
-            saveResult(aggregated);
-            
-            toast({
-              title: syncRun.status === "partial" ? "Smart Recovery Parcial" : "Smart Recovery Completado",
-              description: `Recuperados: $${((metadata.recovered_amount as number) || 0).toFixed(2)}`,
-            });
-          }
-          
-          setProgress(null);
-        }
-      } catch (err) {
-        console.error("Polling error:", err);
-      }
-    };
-    
-    poll();
-    pollingRef.current = setInterval(poll, 3000);
-  }, [toast]);
-
-  // Load persisted result and check for background process on mount
+  // Load persisted result on mount
   useEffect(() => {
     const savedResult = loadResult();
     if (savedResult) {
       setResult(savedResult);
-    } else {
-      // If no saved result, try to load from DB
-      const loadLatestCompletedSync = async () => {
-        try {
-          const { data: latestSync } = await supabase
-            .from("sync_runs")
-            .select("*")
-            .eq("source", "smart_recovery")
-            .in("status", ["completed", "partial"])
-            .order("completed_at", { ascending: false })
-            .limit(1)
-            .single();
-
-          if (latestSync?.metadata) {
-            const metadata = latestSync.metadata as Record<string, unknown>;
-            const completedAt = new Date(latestSync.completed_at as string);
-            const hoursSinceCompletion = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60);
-            
-            // Only load if completed in the last 24 hours
-            if (hoursSinceCompletion < 24 && metadata.succeeded !== undefined) {
-              const aggregated: AggregatedResult = {
-                succeeded: (metadata.succeeded as RecoverySuccessItem[]) || [],
-                failed: (metadata.failed as RecoveryFailedItem[]) || [],
-                skipped: (metadata.skipped as RecoverySkippedItem[]) || [],
-                summary: {
-                  total_invoices: latestSync.total_fetched || 0,
-                  total_recovered: ((metadata.recovered_amount as number) || 0) * 100,
-                  total_failed_amount: ((metadata.failed_amount as number) || 0) * 100,
-                  total_skipped_amount: ((metadata.skipped_amount as number) || 0) * 100,
-                  currency: "usd",
-                  batches_processed: 1,
-                },
-              };
-              setResult(aggregated);
-              saveResult(aggregated);
-              console.log("Loaded latest sync result from DB:", latestSync.id);
-            }
-          }
-        } catch (err) {
-          console.log("No recent sync results to load");
-        }
-      };
-      loadLatestCompletedSync();
     }
     
     const pendingState = loadState();
     if (pendingState) {
       setHasPendingResume(true);
       setSelectedRange(pendingState.hours_lookback);
+      setCurrentSyncId(pendingState.sync_run_id);
       if (pendingState.aggregated.summary.batches_processed > 0) {
         setResult(pendingState.aggregated);
       }
     }
-    
-    const bgState = loadBackgroundState();
-    if (bgState) {
-      setBackgroundSyncId(bgState.sync_run_id);
-      setSelectedRange(bgState.hours_lookback);
-      setIsBackgroundRunning(true);
-      startPolling(bgState.sync_run_id);
-    }
-    
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
-    };
-  }, [startPolling]);
+  }, []);
 
   const createEmptyAggregated = (): AggregatedResult => ({
     succeeded: [],
@@ -362,123 +183,6 @@ export function useSmartRecovery() {
     },
   });
 
-  // Calculate hours to exclude based on selected range
-  // e.g., 15d (360h) should exclude runs from last 7d (168h), 30d should exclude 15d, etc.
-  const getExcludeRecentHours = (hours: HoursLookback): number => {
-    const rangeMap: Record<HoursLookback, number> = {
-      24: 0,      // 1d: no exclusion
-      168: 24,    // 7d: exclude last 24h runs
-      360: 168,   // 15d: exclude last 7d runs
-      720: 360,   // 30d: exclude last 15d runs  
-      1440: 720,  // 60d: exclude last 30d runs
-    };
-    return rangeMap[hours] || 0;
-  };
-
-  const runRecoveryBackground = useCallback(async (hours_lookback: HoursLookback) => {
-    setIsRunning(true);
-    setIsBackgroundRunning(true);
-    setSelectedRange(hours_lookback);
-    
-    const excludeHours = getExcludeRecentHours(hours_lookback);
-    const excludeMsg = excludeHours > 0 ? ` (omitiendo facturas ya procesadas en ${excludeHours}h)` : "";
-    setProgress({ batch: 0, message: `Iniciando Smart Recovery en segundo plano...${excludeMsg}` });
-
-    const maxRetries = 3;
-    let lastError: Error | null = null;
-
-    try {
-      // Preflight to warm up the function
-      try {
-        await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`, {
-          method: 'OPTIONS',
-        });
-      } catch {
-        // Ignore preflight errors
-      }
-
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-          const response = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-                'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-              },
-              body: JSON.stringify({ 
-                hours_lookback, 
-                background: true,
-                exclude_recent_hours: excludeHours,
-              }),
-              signal: controller.signal,
-            }
-          );
-
-          clearTimeout(timeoutId);
-
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.error || `HTTP ${response.status}`);
-          }
-
-          const data = await response.json();
-          const syncRunId = data?.sync_run_id;
-          
-          if (!syncRunId) {
-            throw new Error("No sync_run_id received from background process");
-          }
-
-          setBackgroundSyncId(syncRunId);
-          saveBackgroundState({
-            sync_run_id: syncRunId,
-            hours_lookback,
-            started_at: new Date().toISOString(),
-          });
-
-          const toastMsg = excludeHours > 0 
-            ? `Omitirá facturas ya procesadas en las últimas ${excludeHours}h.`
-            : "El proceso continúa en segundo plano.";
-          toast({
-            title: "Smart Recovery Iniciado",
-            description: toastMsg,
-          });
-
-          setProgress({ batch: 0, message: "Proceso iniciado. Esperando actualizaciones..." });
-          startPolling(syncRunId);
-          return; // Success, exit the function
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
-          console.log(`Background recovery attempt ${attempt}/${maxRetries} failed:`, lastError.message);
-          
-          if (attempt < maxRetries) {
-            setProgress({ batch: 0, message: `Reintentando conexión... (${attempt}/${maxRetries})` });
-            await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
-          }
-        }
-      }
-
-      // All retries failed
-      throw lastError || new Error("Failed after all retries");
-    } catch (error) {
-      console.error("Background recovery error:", error);
-      setIsRunning(false);
-      setIsBackgroundRunning(false);
-      setProgress(null);
-      
-      toast({
-        title: "Error al iniciar Smart Recovery",
-        description: error instanceof Error ? error.message : "Error desconocido",
-        variant: "destructive",
-      });
-    }
-  }, [toast, startPolling]);
-
   const runRecovery = useCallback(async (hours_lookback: HoursLookback, resume = false) => {
     setIsRunning(true);
     setSelectedRange(hours_lookback);
@@ -486,16 +190,20 @@ export function useSmartRecovery() {
     abortRef.current = false;
 
     let aggregated: AggregatedResult;
-    let starting_after: string | undefined;
+    let syncRunId: string | undefined;
+    let cursor: string | undefined;
     let batchNum = 0;
 
+    // Resume from saved state if applicable
     if (resume) {
       const pendingState = loadState();
       if (pendingState && pendingState.hours_lookback === hours_lookback) {
         aggregated = pendingState.aggregated;
-        starting_after = pendingState.starting_after;
+        syncRunId = pendingState.sync_run_id;
+        cursor = pendingState.cursor;
         batchNum = pendingState.aggregated.summary.batches_processed;
         setResult(aggregated);
+        setCurrentSyncId(syncRunId);
         setProgress({ batch: batchNum, message: `Reanudando desde lote ${batchNum + 1}...` });
         toast({
           title: "Reanudando Smart Recovery",
@@ -514,62 +222,85 @@ export function useSmartRecovery() {
     setProgress({ batch: batchNum, message: resume ? `Reanudando...` : "Iniciando Smart Recovery..." });
 
     let hasMore = true;
+    const MAX_BATCHES = 500; // Safety limit
 
     try {
-      while (hasMore && !abortRef.current) {
+      while (hasMore && !abortRef.current && batchNum < MAX_BATCHES) {
         batchNum++;
         setProgress({ 
           batch: batchNum, 
-          message: `Procesando lote ${batchNum}... (${aggregated.succeeded.length} recuperados)` 
+          message: `Procesando lote ${batchNum}... (✅ ${aggregated.succeeded.length} | ❌ ${aggregated.failed.length})` 
         });
 
-        const { data, error } = await supabase.functions.invoke("recover-revenue", {
-          body: { hours_lookback, starting_after },
+        // Call backend with pagination
+        const { data, error } = await supabase.functions.invoke<StandardRecoveryResponse>("recover-revenue", {
+          body: { 
+            hours_lookback, 
+            cursor,
+            sync_run_id: syncRunId,
+          },
         });
         
         if (error) {
           throw new Error(error.message || "Error calling recover-revenue");
         }
-        const batchResult = data as RecoveryResult;
+        
+        if (!data?.ok) {
+          throw new Error(data?.error || "Unknown backend error");
+        }
 
-        aggregated.succeeded.push(...batchResult.succeeded);
-        aggregated.failed.push(...batchResult.failed);
-        aggregated.skipped.push(...batchResult.skipped);
-        aggregated.summary.total_invoices += batchResult.summary.processed_invoices;
-        aggregated.summary.total_recovered += batchResult.summary.total_recovered;
-        aggregated.summary.total_failed_amount += batchResult.summary.total_failed_amount;
-        aggregated.summary.total_skipped_amount += batchResult.summary.total_skipped_amount;
+        // First response gives us the sync_run_id
+        if (!syncRunId && data.syncRunId) {
+          syncRunId = data.syncRunId;
+          setCurrentSyncId(syncRunId);
+        }
+
+        // Aggregate batch results
+        aggregated.succeeded.push(...data.succeeded);
+        aggregated.failed.push(...data.failed);
+        aggregated.skipped.push(...data.skipped);
+        aggregated.summary.total_invoices += data.processed;
+        aggregated.summary.total_recovered = data.recovered_amount * 100; // Convert back to cents for display
+        aggregated.summary.total_failed_amount = data.failed_amount * 100;
+        aggregated.summary.total_skipped_amount = data.skipped_amount * 100;
         aggregated.summary.batches_processed = batchNum;
 
         setResult({ ...aggregated });
 
-        if (batchResult.summary.is_partial && batchResult.summary.next_starting_after) {
-          starting_after = batchResult.summary.next_starting_after;
-          hasMore = true;
-          
+        // Check if more to process
+        hasMore = data.hasMore;
+        cursor = data.nextCursor;
+
+        // Save state for resume capability
+        if (hasMore && syncRunId) {
           saveState({
             hours_lookback,
-            starting_after,
+            sync_run_id: syncRunId,
+            cursor,
             aggregated: { ...aggregated },
             timestamp: Date.now(),
           });
-          
-          await new Promise(r => setTimeout(r, 1000));
-        } else {
-          hasMore = false;
+        }
+
+        // Small delay between batches to be nice to Stripe API
+        if (hasMore) {
+          await new Promise(r => setTimeout(r, 500));
         }
       }
 
-      const { summary } = aggregated;
-      
+      // Completed successfully
       clearState();
       saveResult(aggregated);
+
+      const { summary } = aggregated;
       
       if (abortRef.current) {
-        if (hasMore) {
+        // User cancelled - save state for resume
+        if (hasMore && syncRunId) {
           saveState({
             hours_lookback,
-            starting_after,
+            sync_run_id: syncRunId,
+            cursor,
             aggregated: { ...aggregated },
             timestamp: Date.now(),
           });
@@ -591,10 +322,12 @@ export function useSmartRecovery() {
       console.error("Smart Recovery error:", error);
       const errMsg = error instanceof Error ? error.message : "Error desconocido";
       
-      if (aggregated.summary.batches_processed > 0) {
+      // Save state for resume if we made progress
+      if (aggregated.summary.batches_processed > 0 && syncRunId) {
         saveState({
           hours_lookback,
-          starting_after,
+          sync_run_id: syncRunId,
+          cursor,
           aggregated: { ...aggregated },
           timestamp: Date.now(),
         });
@@ -630,23 +363,18 @@ export function useSmartRecovery() {
 
   const cancelRecovery = useCallback(() => {
     abortRef.current = true;
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-    setIsBackgroundRunning(false);
   }, []);
 
   const dismissPendingResume = useCallback(() => {
     clearState();
     setHasPendingResume(false);
+    setCurrentSyncId(null);
   }, []);
 
   const exportToCSV = useCallback(() => {
     if (!result) return;
 
     const rows: string[] = [];
-    
     rows.push("Tipo,Invoice ID,Email,Monto,Moneda,Detalle");
 
     result.succeeded.forEach((item) => {
@@ -678,30 +406,29 @@ export function useSmartRecovery() {
     });
   }, [result, toast]);
 
-  const clearResults = useCallback(() => {
+  const clearResult = useCallback(() => {
     setResult(null);
     setSelectedRange(null);
     clearState();
-    clearResult();
-    clearBackgroundState();
+    clearResultStorage();
     setHasPendingResume(false);
-    setBackgroundSyncId(null);
+    setCurrentSyncId(null);
   }, []);
 
   return {
     isRunning,
-    isBackgroundRunning,
+    isBackgroundRunning: false, // Deprecated - now uses foreground pagination
     result,
     selectedRange,
     progress,
     hasPendingResume,
-    backgroundSyncId,
+    currentSyncId,
     runRecovery,
-    runRecoveryBackground,
+    runRecoveryBackground: runRecovery, // Same as runRecovery now
     resumeRecovery,
     cancelRecovery,
     dismissPendingResume,
     exportToCSV,
-    clearResult: clearResults,
+    clearResult,
   };
 }
