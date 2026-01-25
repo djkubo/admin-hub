@@ -587,14 +587,33 @@ Deno.serve(async (req) => {
       syncRunId = syncRun?.id;
       console.log(`📊 NEW STRIPE SYNC RUN: ${syncRunId}`);
     } else {
+      // Fetch existing run to get accumulated totals if not provided
+      const { data: existingRun } = await supabase
+        .from('sync_runs')
+        .select('total_fetched, checkpoint')
+        .eq('id', syncRunId)
+        .single();
+      
+      // Use existing totals if previousTotal wasn't explicitly passed
+      if (previousTotal === 0 && existingRun?.total_fetched) {
+        previousTotal = existingRun.total_fetched;
+        console.log(`📊 Recovered previousTotal from DB: ${previousTotal}`);
+      }
+      
+      // If cursor wasn't provided, try to recover from checkpoint
+      if (!cursor && existingRun?.checkpoint?.cursor) {
+        cursor = existingRun.checkpoint.cursor;
+        console.log(`📊 Recovered cursor from checkpoint: ${cursor}`);
+      }
+      
       await supabase
         .from('sync_runs')
         .update({ 
           status: 'running',
-          checkpoint: { cursor, lastActivity: new Date().toISOString() }
+          checkpoint: { cursor, lastActivity: new Date().toISOString(), runningTotal: previousTotal }
         })
         .eq('id', syncRunId);
-      console.log(`📊 RESUMING STRIPE SYNC: ${syncRunId}`);
+      console.log(`📊 RESUMING STRIPE SYNC: ${syncRunId} (previousTotal: ${previousTotal})`);
     }
 
     // ============ PROCESS PAGE ============

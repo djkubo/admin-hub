@@ -123,56 +123,86 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      // 1. Stripe (with pagination loop)
+      // 1. Stripe (with pagination loop and retry logic)
       setSyncProgress('Stripe...');
       try {
         let hasMore = true;
         let cursor: string | null = null;
         let syncRunId: string | null = null;
         let previousTotal = 0;
-        let attempts = 0;
-        const maxAttempts = 500; // Safety limit
+        let pageAttempts = 0;
+        const maxPageAttempts = 500; // Safety limit for total pages
+        let consecutiveErrors = 0;
+        const maxConsecutiveErrors = 3;
         
-        while (hasMore && attempts < maxAttempts) {
-          attempts++;
-          const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-            'fetch-stripe', 
-            { 
-              fetchAll, 
-              startDate: startDate.toISOString(), 
-              endDate: endDate.toISOString(),
-              cursor,
-              syncRunId,
-              previousTotal
+        while (hasMore && pageAttempts < maxPageAttempts) {
+          pageAttempts++;
+          
+          try {
+            const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+              'fetch-stripe', 
+              { 
+                fetchAll, 
+                startDate: startDate.toISOString(), 
+                endDate: endDate.toISOString(),
+                cursor,
+                syncRunId,
+                previousTotal
+              }
+            );
+            
+            // Reset consecutive error count on success
+            consecutiveErrors = 0;
+            
+            if (stripeData?.error === 'sync_already_running') {
+              toast.warning('Ya hay un sync de Stripe en progreso');
+              hasMore = false;
+              break;
             }
-          );
-          
-          if (stripeData?.error === 'sync_already_running') {
-            toast.warning('Ya hay un sync de Stripe en progreso');
-            hasMore = false;
-            break;
-          }
-          
-          // Use total_so_far if available, otherwise accumulate
-          const thisPageTx = stripeData?.synced_transactions ?? 0;
-          if (stripeData?.total_so_far) {
-            results.stripe = stripeData.total_so_far;
-            previousTotal = stripeData.total_so_far;
-          } else {
-            results.stripe += thisPageTx;
-            previousTotal = results.stripe;
-          }
-          
-          syncRunId = stripeData?.syncRunId ?? syncRunId;
-          cursor = stripeData?.nextCursor ?? null;
-          hasMore = stripeData?.hasMore === true && cursor !== null;
-          
-          if (hasMore) {
-            setSyncProgress(`Stripe... ${results.stripe} tx`);
+            
+            if (!stripeData?.success && stripeData?.error) {
+              console.error('Stripe sync page error:', stripeData.error);
+              throw new Error(stripeData.error);
+            }
+            
+            // Use total_so_far if available, otherwise accumulate
+            const thisPageTx = stripeData?.synced_transactions ?? 0;
+            if (stripeData?.total_so_far) {
+              results.stripe = stripeData.total_so_far;
+              previousTotal = stripeData.total_so_far;
+            } else {
+              results.stripe += thisPageTx;
+              previousTotal = results.stripe;
+            }
+            
+            syncRunId = stripeData?.syncRunId ?? syncRunId;
+            cursor = stripeData?.nextCursor ?? null;
+            hasMore = stripeData?.hasMore === true && cursor !== null;
+            
+            if (hasMore) {
+              setSyncProgress(`Stripe... ${results.stripe} tx (página ${pageAttempts})`);
+            }
+          } catch (pageError) {
+            consecutiveErrors++;
+            console.error(`Stripe page ${pageAttempts} error (${consecutiveErrors}/${maxConsecutiveErrors}):`, pageError);
+            
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+              toast.error(`Stripe sync falló después de ${consecutiveErrors} errores consecutivos`);
+              hasMore = false;
+              results.errors++;
+              break;
+            }
+            
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 2000));
           }
         }
+        
+        if (pageAttempts >= maxPageAttempts) {
+          console.warn('Stripe sync reached max page limit');
+        }
       } catch (e) {
-        console.error('Stripe sync error:', e);
+        console.error('Stripe sync fatal error:', e);
         results.errors++;
       }
 
