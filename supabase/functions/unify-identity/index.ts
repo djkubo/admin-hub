@@ -1,11 +1,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 /**
- * UNIFY-IDENTITY WEBHOOK ENDPOINT
- * ================================
+ * UNIFY-IDENTITY ENDPOINT
+ * ========================
  * Cross-Platform Identity Unification for ManyChat & GoHighLevel
  * 
- * Security: Validates X-ADMIN-KEY header
+ * Security: JWT + is_admin() for panel calls, X-ADMIN-KEY for external webhooks
  * Matching: Email as master key, then platform IDs, then phone
  * Priority: Existing core data preserved, NEW tracking data overwrites
  */
@@ -17,52 +17,71 @@ const corsHeaders = {
 
 // ============ TYPES ============
 interface UnifyPayload {
-  // Core identity
   email?: string;
   phone?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
-  
-  // Platform IDs
   ghl_contact_id?: string;
   manychat_subscriber_id?: string;
-  manychat_user_id?: string;  // Alias
-  subscriber_id?: string;     // Alias
+  manychat_user_id?: string;
+  subscriber_id?: string;
   stripe_customer_id?: string;
   paypal_customer_id?: string;
-  
-  // Marketing tracking
-  fbp?: string;               // Facebook Browser ID
-  fbc?: string;               // Facebook Click ID
-  fbclid?: string;            // Facebook Click ID (URL param)
-  gclid?: string;             // Google Click ID
-  
-  // UTM parameters
+  fbp?: string;
+  fbc?: string;
+  fbclid?: string;
+  gclid?: string;
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
   utm_content?: string;
   utm_term?: string;
-  
-  // Opt-ins
   wa_opt_in?: boolean;
   sms_opt_in?: boolean;
   email_opt_in?: boolean;
-  
-  // Tags
   tags?: string[];
-  
-  // Custom data
   custom_fields?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
-  
-  // Source identifier
   source?: string;
 }
 
 interface BatchPayload {
   contacts: UnifyPayload[];
+}
+
+// ============ VERIFY ADMIN (JWT) ============
+async function verifyAdminJWT(req: Request): Promise<{ valid: boolean; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true };
+}
+
+// ============ VERIFY ADMIN KEY (for webhooks) ============
+function verifyAdminKey(req: Request): boolean {
+  const adminKey = Deno.env.get('ADMIN_API_KEY');
+  const providedKey = req.headers.get('x-admin-key');
+  return !!(adminKey && providedKey && providedKey === adminKey);
 }
 
 // ============ UTILITIES ============
@@ -85,16 +104,12 @@ function isValidEmail(email: string | null): boolean {
 function buildTrackingData(payload: UnifyPayload): Record<string, unknown> {
   const tracking: Record<string, unknown> = {};
   
-  // Facebook tracking
   if (payload.fbp) tracking.fbp = sanitizeString(payload.fbp);
   if (payload.fbc || payload.fbclid) {
     tracking.fbc = sanitizeString(payload.fbc) || sanitizeString(payload.fbclid);
   }
-  
-  // Google tracking
   if (payload.gclid) tracking.gclid = sanitizeString(payload.gclid);
   
-  // UTM parameters
   const utmSource = sanitizeString(payload.utm_source);
   const utmMedium = sanitizeString(payload.utm_medium);
   const utmCampaign = sanitizeString(payload.utm_campaign);
@@ -107,7 +122,6 @@ function buildTrackingData(payload: UnifyPayload): Record<string, unknown> {
   if (utmContent) tracking.utm_content = utmContent;
   if (utmTerm) tracking.utm_term = utmTerm;
   
-  // Custom fields
   if (payload.custom_fields && typeof payload.custom_fields === 'object') {
     tracking.custom_fields = payload.custom_fields;
   }
@@ -115,7 +129,6 @@ function buildTrackingData(payload: UnifyPayload): Record<string, unknown> {
     tracking.metadata = payload.metadata;
   }
   
-  // Capture timestamp
   if (Object.keys(tracking).length > 0) {
     tracking.captured_at = new Date().toISOString();
   }
@@ -139,7 +152,6 @@ function sanitizeTags(tags: unknown): string[] {
 }
 
 // ============ PROCESS SINGLE CONTACT ============
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processContact(
   supabase: any,
   payload: UnifyPayload,
@@ -149,21 +161,17 @@ async function processContact(
   try {
     const source = sanitizeString(payload.source) || sourceHeader;
     
-    // Sanitize core fields
     const rawEmail = sanitizeString(payload.email);
     const rawPhone = sanitizeString(payload.phone);
     const firstName = sanitizeString(payload.first_name);
     const lastName = sanitizeString(payload.last_name);
     const rawName = sanitizeString(payload.full_name);
     
-    // Build full name
     const fullName = rawName || 
       (firstName && lastName ? `${firstName} ${lastName}` : firstName || lastName || null);
     
-    // Validate email
     const email = rawEmail && isValidEmail(rawEmail) ? rawEmail.toLowerCase() : null;
     
-    // Get platform IDs (handle aliases)
     const ghlContactId = sanitizeString(payload.ghl_contact_id);
     const manychatId = sanitizeString(payload.manychat_subscriber_id) || 
                        sanitizeString(payload.manychat_user_id) ||
@@ -171,16 +179,10 @@ async function processContact(
     const stripeCustomerId = sanitizeString(payload.stripe_customer_id);
     const paypalCustomerId = sanitizeString(payload.paypal_customer_id);
     
-    // Build tracking data
     const trackingData = buildTrackingData(payload);
-    
-    // Build opt-in object
     const optIn = buildOptIn(payload);
-    
-    // Sanitize tags
     const tags = sanitizeTags(payload.tags);
     
-    // Call the unify_identity database function
     const { data, error } = await supabase.rpc('unify_identity', {
       p_source: source,
       p_email: email,
@@ -220,7 +222,6 @@ async function processContact(
 }
 
 // ============ BATCH PROCESSOR ============
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processBatch(
   supabase: any,
   contacts: UnifyPayload[],
@@ -284,30 +285,18 @@ Deno.serve(async (req: Request) => {
   
   try {
     // ==========================================
-    // SECURITY VALIDATION
+    // SECURITY: Try JWT first, then X-ADMIN-KEY
     // ==========================================
-    const adminKey = Deno.env.get('ADMIN_API_KEY');
-    const providedKey = req.headers.get('x-admin-key');
+    const jwtAuth = await verifyAdminJWT(req);
+    const keyAuth = verifyAdminKey(req);
     
-    if (!adminKey) {
-      console.error(`[${requestId}] ADMIN_API_KEY not configured`);
+    if (!jwtAuth.valid && !keyAuth) {
+      console.warn(`[${requestId}] Unauthorized request`);
       return new Response(
         JSON.stringify({ 
-          success: false,
-          error: 'SERVICE_NOT_CONFIGURED',
-          message: 'Service is not properly configured'
-        }),
-        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    
-    if (!providedKey || providedKey !== adminKey) {
-      console.warn(`[${requestId}] Unauthorized request - invalid X-ADMIN-KEY`);
-      return new Response(
-        JSON.stringify({ 
-          success: false,
+          ok: false,
           error: 'UNAUTHORIZED',
-          message: 'Invalid or missing X-ADMIN-KEY header'
+          message: 'Valid JWT or X-ADMIN-KEY required'
         }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -324,7 +313,7 @@ Deno.serve(async (req: Request) => {
     } catch {
       return new Response(
         JSON.stringify({ 
-          success: false,
+          ok: false,
           error: 'INVALID_JSON',
           message: 'Request body must be valid JSON'
         }),
@@ -332,7 +321,6 @@ Deno.serve(async (req: Request) => {
       );
     }
     
-    // Initialize Supabase client
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -347,9 +335,11 @@ Deno.serve(async (req: Request) => {
       if (contacts.length === 0) {
         return new Response(
           JSON.stringify({ 
-            success: true,
-            message: 'No contacts to process',
-            processed: 0
+            ok: true,
+            status: 'completed',
+            processed: 0,
+            hasMore: false,
+            duration_ms: Date.now() - startTime
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -364,10 +354,15 @@ Deno.serve(async (req: Request) => {
       
       return new Response(
         JSON.stringify({ 
-          success: true,
-          mode: 'batch',
+          ok: true,
+          status: 'completed',
+          processed: result.processed,
+          hasMore: false,
           duration_ms: duration,
-          ...result
+          created: result.created,
+          updated: result.updated,
+          errors: result.errors,
+          error_details: result.error_details
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -383,11 +378,14 @@ Deno.serve(async (req: Request) => {
     
     return new Response(
       JSON.stringify({ 
-        success: result.success,
+        ok: result.success,
+        status: result.success ? 'completed' : 'error',
         action: result.action,
         client_id: result.client_id,
         source: (body as UnifyPayload).source || sourceHeader,
         error: result.error,
+        processed: 1,
+        hasMore: false,
         duration_ms: duration
       }),
       { 
@@ -402,9 +400,10 @@ Deno.serve(async (req: Request) => {
     
     return new Response(
       JSON.stringify({ 
-        success: false,
-        error: 'INTERNAL_ERROR',
-        message: errorMessage
+        ok: false,
+        status: 'error',
+        error: errorMessage,
+        duration_ms: Date.now() - startTime
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

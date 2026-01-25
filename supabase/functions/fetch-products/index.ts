@@ -2,8 +2,35 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+// ============ VERIFY ADMIN ============
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -13,21 +40,19 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    // Verify admin key
-    const adminKey = Deno.env.get("ADMIN_API_KEY");
-    const providedKey = req.headers.get("x-admin-key");
-    
-    if (!adminKey || !providedKey || providedKey !== adminKey) {
+    // SECURITY: Verify JWT + is_admin()
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ error: "Forbidden" }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ ok: false, error: authCheck.error }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY');
     if (!stripeKey) {
       return new Response(
-        JSON.stringify({ error: 'STRIPE_SECRET_KEY not configured' }),
+        JSON.stringify({ ok: false, error: 'STRIPE_SECRET_KEY not configured' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -100,10 +125,8 @@ Deno.serve(async (req) => {
     startingAfter = undefined;
 
     while (hasMore) {
-      const params = new URLSearchParams({ 
-        limit: '100',
-        expand: ['data.product'].join(','),
-      });
+      const params = new URLSearchParams({ limit: '100' });
+      params.append('expand[]', 'data.product');
       if (startingAfter) params.set('starting_after', startingAfter);
 
       const response = await fetch(`https://api.stripe.com/v1/prices?${params}`, {
@@ -123,7 +146,7 @@ Deno.serve(async (req) => {
         active: p.active,
         currency: p.currency || 'usd',
         unit_amount: p.unit_amount,
-        type: p.type, // 'one_time' or 'recurring'
+        type: p.type,
         billing_scheme: p.billing_scheme,
         recurring_interval: p.recurring?.interval,
         recurring_interval_count: p.recurring?.interval_count || 1,
@@ -161,10 +184,13 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        success: true,
+        ok: true,
+        status: 'completed',
+        processed: totalProducts + totalPrices,
+        hasMore: false,
+        duration_ms: duration,
         products: totalProducts,
         prices: totalPrices,
-        duration_ms: duration,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
@@ -172,7 +198,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error('[fetch-products] Error:', error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      JSON.stringify({ ok: false, status: 'error', error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

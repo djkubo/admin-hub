@@ -228,27 +228,66 @@ export function APISyncPanel() {
     }
   };
 
+  // Standard sync response type from unified Edge Functions
+  interface StandardSyncResponse {
+    ok: boolean;
+    status: 'completed' | 'continuing' | 'error' | 'already_running';
+    syncRunId?: string;
+    processed?: number;
+    hasMore?: boolean;
+    nextCursor?: string | null;
+    duration_ms?: number;
+    error?: string;
+    stats?: {
+      total_fetched?: number;
+      total_inserted?: number;
+      total_updated?: number;
+      total_skipped?: number;
+      total_conflicts?: number;
+    };
+  }
+
   const syncManyChat = async () => {
     setManychatSyncing(true);
     setManychatResult(null);
     
     try {
-      const data = await invokeWithAdminKey<SyncContactsResponse, SyncContactsBody>(
-        'sync-manychat', 
-        { dry_run: false }
-      );
-      
+      let totalProcessed = 0;
+      let totalInserted = 0;
+      let totalUpdated = 0;
+      let hasMore = true;
+      let cursor: number | undefined = undefined;
+      let syncRunId: string | undefined = undefined;
+
+      // Paginated sync loop
+      while (hasMore) {
+        const data = await invokeWithAdminKey<StandardSyncResponse>(
+          'sync-manychat', 
+          { dry_run: false, cursor, syncRunId }
+        );
+
+        if (!data?.ok) {
+          throw new Error(data?.error || 'Sync failed');
+        }
+
+        syncRunId = data.syncRunId;
+        totalProcessed += data.processed ?? 0;
+        totalInserted += data.stats?.total_inserted ?? 0;
+        totalUpdated += data.stats?.total_updated ?? 0;
+        
+        hasMore = data.hasMore ?? false;
+        cursor = data.nextCursor ? parseInt(data.nextCursor) : undefined;
+      }
+
       setManychatResult({
         success: true,
-        total_fetched: data.stats?.total_fetched ?? 0,
-        total_inserted: data.stats?.total_inserted ?? 0,
-        total_updated: data.stats?.total_updated ?? 0,
-        total_conflicts: data.stats?.total_conflicts ?? 0
+        total_fetched: totalProcessed,
+        total_inserted: totalInserted,
+        total_updated: totalUpdated,
       });
       
-      toast.success(`ManyChat: ${data.stats?.total_fetched ?? 0} contactos sincronizados (${data.stats?.total_inserted ?? 0} nuevos, ${data.stats?.total_updated ?? 0} actualizados)`);
+      toast.success(`ManyChat: ${totalProcessed} contactos sincronizados (${totalInserted} nuevos, ${totalUpdated} actualizados)`);
       
-      // Refresh clients data
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
     } catch (error) {
@@ -265,43 +304,57 @@ export function APISyncPanel() {
     setGhlResult(null);
     
     try {
-      // GHL runs in background mode - increase batch_size for 150k+ contacts
-      const data = await invokeWithAdminKey<SyncContactsResponse, SyncContactsBody>(
-        'sync-ghl', 
-        { 
-          dry_run: false,
-          batch_size: 100, // Bigger batches for 150k contacts
-          background: true 
+      let totalProcessed = 0;
+      let hasMore = true;
+      let offset: number | undefined = undefined;
+      let syncRunId: string | undefined = undefined;
+      let page = 0;
+
+      // Paginated sync loop - handles 150k+ contacts
+      while (hasMore) {
+        page++;
+        
+        const data = await invokeWithAdminKey<StandardSyncResponse>(
+          'sync-ghl', 
+          { dry_run: false, offset, syncRunId }
+        );
+
+        if (!data?.ok) {
+          // Check for already running
+          if (data?.status === 'already_running') {
+            toast.info('Ya hay un sync de GHL en progreso');
+            setGhlResult({ success: true, message: 'Sync en progreso...' });
+            return;
+          }
+          throw new Error(data?.error || 'Sync failed');
         }
-      );
-      
-      // Background mode returns sync_run_id, not immediate results
-      if (data.mode === 'background' && data.sync_run_id) {
-        setGhlResult({
-          success: true,
-          message: `Sincronización iniciada en segundo plano. Revisa el banner de progreso.`
-        });
-        toast.success(`GoHighLevel: Sincronización iniciada. Con 150k+ contactos puede tomar 30-60 minutos.`);
-      } else if (data.stats) {
-        // Foreground mode (shouldn't happen but handle it)
-        setGhlResult({
-          success: true,
-          total_fetched: data.stats?.total_fetched ?? 0,
-          total_inserted: data.stats?.total_inserted ?? 0,
-          total_updated: data.stats?.total_updated ?? 0,
-          total_conflicts: data.stats?.total_conflicts ?? 0
-        });
-        toast.success(`GoHighLevel: ${data.stats?.total_fetched ?? 0} contactos sincronizados`);
-      } else {
-        // Generic success
-        setGhlResult({
-          success: true,
-          message: data.message ?? 'Sincronización iniciada'
-        });
-        toast.success(data.message ?? 'GoHighLevel: Sincronización iniciada en segundo plano');
+
+        syncRunId = data.syncRunId;
+        totalProcessed += data.processed ?? 0;
+        
+        hasMore = data.hasMore ?? false;
+        offset = data.nextCursor ? parseInt(data.nextCursor) : undefined;
+
+        // Progress toast every 10 pages
+        if (page % 10 === 0) {
+          toast.info(`GHL: ${totalProcessed} contactos procesados...`, { id: 'ghl-progress' });
+        }
+
+        // Safety limit: 1500 pages = 150k contacts
+        if (page >= 1500) {
+          console.log('GHL sync reached page limit');
+          break;
+        }
       }
+
+      setGhlResult({
+        success: true,
+        total_fetched: totalProcessed,
+        message: `${totalProcessed} contactos sincronizados`
+      });
       
-      // Refresh clients data
+      toast.success(`GoHighLevel: ${totalProcessed} contactos sincronizados`, { id: 'ghl-progress' });
+      
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
     } catch (error) {
