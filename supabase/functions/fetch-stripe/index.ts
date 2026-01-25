@@ -1,8 +1,5 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
-// Declare EdgeRuntime for background tasks
-declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -144,7 +141,6 @@ const DECLINE_REASONS_ES: Record<string, string> = {
 
 const RECORDS_PER_PAGE = 100;
 const STRIPE_API_DELAY_MS = 100; // Increased delay to avoid rate limits
-const MAX_PAGES = 2000; // Safety limit (200k records max)
 
 // ============= HELPERS =============
 
@@ -183,11 +179,12 @@ async function processSinglePage(
   stripeSecretKey: string,
   startDate: number | null,
   endDate: number | null,
-  cursor: string | null
+  cursor: string | null,
+  limit: number
 ): Promise<{ transactions: number; clients: number; hasMore: boolean; nextCursor: string | null; error: string | null }> {
   try {
     const url = new URL("https://api.stripe.com/v1/payment_intents");
-    url.searchParams.set("limit", RECORDS_PER_PAGE.toString());
+    url.searchParams.set("limit", Math.min(limit, RECORDS_PER_PAGE).toString());
     url.searchParams.append("expand[]", "data.customer");
     url.searchParams.append("expand[]", "data.latest_charge");
     url.searchParams.append("expand[]", "data.invoice");
@@ -355,101 +352,6 @@ async function processSinglePage(
   }
 }
 
-// ============= FULL SYNC (BACKGROUND TASK) =============
-
-async function runFullSync(
-  supabase: SupabaseClient,
-  stripeSecretKey: string,
-  syncRunId: string,
-  startDate: number | null,
-  endDate: number | null,
-  initialCursor: string | null,
-  initialTotal: number
-) {
-  let cursor = initialCursor;
-  let totalTransactions = initialTotal;
-  let pageCount = 0;
-  let hasMore = true;
-  let lastError: string | null = null;
-
-  console.log(`🚀 Starting full sync: ${syncRunId}, startDate: ${startDate}, cursor: ${cursor}, total: ${totalTransactions}`);
-
-  try {
-    while (hasMore && pageCount < MAX_PAGES) {
-      pageCount++;
-      
-      const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
-      
-      if (result.error) {
-        lastError = result.error;
-        console.error(`❌ Page ${pageCount} error: ${result.error}`);
-        // Wait and retry once
-        await delay(5000);
-        const retry = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
-        if (retry.error) {
-          console.error(`❌ Retry failed: ${retry.error}`);
-          break;
-        }
-        totalTransactions += retry.transactions;
-        cursor = retry.nextCursor;
-        hasMore = retry.hasMore && cursor !== null;
-      } else {
-        totalTransactions += result.transactions;
-        cursor = result.nextCursor;
-        hasMore = result.hasMore && cursor !== null;
-      }
-
-      // Update progress every page
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: hasMore ? 'running' : 'completed',
-          total_fetched: totalTransactions,
-          total_inserted: totalTransactions,
-          checkpoint: hasMore ? { cursor, runningTotal: totalTransactions, page: pageCount, lastActivity: new Date().toISOString() } : null,
-          completed_at: hasMore ? null : new Date().toISOString()
-        })
-        .eq('id', syncRunId);
-
-      if (pageCount % 10 === 0) {
-        console.log(`📊 Progress: ${totalTransactions} tx in ${pageCount} pages, hasMore: ${hasMore}`);
-      }
-
-      // Small delay between pages
-      if (hasMore) {
-        await delay(200);
-      }
-    }
-
-    // Final update
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: lastError ? 'completed_with_errors' : 'completed',
-        completed_at: new Date().toISOString(),
-        total_fetched: totalTransactions,
-        total_inserted: totalTransactions,
-        error_message: lastError,
-        checkpoint: null
-      })
-      .eq('id', syncRunId);
-
-    console.log(`🎉 SYNC COMPLETE: ${totalTransactions} transactions in ${pageCount} pages`);
-
-  } catch (error) {
-    console.error(`💥 Fatal sync error:`, error);
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        total_fetched: totalTransactions,
-        error_message: error instanceof Error ? error.message : 'Unknown error'
-      })
-      .eq('id', syncRunId);
-  }
-}
-
 // ============= MAIN HANDLER =============
 
 Deno.serve(async (req) => {
@@ -486,19 +388,28 @@ Deno.serve(async (req) => {
     let fetchAll = false;
     let startDate: number | null = null;
     let endDate: number | null = null;
-    let resumeSyncId: string | null = null;
+    let cursor: string | null = null;
+    let syncRunId: string | null = null;
     let cleanupStale = false;
+    let limit = RECORDS_PER_PAGE;
     
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
-      resumeSyncId = body.resumeSyncId || null;
+      cursor = body.cursor ?? null;
+      syncRunId = body.syncRunId ?? null;
+      limit = body.limit && body.limit > 0 ? Math.min(body.limit, RECORDS_PER_PAGE) : RECORDS_PER_PAGE;
       
       if (body.startDate) startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
       if (body.endDate) endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
     } catch {
       // No body - use defaults
+    }
+
+    if (!fetchAll && !startDate && !endDate) {
+      startDate = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      endDate = Math.floor(Date.now() / 1000);
     }
 
     // ============ CLEANUP STALE SYNCS ============
@@ -514,41 +425,6 @@ Deno.serve(async (req) => {
       
       return new Response(
         JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0 }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // ============ RESUME EXISTING SYNC ============
-    if (resumeSyncId) {
-      const { data: existingRun } = await supabase
-        .from('sync_runs')
-        .select('id, status, total_fetched, checkpoint')
-        .eq('id', resumeSyncId)
-        .single();
-
-      if (!existingRun) {
-        return new Response(
-          JSON.stringify({ success: false, error: 'Sync not found' }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const cursor = existingRun.checkpoint?.cursor || null;
-      const previousTotal = existingRun.total_fetched || 0;
-
-      console.log(`📊 RESUMING SYNC: ${resumeSyncId}, cursor: ${cursor}, total: ${previousTotal}`);
-
-      // Run in background
-      EdgeRuntime.waitUntil(runFullSync(supabase, stripeSecretKey, resumeSyncId, startDate, endDate, cursor, previousTotal));
-
-      return new Response(
-        JSON.stringify({ 
-          success: true, 
-          status: 'running', 
-          syncRunId: resumeSyncId, 
-          message: 'Sync resumed in background',
-          resumedFrom: previousTotal
-        }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -569,7 +445,7 @@ Deno.serve(async (req) => {
       .in('status', ['running', 'continuing'])
       .limit(1);
 
-    if (existingRuns && existingRuns.length > 0) {
+    if (!syncRunId && existingRuns && existingRuns.length > 0) {
       // Return existing sync info so user can resume
       return new Response(
         JSON.stringify({ 
@@ -584,58 +460,53 @@ Deno.serve(async (req) => {
     }
 
     // ============ CREATE NEW SYNC ============
-    const { data: syncRun, error: syncError } = await supabase
-      .from('sync_runs')
-      .insert({ source: 'stripe', status: 'running', metadata: { fetchAll, startDate, endDate } })
-      .select('id')
-      .single();
-    
-    if (syncError || !syncRun) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Failed to create sync record" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log(`📊 NEW SYNC: ${syncRun.id}`);
-
-    // Run in background for full syncs
-    if (fetchAll) {
-      EdgeRuntime.waitUntil(runFullSync(supabase, stripeSecretKey, syncRun.id, startDate, endDate, null, 0));
+    if (!syncRunId) {
+      const { data: syncRun, error: syncError } = await supabase
+        .from('sync_runs')
+        .insert({ source: 'stripe', status: 'running', metadata: { fetchAll, startDate, endDate } })
+        .select('id')
+        .single();
       
-      return new Response(
-        JSON.stringify({ 
-          success: true, 
-          status: 'running', 
-          syncRunId: syncRun.id, 
-          message: 'Full sync started in background. Check sync_runs table for progress.',
-          duration_ms: Date.now() - startTime
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      if (syncError || !syncRun) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Failed to create sync record" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      syncRunId = syncRun.id;
+      console.log(`📊 NEW SYNC: ${syncRunId}`);
     }
 
-    // Single page sync for non-full requests
-    const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, null);
+    const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor, limit);
+
+    const { data: currentRun } = await supabase
+      .from('sync_runs')
+      .select('total_fetched')
+      .eq('id', syncRunId)
+      .single();
+
+    const updatedTotal = (currentRun?.total_fetched || 0) + result.transactions;
 
     await supabase
       .from('sync_runs')
       .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        total_fetched: result.transactions,
-        total_inserted: result.transactions
+        status: result.hasMore ? 'continuing' : 'completed',
+        completed_at: result.hasMore ? null : new Date().toISOString(),
+        total_fetched: updatedTotal,
+        total_inserted: updatedTotal,
+        checkpoint: result.hasMore ? { cursor: result.nextCursor } : null,
       })
-      .eq('id', syncRun.id);
+      .eq('id', syncRunId);
 
     return new Response(
       JSON.stringify({
         success: true,
-        status: 'completed',
-        syncRunId: syncRun.id,
+        status: result.hasMore ? 'continuing' : 'completed',
+        syncRunId,
         synced_transactions: result.transactions,
         synced_clients: result.clients,
         hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
         duration_ms: Date.now() - startTime
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

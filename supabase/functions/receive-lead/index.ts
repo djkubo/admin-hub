@@ -1,10 +1,5 @@
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-// Declare EdgeRuntime for Deno
-declare const EdgeRuntime: {
-  waitUntil: (promise: Promise<unknown>) => void;
-};
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key, x-source',
@@ -617,23 +612,7 @@ Deno.serve(async (req) => {
       
       console.log(`[${requestId}] BATCH MODE: Processing ${totalLeads} leads`);
 
-      // For batches > 50, use background processing
-      if (totalLeads > 50) {
-        const backgroundTask = processBatch(supabase, leads, sourceHeader, requestId);
-        EdgeRuntime.waitUntil(backgroundTask);
-        
-        return new Response(
-          JSON.stringify({ 
-            success: true, 
-            mode: 'async',
-            message: `Processing ${totalLeads} leads in background. Check logs for progress.`,
-            total: totalLeads
-          }),
-          { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      // For smaller batches, wait for result
+      // Process batch synchronously (no background continuation)
       const result = await processBatch(supabase, leads, sourceHeader, requestId);
       const duration = Date.now() - startTime;
       console.log(`[${requestId}] Completed in ${duration}ms`);

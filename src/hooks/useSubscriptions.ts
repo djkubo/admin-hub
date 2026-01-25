@@ -183,22 +183,36 @@ export function useSubscriptions() {
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
-      const result = await invokeWithAdminKey<{ status?: string; syncRunId?: string }>("fetch-subscriptions", {});
-      return result;
+      let cursor: string | null = null;
+      let syncRunId: string | null = null;
+      let hasMore = true;
+      let totalUpserted = 0;
+
+      while (hasMore) {
+        const result = await invokeWithAdminKey<{ status?: string; syncRunId?: string; hasMore?: boolean; nextCursor?: string | null; upserted?: number }>("fetch-subscriptions", {
+          cursor,
+          syncRunId,
+        });
+
+        syncRunId = result.syncRunId ?? syncRunId;
+        if (syncRunId) {
+          setActiveSyncId(syncRunId);
+        }
+        totalUpserted += result.upserted ?? 0;
+        hasMore = result.hasMore === true && !!result.nextCursor;
+        cursor = result.nextCursor ?? null;
+      }
+
+      return { status: 'completed', syncRunId, totalUpserted };
     },
     onSuccess: (data) => {
-      if (data.status === "running" && data.syncRunId) {
-        setActiveSyncId(data.syncRunId);
-        toast({
-          title: "Sincronización iniciada",
-          description: "El proceso continúa en segundo plano. Puedes recargar la página.",
-        });
-      } else if (data.status === "completed") {
+      if (data.status === "completed") {
         queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
         toast({
           title: "Suscripciones sincronizadas",
-          description: `Sincronización completada`,
+          description: `Sincronización completada (${data.totalUpserted ?? 0} suscripciones)`,
         });
+        setActiveSyncId(null);
       }
     },
     onError: (error: Error) => {

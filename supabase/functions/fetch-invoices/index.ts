@@ -15,10 +15,11 @@ interface AdminVerifyResult {
 }
 
 interface FetchInvoicesRequest {
-  mode?: 'full' | 'range' | 'recent';
   startDate?: string;
   endDate?: string;
+  fetchAll?: boolean;
   cursor?: string;
+  limit?: number;
   syncRunId?: string;
 }
 
@@ -29,6 +30,7 @@ interface FetchInvoicesResponse {
   hasMore: boolean;
   nextCursor: string | null;
   syncRunId: string | null;
+  duration_ms: number;
   error?: string;
   stats?: {
     draft: number;
@@ -88,6 +90,12 @@ interface StripeInvoice {
   charge: string | null;
   default_payment_method: string | { id: string } | null;
   last_finalization_error: { message: string; code: string } | null;
+  customer_details?: {
+    email?: string | null;
+    name?: string | null;
+    phone?: string | null;
+  };
+  metadata?: Record<string, string>;
   finalized_at: number | null;
   automatically_finalizes_at: number | null;
   status_transitions?: {
@@ -347,6 +355,8 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const startTime = Date.now();
+
   try {
     // SECURITY: Verify JWT + admin role
     const authCheck = await verifyAdmin(req);
@@ -370,25 +380,27 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Parse request
-    let mode: 'full' | 'range' | 'recent' = 'recent';
     let startDate: string | null = null;
     let endDate: string | null = null;
+    let fetchAll = false;
     let cursor: string | null = null;
     let syncRunId: string | null = null;
+    let limit = 100;
 
     try {
       const body: FetchInvoicesRequest = await req.json();
-      mode = body.mode || 'recent';
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
+      fetchAll = body.fetchAll === true;
+      limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
       
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
     } catch {
-      // Default to recent mode
+      // Use defaults
     }
 
-    console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
+    console.log(`🧾 Starting Stripe Invoices fetch (fetchAll: ${fetchAll}, cursor: ${cursor})`);
 
     // Check for existing running sync (prevent duplicates)
     if (!syncRunId) {
@@ -423,7 +435,7 @@ Deno.serve(async (req) => {
         .insert({
           source: 'stripe_invoices',
           status: 'running',
-          metadata: { mode, startDate, endDate }
+          metadata: { fetchAll, startDate, endDate }
         })
         .select('id')
         .single();
@@ -432,26 +444,24 @@ Deno.serve(async (req) => {
 
     // Build Stripe API URL - fetch ALL statuses
     const params = new URLSearchParams();
-    params.set('limit', '100');
+    params.set('limit', String(limit));
     params.set('expand[]', 'data.subscription');
     params.append('expand[]', 'data.lines.data.price');
     params.append('expand[]', 'data.customer');
 
-    // Date filters for range mode
-    if (mode === 'range' && startDate) {
+    // Date filters
+    if (!fetchAll && startDate) {
       params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
     }
-    if (mode === 'range' && endDate) {
+    if (!fetchAll && endDate) {
       params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
     }
 
-    // Recent mode: last 90 days
-    if (mode === 'recent') {
+    // Default: last 90 days
+    if (!fetchAll && !startDate && !endDate) {
       const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
       params.set('created[gte]', String(ninetyDaysAgo));
     }
-
-    // Full mode: no date filter, get everything
 
     // Cursor for pagination
     if (cursor) {
@@ -501,6 +511,14 @@ Deno.serve(async (req) => {
       const customerEmail = invoice.customer_email || customer?.email || null;
       const customerName = invoice.customer_name || customer?.name || null;
       const customerPhone = customer?.phone || null;
+      const customerSnapshot = customer ? {
+        id: customer.id,
+        email: customer.email || null,
+        name: customer.name || null,
+        phone: customer.phone || null,
+      } : null;
+      const customerDetails = invoice.customer_details || null;
+      const invoiceMetadata = invoice.metadata || null;
 
       // Resolve client_id via unify_identity (preferred) or fallback
       const unifyResult = await resolveClientViaUnify(
@@ -610,6 +628,8 @@ Deno.serve(async (req) => {
         default_payment_method: defaultPaymentMethod,
         last_finalization_error: invoice.last_finalization_error?.message || null,
         lines: lineItems,
+        invoice_customer_snapshot: customerSnapshot || customerDetails,
+        invoice_metadata: invoiceMetadata,
         raw_data: invoice as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       };
@@ -631,12 +651,21 @@ Deno.serve(async (req) => {
 
     // Update sync run
     if (syncRunId) {
+      const { data: currentRun } = await supabase
+        .from('sync_runs')
+        .select('total_fetched, total_inserted')
+        .eq('id', syncRunId)
+        .single();
+
+      const totalFetched = (currentRun?.total_fetched || 0) + invoices.length;
+      const totalInserted = (currentRun?.total_inserted || 0) + upsertedCount;
+
       await supabase
         .from('sync_runs')
         .update({
           status: hasMore ? 'continuing' : 'completed',
-          total_fetched: invoices.length,
-          total_inserted: upsertedCount,
+          total_fetched: totalFetched,
+          total_inserted: totalInserted,
           checkpoint: hasMore ? { cursor: nextCursor } : null,
           completed_at: hasMore ? null : new Date().toISOString(),
         })
@@ -654,6 +683,7 @@ Deno.serve(async (req) => {
       nextCursor,
       syncRunId,
       stats,
+      duration_ms: Date.now() - startTime,
     };
 
     return new Response(
@@ -665,7 +695,7 @@ Deno.serve(async (req) => {
     console.error("❌ Fatal error:", errorMessage);
     
     return new Response(
-      JSON.stringify({ success: false, error: errorMessage }),
+      JSON.stringify({ success: false, error: errorMessage, duration_ms: Date.now() - startTime }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
