@@ -35,9 +35,14 @@ export async function invokeWithAdminKey<
       return { success: false, error: 'No active session. Please log in again.' } as T;
     }
 
-    console.log(`[AdminAPI] Session valid, calling function...`);
+    // SOLUCIÓN: Pasar explícitamente el Authorization header
+    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}`);
+    
     const { data, error } = await supabase.functions.invoke(functionName, {
       body,
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      }
     });
 
     console.log(`[AdminAPI] ${functionName} response:`, {
