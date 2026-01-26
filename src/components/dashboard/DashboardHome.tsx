@@ -65,28 +65,28 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
         startDate: subDays(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 10 // Increased: handles ~1,000 records
+        maxPages: 5 // Balanced: ~500 records, won't saturate cloud
       };
     case '7d':
       return {
         startDate: subDays(now, 7),
         endDate: now,
         fetchAll: true,
-        maxPages: 20 // Increased: handles ~2,000 records
+        maxPages: 10 // Optimal: ~1,000 records, good performance
       };
     case 'month':
       return {
         startDate: subMonths(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 30 // Increased: handles ~3,000 records
+        maxPages: 15 // Balanced: ~1,500 records, safe for cloud
       };
     case 'full':
       return {
         startDate: subYears(now, 3), // Fixed: match UI label "Todo (3 años)"
         endDate: now,
         fetchAll: true,
-        maxPages: 50 // Increased: handles ~5,000 records per batch
+        maxPages: 5 // Conservative: will use multiple iterations with chunking
       };
   }
 }
@@ -204,10 +204,10 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           hasMore = false;
         }
 
-        // Safety break - increased limit for historical syncs
-        if (iteration > 200) {
+        // Safety break - balanced limit to prevent cloud saturation
+        if (iteration > 100) {
           hasMore = false;
-          toast.warning('Límite de lotes alcanzado (200). Si necesitas más datos, contacta soporte.');
+          toast.warning('Límite de lotes alcanzado (100). La mayoría de datos ya fueron sincronizados.');
         }
       }
 
