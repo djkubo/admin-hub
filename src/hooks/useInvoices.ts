@@ -98,8 +98,8 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   const { statusFilter = 'all', searchQuery = '', startDate, endDate } = options;
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [syncProgress, setSyncProgress] = useState<{ 
-    current: number; 
+  const [syncProgress, setSyncProgress] = useState<{
+    current: number;
     total: number | null;
     hasMore: boolean;
     page: number;
@@ -113,7 +113,45 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       let query = supabase
         .from("invoices")
         .select(`
-          *,
+          id,
+          stripe_invoice_id,
+          customer_email,
+          customer_name,
+          customer_phone,
+          stripe_customer_id,
+          client_id,
+          amount_due,
+          amount_paid,
+          amount_remaining,
+          subtotal,
+          total,
+          currency,
+          status,
+          stripe_created_at,
+          finalized_at,
+          automatically_finalizes_at,
+          paid_at,
+          period_end,
+          next_payment_attempt,
+          due_date,
+          hosted_invoice_url,
+          pdf_url,
+          invoice_number,
+          subscription_id,
+          plan_name,
+          plan_interval,
+          product_name,
+          attempt_count,
+          billing_reason,
+          collection_method,
+          description,
+          payment_intent_id,
+          charge_id,
+          default_payment_method,
+          last_finalization_error,
+          lines,
+          created_at,
+          updated_at,
           client:clients!client_id (
             id,
             full_name,
@@ -144,7 +182,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       const { data, error } = await query;
 
       if (error) throw error;
-      
+
       return (data || []).map(row => ({
         ...row,
         client: row.client as InvoiceClient | null,
@@ -161,7 +199,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         refetch();
       })
       .subscribe();
-      
+
     return () => { supabase.removeChannel(channel); };
   }, [refetch]);
 
@@ -178,7 +216,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
 
     setIsSyncing(true);
     setSyncProgress({ current: 0, total: null, hasMore: true, page: 0 });
-    
+
     let cursor: string | null = null;
     let totalSynced = 0;
     let syncRunId: string | null = null;
@@ -188,7 +226,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     try {
       while (pageCount < maxPages) {
         pageCount++;
-        
+
         const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
           fetchAll: options.fetchAll,
           startDate: options.startDate,
@@ -204,12 +242,12 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         const batchSynced = result.upserted ?? result.synced ?? 0;
         totalSynced += batchSynced;
         syncRunId = result.syncRunId;
-        
-        setSyncProgress({ 
-          current: totalSynced, 
+
+        setSyncProgress({
+          current: totalSynced,
           total: null, // Stripe doesn't give us total count upfront
-          hasMore: result.hasMore, 
-          page: pageCount 
+          hasMore: result.hasMore,
+          page: pageCount
         });
 
         if (!result.hasMore || !result.nextCursor) {
@@ -217,7 +255,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         }
 
         cursor = result.nextCursor;
-        
+
         // Small delay to avoid rate limits and allow UI updates
         await new Promise(r => setTimeout(r, 150));
       }

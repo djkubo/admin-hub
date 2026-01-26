@@ -59,12 +59,12 @@ export function useSubscriptions() {
         .eq("status", "running")
         .order("started_at", { ascending: false })
         .limit(1);
-      
+
       if (data && data.length > 0) {
         const sync = data[0];
         const startedAt = new Date(sync.started_at);
         const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
-        
+
         // Only show if started less than 10 minutes ago
         if (minutesAgo < 10) {
           setActiveSyncId(sync.id);
@@ -79,13 +79,13 @@ export function useSubscriptions() {
     queryKey: ["sync-status", activeSyncId],
     queryFn: async () => {
       if (!activeSyncId) return null;
-      
+
       const { data, error } = await supabase
         .from("sync_runs")
         .select("*")
         .eq("id", activeSyncId)
         .single();
-      
+
       if (error) throw error;
       return data as SyncRun;
     },
@@ -117,7 +117,27 @@ export function useSubscriptions() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("subscriptions")
-        .select("*")
+        .select(`
+          id,
+          stripe_subscription_id,
+          stripe_customer_id,
+          customer_email,
+          plan_name,
+          plan_id,
+          amount,
+          currency,
+          interval,
+          status,
+          provider,
+          trial_start,
+          trial_end,
+          current_period_start,
+          current_period_end,
+          canceled_at,
+          cancel_reason,
+          created_at,
+          updated_at
+        `)
         .order("amount", { ascending: false });
 
       if (error) throw error;
@@ -139,7 +159,7 @@ export function useSubscriptions() {
         refetch();
       })
       .subscribe();
-      
+
     return () => { supabase.removeChannel(channel); };
   }, [refetch]);
 
