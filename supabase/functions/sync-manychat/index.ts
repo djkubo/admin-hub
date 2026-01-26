@@ -132,29 +132,36 @@ Deno.serve(async (req) => {
 
     logger.info('Found clients to search in ManyChat', { count: emailsToSearch.length });
 
-    for (const email of emailsToSearch) {
-      try {
-        const encodedEmail = encodeURIComponent(email);
+    // Process emails in parallel batches for better performance
+    const PARALLEL_BATCH_SIZE = 5; // Process 5 emails in parallel
+    for (let i = 0; i < emailsToSearch.length; i += PARALLEL_BATCH_SIZE) {
+      const emailBatch = emailsToSearch.slice(i, i + PARALLEL_BATCH_SIZE);
+      
+      // Process batch in parallel
+      await Promise.all(
+        emailBatch.map(async (email) => {
+          try {
+            const encodedEmail = encodeURIComponent(email);
 
-        // Wrap API call with retry + rate limiting
-        const searchResponse = await retryWithBackoff(
-          () => rateLimiter.execute(() =>
-            fetch(
-              `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+            // Wrap API call with retry + rate limiting
+            const searchResponse = await retryWithBackoff(
+              () => rateLimiter.execute(() =>
+                fetch(
+                  `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      'Authorization': `Bearer ${manychatApiKey}`,
+                      'Accept': 'application/json'
+                    }
+                  }
+                )
+              ),
               {
-                method: 'GET',
-                headers: {
-                  'Authorization': `Bearer ${manychatApiKey}`,
-                  'Accept': 'application/json'
-                }
+                ...RETRY_CONFIGS.FAST,
+                retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
               }
-            )
-          ),
-          {
-            ...RETRY_CONFIGS.FAST,
-            retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
-          }
-        );
+            );
 
         if (!searchResponse.ok) {
           const status = searchResponse.status;
@@ -218,17 +225,22 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        const action = mergeResult?.action || 'none';
-        if (action === 'inserted') totalInserted++;
-        else if (action === 'updated') totalUpdated++;
-        else if (action === 'conflict') totalConflicts++;
-        else totalSkipped++;
+            const action = mergeResult?.action || 'none';
+            if (action === 'inserted') totalInserted++;
+            else if (action === 'updated') totalUpdated++;
+            else if (action === 'conflict') totalConflicts++;
+            else totalSkipped++;
 
-        await new Promise(resolve => setTimeout(resolve, 150));
-
-      } catch (subError) {
-        logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
-        totalSkipped++;
+          } catch (subError) {
+            logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
+            totalSkipped++;
+          }
+        })
+      );
+      
+      // Small delay between batches to respect rate limits
+      if (i + PARALLEL_BATCH_SIZE < emailsToSearch.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
