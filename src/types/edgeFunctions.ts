@@ -13,7 +13,7 @@
 
 // ============= BASE SYNC CONTRACT =============
 
-export type SyncStatus = 'running' | 'continuing' | 'completed' | 'completed_with_errors' | 'failed';
+export type SyncStatus = 'running' | 'continuing' | 'completed' | 'completed_with_errors' | 'completed_with_timeout' | 'failed';
 
 export interface BaseSyncResponse {
   success: boolean;

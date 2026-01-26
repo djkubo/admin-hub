@@ -61,6 +61,7 @@ interface SyncRunMetadata {
   lastUpdate?: string;
   results?: Record<string, SyncStepResult>;
   completedAt?: string;
+  timedOut?: boolean;
 }
 
 interface SyncRun {
