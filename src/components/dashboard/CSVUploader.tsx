@@ -48,7 +48,8 @@ interface CSVUploaderProps {
 }
 
 // Split CSV text into chunks of approximately maxSizeBytes
-function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 2 * 1024 * 1024): string[] {
+// Reduced to 1MB for reliability with large files
+function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 1 * 1024 * 1024): string[] {
   const lines = csvText.split('\n');
   if (lines.length < 2) return [csvText];
   
@@ -285,7 +286,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     filename: string
   ): Promise<{ ok: boolean; result?: ProcessingResult; error?: string }> => {
     const fileSizeBytes = new Blob([csvText]).size;
-    const MAX_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk (reduced for reliability)
+    const MAX_CHUNK_SIZE = 1 * 1024 * 1024; // 1MB per chunk for reliability
     
     // If file is small enough, send directly
     if (fileSizeBytes <= MAX_CHUNK_SIZE) {

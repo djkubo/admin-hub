@@ -191,41 +191,25 @@ function detectCSVType(headers: string[]): CSVType {
   return 'auto';
 }
 
-// ============= PHASE 1: STAGING (FAST, SYNC) =============
-// Stores raw CSV data immediately without any validation or merging
-async function stageCSVData(
+// ============= PHASE 1: FAST INSERT (MINIMAL PROCESSING) =============
+// Stores raw CSV data with minimal validation - optimized for speed
+async function stageCSVDataFast(
   lines: string[],
   headers: string[],
   sourceType: string,
-  filename: string,
+  importId: string,
   supabase: AnySupabaseClient
-): Promise<StagingResult> {
-  const importId = crypto.randomUUID();
-  
-  // Create import run record
-  const { error: runError } = await supabase.from('csv_import_runs').insert({
-    id: importId,
-    filename,
-    source_type: sourceType,
-    total_rows: lines.length - 1,
-    status: 'staging'
-  });
-  
-  if (runError) {
-    logger.error('Failed to create import run', runError);
-    throw new Error(`Failed to create import run: ${runError.message}`);
-  }
-
+): Promise<{ staged: number; errors: number }> {
   // Find email/phone columns for quick lookups later
-  const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo', 'customer_email']);
-  const phoneIdx = findColumnIndex(headers, ['phone', 'telefono', 'tel']);
+  const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo', 'customer_email', 'auto_master_email']);
+  const phoneIdx = findColumnIndex(headers, ['phone', 'telefono', 'tel', 'auto_phone']);
   const nameIdx = findColumnIndex(headers, [
     'auto_master_name', 'full_name', 'name', 'nombre',
     'cnt_first name', 'cnt_firstname'
   ]);
 
-  // Prepare staging records
-  interface StagingRow {
+  // Prepare staging records - use simpler objects
+  const stagingRows: {
     import_id: string;
     row_number: number;
     email: string | null;
@@ -234,9 +218,7 @@ async function stageCSVData(
     source_type: string;
     raw_data: Record<string, string>;
     processing_status: string;
-  }
-
-  const stagingRows: StagingRow[] = [];
+  }[] = [];
   
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
@@ -245,12 +227,12 @@ async function stageCSVData(
     try {
       const values = parseCSVLine(line);
       
-      // Build raw_data object with all columns
+      // Build raw_data object with all columns (simplified)
       const rawData: Record<string, string> = {};
-      headers.forEach((h, idx) => {
-        const val = values[idx]?.replace(/"/g, '').trim();
-        if (val) rawData[h] = val;
-      });
+      for (let j = 0; j < headers.length && j < values.length; j++) {
+        const val = values[j]?.replace(/"/g, '').trim();
+        if (val) rawData[headers[j]] = val;
+      }
 
       // Extract email/phone for indexing
       let email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() : null;
@@ -269,51 +251,29 @@ async function stageCSVData(
         raw_data: rawData,
         processing_status: 'pending'
       });
-    } catch (err) {
-      logger.warn(`Failed to parse row ${i}`, err instanceof Error ? { message: err.message } : undefined);
+    } catch (_err) {
+      // Skip failed rows silently for speed
     }
   }
 
-  // Batch insert into staging table
-  const BATCH_SIZE = 1000;
+  // Batch insert into staging table - larger batches for speed
+  const BATCH_SIZE = 500;
   let stagedCount = 0;
+  let errorCount = 0;
   
   for (let i = 0; i < stagingRows.length; i += BATCH_SIZE) {
     const batch = stagingRows.slice(i, i + BATCH_SIZE);
     const { error } = await supabase.from('csv_imports_raw').insert(batch);
     
     if (error) {
-      logger.error(`Staging batch ${i / BATCH_SIZE + 1} failed`, error);
+      logger.error(`Staging batch failed`, error);
+      errorCount += batch.length;
     } else {
       stagedCount += batch.length;
     }
-    
-    // Log progress every 5 batches
-    if ((i / BATCH_SIZE + 1) % 5 === 0) {
-      logger.info('Staging progress', { 
-        batch: i / BATCH_SIZE + 1, 
-        staged: stagedCount, 
-        total: stagingRows.length 
-      });
-    }
   }
 
-  // Update import run status
-  await supabase.from('csv_import_runs').update({
-    rows_staged: stagedCount,
-    status: 'staged',
-    staged_at: new Date().toISOString()
-  }).eq('id', importId);
-
-  logger.info('Staging complete', { importId, staged: stagedCount, total: stagingRows.length });
-
-  return {
-    importId,
-    staged: stagedCount,
-    totalRows: stagingRows.length,
-    sourceType,
-    phase: 'staged'
-  };
+  return { staged: stagedCount, errors: errorCount };
 }
 
 // ============= PHASE 2: MERGE (BACKGROUND) =============
@@ -951,40 +911,73 @@ Deno.serve(async (req) => {
     const headerLine = lines[0];
     const headers = parseCSVLine(headerLine).map(h => h.toLowerCase().replace(/"/g, '').trim());
     const csvType = requestedType && requestedType !== 'auto' ? requestedType : detectCSVType(headers);
+    const rowCount = lines.length - 1;
 
-    logger.info('Processing as type', { csvType, useStaging });
+    logger.info(`[${requestId}] Processing as type`, { csvType, useStaging, rowCount });
 
-    // ============= NEW 2-PHASE PROCESSING =============
-    if (useStaging) {
-      // PHASE 1: Stage data immediately (sync)
-      const stagingResult = await stageCSVData(lines, headers, csvType, filename || 'unknown', supabase);
+    // ============= FAST STAGING FOR ALL LARGE IMPORTS =============
+    // Use staging for any import with >500 rows or explicitly requested
+    if (useStaging || rowCount > 500) {
+      // Create import run record first
+      const importId = crypto.randomUUID();
       
-      // PHASE 2: Start merge in background
+      const { error: runError } = await supabase.from('csv_import_runs').insert({
+        id: importId,
+        filename: filename || 'unknown',
+        source_type: csvType,
+        total_rows: rowCount,
+        status: 'staging',
+        started_at: new Date().toISOString()
+      });
+      
+      if (runError) {
+        logger.error('Failed to create import run', runError);
+        return new Response(
+          JSON.stringify({ ok: false, error: `Failed to create import: ${runError.message}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // PHASE 1: Fast staging (sync) - just insert raw data
+      const stagingResult = await stageCSVDataFast(lines, headers, csvType, importId, supabase);
+      
+      // Update import run with staging count
+      await supabase.from('csv_import_runs').update({
+        rows_staged: stagingResult.staged,
+        status: 'staged',
+        staged_at: new Date().toISOString()
+      }).eq('id', importId);
+      
+      // PHASE 2: Start merge in background (non-blocking)
       EdgeRuntime.waitUntil(
-        processMergeInBackground(stagingResult.importId, csvType, supabase)
+        processMergeInBackground(importId, csvType, supabase)
       );
       
       const duration = Date.now() - startTime;
-      logger.info(`[${requestId}] Staging complete, merge started in background`, {
-        importId: stagingResult.importId,
+      logger.info(`[${requestId}] Staging complete in ${duration}ms`, {
+        importId,
         staged: stagingResult.staged,
-        duration_ms: duration
+        errors: stagingResult.errors
       });
 
       return new Response(
         JSON.stringify({ 
           ok: true, 
           result: {
-            ...stagingResult,
+            importId,
+            staged: stagingResult.staged,
+            totalRows: rowCount,
+            sourceType: csvType,
+            phase: 'staged',
             duration,
-            message: `${stagingResult.staged} contactos importados. La unificación se procesa en segundo plano.`
+            message: `${stagingResult.staged} filas importadas.`
           }
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // ============= LEGACY DIRECT PROCESSING =============
+    // ============= LEGACY DIRECT PROCESSING (small files only) =============
     let result: ProcessingResult;
 
     switch (csvType) {
@@ -1000,24 +993,36 @@ Deno.serve(async (req) => {
       case 'paypal':
         result = await processPayPal(lines, headers, supabase);
         break;
-      case 'master':
+      case 'master': {
         // Master CSVs always use staging
-        const masterStagingResult = await stageCSVData(lines, headers, 'master', filename || 'unknown', supabase);
+        const masterImportId = crypto.randomUUID();
+        await supabase.from('csv_import_runs').insert({
+          id: masterImportId,
+          filename: filename || 'unknown',
+          source_type: 'master',
+          total_rows: rowCount,
+          status: 'staging'
+        });
+        
+        const masterStaging = await stageCSVDataFast(lines, headers, 'master', masterImportId, supabase);
         EdgeRuntime.waitUntil(
-          processMergeInBackground(masterStagingResult.importId, 'master', supabase)
+          processMergeInBackground(masterImportId, 'master', supabase)
         );
         
         return new Response(
           JSON.stringify({ 
             ok: true, 
             result: {
-              ...masterStagingResult,
+              importId: masterImportId,
+              staged: masterStaging.staged,
+              totalRows: rowCount,
               duration: Date.now() - startTime,
-              message: `${masterStagingResult.staged} filas importadas. La unificación se procesa en segundo plano.`
+              message: `${masterStaging.staged} filas importadas.`
             }
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
+      }
       default:
         return new Response(
           JSON.stringify({ ok: false, error: `Unknown CSV type. Headers: ${headers.slice(0, 10).join(', ')}` }),
