@@ -18,7 +18,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
@@ -92,7 +92,7 @@ async function processSinglePage(
 
     const ghlData = await ghlResponse.json();
     const contacts = ghlData.contacts || [];
-    
+
     console.log(`📦 Fetched ${contacts.length} contacts`);
 
     if (contacts.length === 0) {
@@ -132,7 +132,7 @@ async function processSinglePage(
             const lastName = contact.lastName as string || '';
             const fullName = [firstName, lastName].filter(Boolean).join(' ') || (contact.name as string) || null;
             const tags = (contact.tags as string[]) || [];
-            
+
             const dndSettings = contact.dndSettings as Record<string, { status?: string }> | undefined;
             const waOptIn = dndSettings?.whatsApp?.status !== 'active';
             const smsOptIn = dndSettings?.sms?.status !== 'active';
@@ -142,19 +142,19 @@ async function processSinglePage(
               return { action: 'skipped' };
             }
 
-            const { data: mergeResult, error: mergeError } = await (supabase as any).rpc('merge_contact', {
+            const { data: mergeResult, error: mergeError } = await (supabase as any).rpc('unify_identity', {
               p_source: 'ghl',
-              p_external_id: contact.id as string,
+              p_ghl_contact_id: contact.id as string,
               p_email: email,
               p_phone: phone,
               p_full_name: fullName,
               p_tags: tags,
-              p_wa_opt_in: waOptIn,
-              p_sms_opt_in: smsOptIn,
-              p_email_opt_in: emailOptIn,
-              p_extra_data: contact,
-              p_dry_run: false,
-              p_sync_run_id: syncRunId
+              p_opt_in: {
+                wa: waOptIn,
+                sms: smsOptIn,
+                email: emailOptIn
+              },
+              p_tracking_data: contact
             });
 
             if (mergeError) {
@@ -163,7 +163,7 @@ async function processSinglePage(
             }
 
             return { action: (mergeResult as { action?: string })?.action || 'none' };
-            
+
           } catch (err) {
             console.error(`Contact error:`, err);
             return { action: 'error' };
@@ -238,13 +238,13 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    
+
     // Parse request
     let dryRun = false;
     let offset = 0;
     let syncRunId: string | null = null;
     let cleanupStale = false;
-    
+
     try {
       const body = await req.json();
       dryRun = body.dry_run ?? false;
@@ -258,7 +258,7 @@ Deno.serve(async (req) => {
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
         .update({
@@ -270,7 +270,7 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .lt('started_at', staleThreshold)
         .select('id');
-      
+
       return new Response(
         JSON.stringify({ ok: true, status: 'cleaned', processed: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -280,7 +280,7 @@ Deno.serve(async (req) => {
     // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       await supabase
         .from('sync_runs')
         .update({
@@ -301,8 +301,8 @@ Deno.serve(async (req) => {
 
       if (existingRuns && existingRuns.length > 0) {
         return new Response(
-          JSON.stringify({ 
-            ok: false, 
+          JSON.stringify({
+            ok: false,
             status: 'already_running',
             error: 'Ya hay un sync de GHL en progreso',
             syncRunId: existingRuns[0].id
@@ -337,7 +337,7 @@ Deno.serve(async (req) => {
     } else {
       await supabase
         .from('sync_runs')
-        .update({ 
+        .update({
           status: 'running',
           checkpoint: { offset, lastActivity: new Date().toISOString() }
         })
@@ -358,7 +358,7 @@ Deno.serve(async (req) => {
 
     if (pageResult.error) {
       console.error(`❌ GHL sync failed:`, pageResult.error);
-      
+
       await supabase
         .from('sync_runs')
         .update({
@@ -367,10 +367,10 @@ Deno.serve(async (req) => {
           error_message: pageResult.error
         })
         .eq('id', syncRunId);
-      
+
       return new Response(
-        JSON.stringify({ 
-          ok: false, 
+        JSON.stringify({
+          ok: false,
           status: 'failed',
           error: pageResult.error,
           syncRunId,
@@ -393,7 +393,7 @@ Deno.serve(async (req) => {
           total_updated: pageResult.updated,
           total_skipped: pageResult.skipped,
           total_conflicts: pageResult.conflicts,
-          checkpoint: { 
+          checkpoint: {
             offset: pageResult.nextOffset,
             lastActivity: new Date().toISOString()
           }

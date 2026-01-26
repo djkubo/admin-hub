@@ -14,7 +14,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
@@ -63,7 +63,7 @@ Deno.serve(async (req) => {
 
     if (!manychatApiKey) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           ok: false,
           status: 'error',
           error: 'MANYCHAT_API_KEY required',
@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
 
     const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
     const hasMore = emailsToSearch.length >= 100;
-    
+
     console.log(`[sync-manychat] Found ${emailsToSearch.length} clients to search in ManyChat`);
 
     for (const email of emailsToSearch) {
@@ -152,7 +152,7 @@ Deno.serve(async (req) => {
         }
 
         const searchData = await searchResponse.json();
-        
+
         if (searchData.status !== 'success' || !searchData.data) {
           totalSkipped++;
           continue;
@@ -181,19 +181,19 @@ Deno.serve(async (req) => {
         const smsOptIn = subscriber.optin_sms === true;
         const emailOptIn = subscriber.optin_email !== false;
 
-        const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
+        const { data: mergeResult, error: mergeError } = await supabase.rpc('unify_identity', {
           p_source: 'manychat',
-          p_external_id: subscriber.id,
+          p_manychat_subscriber_id: subscriber.id.toString(), // Ensure string
           p_email: subEmail,
           p_phone: phone,
           p_full_name: fullName,
           p_tags: tags,
-          p_wa_opt_in: waOptIn,
-          p_sms_opt_in: smsOptIn,
-          p_email_opt_in: emailOptIn,
-          p_extra_data: subscriber,
-          p_dry_run: dryRun,
-          p_sync_run_id: syncRunId
+          p_opt_in: {
+            wa: waOptIn,
+            sms: smsOptIn,
+            email: emailOptIn
+          },
+          p_tracking_data: subscriber
         });
 
         if (mergeError) {
@@ -228,7 +228,7 @@ Deno.serve(async (req) => {
         total_updated: totalUpdated,
         total_skipped: totalSkipped,
         total_conflicts: totalConflicts,
-        metadata: { 
+        metadata: {
           method: 'subscriber_search_get',
           emails_searched: emailsToSearch.length
         }
@@ -254,7 +254,7 @@ Deno.serve(async (req) => {
           total_skipped: totalSkipped,
           total_conflicts: totalConflicts
         },
-        note: totalFetched === 0 
+        note: totalFetched === 0
           ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients.'
           : `Found ${totalFetched} subscribers matching your client emails.`
       }),
@@ -264,7 +264,7 @@ Deno.serve(async (req) => {
   } catch (error: any) {
     console.error('[sync-manychat] Error:', error);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         ok: false,
         status: 'error',
         error: error.message || 'Unknown error',
