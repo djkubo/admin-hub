@@ -2109,12 +2109,17 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
     errors: []
   };
 
-  // Use safe parser with BOM stripping (keep lowercase for GHL headers)
+  // Use safe parser with BOM stripping
+  // Note: We keep original case for headers to support both lowercase and title case exports
   const normalizedText = normalizeCSV(csvText);
   const parsed = Papa.parse(normalizedText, {
     header: true,
     skipEmptyLines: 'greedy',
-    transformHeader: (header) => header.trim().toLowerCase(),
+    transformHeader: (header) => {
+      // Normalize header: trim and convert to lowercase for matching
+      // But preserve original in case we need it
+      return header.trim().toLowerCase();
+    },
     transform: (value) => value?.trim() || ''
   });
 
@@ -2146,12 +2151,15 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
 
   for (const rawRow of parsed.data as Record<string, string>[]) {
     // GHL exports have various column name formats
-    const ghlContactId = rawRow['id'] || rawRow['contact id'] || rawRow['contactid'] || '';
+    // Support both lowercase and title case (from GHL dashboard export)
+    const ghlContactId = rawRow['id'] || rawRow['contact id'] || rawRow['contactid'] || 
+                        rawRow['contact id'] || rawRow['contact_id'] || '';
     
     if (!ghlContactId) continue;
     
-    // Email - multiple possible column names
-    let email = rawRow['email'] || rawRow['email address'] || rawRow['emailaddress'] || '';
+    // Email - multiple possible column names (case-insensitive matching)
+    let email = rawRow['email'] || rawRow['email address'] || rawRow['emailaddress'] || 
+                rawRow['email'] || '';
     if (email) {
       email = email.toLowerCase().trim();
       // Validate email format
@@ -2160,8 +2168,9 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
       }
     }
     
-    // Phone - multiple possible column names
-    const rawPhone = rawRow['phone'] || rawRow['mobile'] || rawRow['phonenumber'] || rawRow['phone number'] || '';
+    // Phone - multiple possible column names (case-insensitive matching)
+    const rawPhone = rawRow['phone'] || rawRow['mobile'] || rawRow['phonenumber'] || 
+                     rawRow['phone number'] || rawRow['phone'] || '';
     const phone = normalizePhone(rawPhone);
     
     // Skip if no email AND no phone (can't match/create)
@@ -2170,10 +2179,13 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
       continue;
     }
     
-    // Name
-    const firstName = rawRow['firstname'] || rawRow['first name'] || rawRow['first_name'] || '';
-    const lastName = rawRow['lastname'] || rawRow['last name'] || rawRow['last_name'] || '';
-    let fullName = rawRow['name'] || rawRow['full name'] || rawRow['fullname'] || '';
+    // Name - support both lowercase and title case formats
+    const firstName = rawRow['firstname'] || rawRow['first name'] || rawRow['first_name'] || 
+                      rawRow['first name'] || '';
+    const lastName = rawRow['lastname'] || rawRow['last name'] || rawRow['last_name'] || 
+                     rawRow['last name'] || '';
+    let fullName = rawRow['name'] || rawRow['full name'] || rawRow['fullname'] || 
+                   rawRow['contactname'] || rawRow['contact name'] || '';
     
     if (!fullName && (firstName || lastName)) {
       fullName = `${firstName} ${lastName}`.trim();
