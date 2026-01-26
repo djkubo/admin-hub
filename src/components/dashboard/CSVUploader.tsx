@@ -17,6 +17,7 @@ import {
   GHLProcessingResult,
   ManyChatProcessingResult
 } from '@/lib/csvProcessor';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 
 type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl' | 'manychat';
@@ -279,27 +280,73 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             toast.warning(`${file.name}: ${subsResult.errors.length} errores`);
           }
         } else if (file.type === 'ghl') {
-          // Process GoHighLevel CSV
-          const ghlResult = await processGoHighLevelCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: ghlResult,
-              ghlStats: {
-                withEmail: ghlResult.withEmail,
-                withPhone: ghlResult.withPhone,
-                withTags: ghlResult.withTags
-              }
-            } : f
-          ));
-          toast.success(
-            `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
-            `Total: ${ghlResult.totalContacts} contactos GHL`
-          );
-          
-          if (ghlResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
+          // For large GHL CSVs (> 10MB or > 100k lines), use Edge Function
+          // For smaller files, use local processing (faster)
+          const fileSizeMB = file.file.size / (1024 * 1024);
+          const lineCount = text.split('\n').length;
+          const useEdgeFunction = fileSizeMB > 10 || lineCount > 100000;
+
+          if (useEdgeFunction) {
+            toast.info(`Procesando CSV grande (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+            
+            const response = await invokeWithAdminKey<{ ok: boolean; result?: GHLProcessingResult; error?: string }>(
+              'process-ghl-csv',
+              { csvText: text }
+            );
+
+            if (!response || !response.ok || !response.result) {
+              const errorMsg = response?.error || 'Error desconocido';
+              setFiles(prev => prev.map((f, idx) => 
+                idx === originalIndex ? { ...f, status: 'error' } : f
+              ));
+              toast.error(`Error procesando CSV: ${errorMsg}`);
+              continue;
+            }
+
+            const ghlResult = response.result;
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { 
+                ...f, 
+                status: 'done', 
+                result: ghlResult,
+                ghlStats: {
+                  withEmail: ghlResult.withEmail,
+                  withPhone: ghlResult.withPhone,
+                  withTags: ghlResult.withTags
+                }
+              } : f
+            ));
+            toast.success(
+              `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
+              `Total: ${ghlResult.totalContacts} contactos GHL`
+            );
+            
+            if (ghlResult.errors.length > 0) {
+              toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
+            }
+          } else {
+            // Process GoHighLevel CSV locally (smaller files)
+            const ghlResult = await processGoHighLevelCSV(text);
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { 
+                ...f, 
+                status: 'done', 
+                result: ghlResult,
+                ghlStats: {
+                  withEmail: ghlResult.withEmail,
+                  withPhone: ghlResult.withPhone,
+                  withTags: ghlResult.withTags
+                }
+              } : f
+            ));
+            toast.success(
+              `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
+              `Total: ${ghlResult.totalContacts} contactos GHL`
+            );
+            
+            if (ghlResult.errors.length > 0) {
+              toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
+            }
           }
         } else if (file.type === 'manychat') {
           // Process ManyChat CSV
