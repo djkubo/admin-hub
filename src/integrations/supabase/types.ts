@@ -594,6 +594,117 @@ export type Database = {
           },
         ]
       }
+      csv_import_runs: {
+        Row: {
+          completed_at: string | null
+          error_message: string | null
+          filename: string | null
+          id: string
+          rows_conflict: number | null
+          rows_error: number | null
+          rows_merged: number | null
+          rows_staged: number | null
+          source_type: string
+          staged_at: string | null
+          started_at: string | null
+          status: string | null
+          total_rows: number | null
+        }
+        Insert: {
+          completed_at?: string | null
+          error_message?: string | null
+          filename?: string | null
+          id?: string
+          rows_conflict?: number | null
+          rows_error?: number | null
+          rows_merged?: number | null
+          rows_staged?: number | null
+          source_type: string
+          staged_at?: string | null
+          started_at?: string | null
+          status?: string | null
+          total_rows?: number | null
+        }
+        Update: {
+          completed_at?: string | null
+          error_message?: string | null
+          filename?: string | null
+          id?: string
+          rows_conflict?: number | null
+          rows_error?: number | null
+          rows_merged?: number | null
+          rows_staged?: number | null
+          source_type?: string
+          staged_at?: string | null
+          started_at?: string | null
+          status?: string | null
+          total_rows?: number | null
+        }
+        Relationships: []
+      }
+      csv_imports_raw: {
+        Row: {
+          created_at: string | null
+          email: string | null
+          error_message: string | null
+          full_name: string | null
+          id: string
+          import_id: string
+          merged_client_id: string | null
+          phone: string | null
+          processed_at: string | null
+          processing_status: string | null
+          raw_data: Json
+          row_number: number
+          source_type: string
+        }
+        Insert: {
+          created_at?: string | null
+          email?: string | null
+          error_message?: string | null
+          full_name?: string | null
+          id?: string
+          import_id: string
+          merged_client_id?: string | null
+          phone?: string | null
+          processed_at?: string | null
+          processing_status?: string | null
+          raw_data: Json
+          row_number: number
+          source_type: string
+        }
+        Update: {
+          created_at?: string | null
+          email?: string | null
+          error_message?: string | null
+          full_name?: string | null
+          id?: string
+          import_id?: string
+          merged_client_id?: string | null
+          phone?: string | null
+          processed_at?: string | null
+          processing_status?: string | null
+          raw_data?: Json
+          row_number?: number
+          source_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "csv_imports_raw_import_id_fkey"
+            columns: ["import_id"]
+            isOneToOne: false
+            referencedRelation: "csv_import_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "csv_imports_raw_merged_client_id_fkey"
+            columns: ["merged_client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       disputes: {
         Row: {
           amount: number
@@ -1946,7 +2057,25 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      clients_with_staging: {
+        Row: {
+          created_at: string | null
+          email: string | null
+          full_name: string | null
+          ghl_contact_id: string | null
+          id: string | null
+          import_id: string | null
+          import_status: string | null
+          lifecycle_stage: string | null
+          manychat_subscriber_id: string | null
+          paypal_customer_id: string | null
+          phone: string | null
+          stripe_customer_id: string | null
+          tags: string[] | null
+          total_spend: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       cleanup_old_data: { Args: never; Returns: Json }
