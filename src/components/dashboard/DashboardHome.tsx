@@ -220,6 +220,11 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       toast.error(`Error en sincronización: ${msg}`);
     } finally {
       setIsSyncing(false);
+      // Clean up sticky toasts
+      toast.dismiss('sync-stripe');
+      toast.dismiss('sync-invoices');
+      toast.dismiss('sync-paypal');
+      toast.dismiss('sync-unify');
     }
   };
 
@@ -368,14 +373,28 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
             {/* Sync All Dropdown */}
             {isSyncing ? (
-              <Button
-                disabled
-                size="sm"
-                className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
-              >
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
-              </Button>
+              <>
+                <Button
+                  disabled
+                  size="sm"
+                  className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
+                >
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-9 px-2 text-red-400 hover:text-red-500 hover:bg-red-500/10"
+                  onClick={async () => {
+                    setIsSyncing(false);
+                    await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
+                    window.location.reload();
+                  }}
+                >
+                  <XCircle className="h-4 w-4" />
+                </Button>
+              </>
             ) : (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -568,23 +587,25 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       </div>
 
       {/* Failure reasons inline */}
-      {kpis.failureReasons.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
-          <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
-            <AlertTriangle className="h-3 w-3" />
-            Razones:
-          </span>
-          {kpis.failureReasons.slice(0, 3).map((reason, i) => (
-            <Badge
-              key={i}
-              variant="outline"
-              className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
-            >
-              {reason.reason}: {reason.count}
-            </Badge>
-          ))}
-        </div>
-      )}
-    </div>
+      {
+        kpis.failureReasons.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
+            <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3" />
+              Razones:
+            </span>
+            {kpis.failureReasons.slice(0, 3).map((reason, i) => (
+              <Badge
+                key={i}
+                variant="outline"
+                className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
+              >
+                {reason.reason}: {reason.count}
+              </Badge>
+            ))}
+          </div>
+        )
+      }
+    </div >
   );
 }

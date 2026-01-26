@@ -166,9 +166,8 @@ export function SyncResultsPanel() {
 
   const hasAnySyncs = activeSyncs.length > 0 || recentRuns.length > 0;
 
-  if (!hasAnySyncs) {
-    return null;
-  }
+  // Always show panel
+  // if (!hasAnySyncs) return null;
 
   return (
     <div className="bg-card rounded-xl border border-border/50 overflow-hidden">
@@ -183,34 +182,32 @@ export function SyncResultsPanel() {
             Estado de Sincronización
           </span>
           <div className="flex items-center gap-2">
-            {activeSyncs.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  setActiveSyncs([]); // Limpiar UI inmediatamente
-                  toast.loading('Deteniendo procesos...', { id: 'reset-toast' });
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async (e) => {
+                e.stopPropagation();
+                setActiveSyncs([]); // Limpiar UI inmediatamente
+                toast.loading('Limpiando procesos...', { id: 'reset-toast' });
 
-                  const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
+                const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
 
-                  if (!error) {
-                    toast.success('Procesos detenidos. Recargando...', { id: 'reset-toast' });
-                    // Give DB a moment to process before reload
-                    setTimeout(() => {
-                      window.location.reload();
-                    }, 1000);
-                  } else {
-                    toast.error('Error al detener: ' + error.message, { id: 'reset-toast' });
-                    fetchRuns(); // Revert UI if failed
-                  }
-                }}
-                className="h-6 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1 mr-2"
-              >
-                <XCircle className="h-3 w-3" />
-                Forzar Detención
-              </Button>
-            )}
+                if (!error) {
+                  toast.success('Sistema reiniciado. Recargando...', { id: 'reset-toast' });
+                  setTimeout(() => {
+                    window.location.reload();
+                  }, 1000);
+                } else {
+                  toast.error('Error: ' + error.message, { id: 'reset-toast' });
+                  fetchRuns();
+                }
+              }}
+              className="h-6 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1 mr-2"
+            >
+              <XCircle className="h-3 w-3" />
+              {activeSyncs.length > 0 ? "Forzar Detención" : "Limpiar Estado"}
+            </Button>
+
             {activeSyncs.length > 0 && (
               <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
                 {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
