@@ -65,28 +65,28 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
         startDate: subDays(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 10 // Recent data can handle more pages
+        maxPages: 3 // Reduced from 10 to prevent 504 Timeouts
       };
     case '7d':
       return {
         startDate: subDays(now, 7),
         endDate: now,
         fetchAll: true,
-        maxPages: 5 // Week of data can handle moderate batching
+        maxPages: 3 // Reduced from 5
       };
     case 'month':
       return {
         startDate: subMonths(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 5 // Month of data, moderate batching
+        maxPages: 3 // Reduced from 5
       };
     case 'full':
       return {
         startDate: subYears(now, 3), // Fixed: match UI label "Todo (3 años)"
         endDate: now,
         fetchAll: true,
-        maxPages: 5 // Full history, conservative but efficient batching
+        maxPages: 3 // Reduced from 5
       };
   }
 }
@@ -138,7 +138,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         endDate: endDate.toISOString(),
         fetchAll,
         limit: 50,
-        maxPages: 5,
+        maxPages: 3, // Reduced from 5 to prevent timeouts
         includeContacts: true,
       };
 
