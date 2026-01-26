@@ -30,11 +30,12 @@ export function useChatContacts() {
   return useQuery({
     queryKey: ["chat-contacts"],
     queryFn: async (): Promise<ChatContact[]> => {
-      // Get all chat events, then aggregate client-side
+      // OPTIMIZATION: Limit to 1000 events to prevent timeout on large tables
       const { data, error } = await supabase
         .from("chat_events")
         .select("*")
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(1000);
 
       if (error) throw error;
 
@@ -84,14 +85,17 @@ export function useChatMessages(contactId: string | undefined) {
     queryFn: async (): Promise<ChatEvent[]> => {
       if (!contactId) return [];
 
+      // OPTIMIZATION: Limit to 200 messages per contact
       const { data, error } = await supabase
         .from("chat_events")
         .select("*")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false })
+        .limit(200);
 
       if (error) throw error;
-      return (data || []) as ChatEvent[];
+      // Return in ascending order for display
+      return ((data || []) as ChatEvent[]).reverse();
     },
     enabled: !!contactId,
   });

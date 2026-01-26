@@ -118,29 +118,34 @@ export function useSubscriptions() {
       const { data, error } = await supabase
         .from("subscriptions")
         .select("*")
-        .order("amount", { ascending: false });
+        .order("amount", { ascending: false })
+        .limit(2000); // Safety limit to prevent timeout
 
       if (error) throw error;
       return data as Subscription[];
     },
-    refetchInterval: 60000, // Refetch every minute for near-realtime updates
+    refetchInterval: 120000, // Refetch every 2 minutes (reduced from 1 min)
+    staleTime: 60000, // Consider data fresh for 1 minute
   });
 
-  // Realtime subscription for subscriptions table
+  // OPTIMIZATION: Debounced realtime subscription for subscriptions table
   useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => refetch(), 2000);
+    };
+    
     const channel = supabase.channel('subscriptions-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, () => {
-        refetch();
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, () => {
-        refetch();
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'subscriptions' }, () => {
-        refetch();
-      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
       .subscribe();
       
-    return () => { supabase.removeChannel(channel); };
+    return () => { 
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel); 
+    };
   }, [refetch]);
 
   // Calculate revenue by plan with Pareto analysis

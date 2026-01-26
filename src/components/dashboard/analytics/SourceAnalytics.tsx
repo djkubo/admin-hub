@@ -32,32 +32,33 @@ export function SourceAnalytics() {
   const fetchSourceMetrics = async () => {
     setLoading(true);
     try {
-      // Get all clients with acquisition_source
+      // OPTIMIZATION: Limit client fetches to prevent timeout
+      // Get clients with acquisition_source (limit to 10000)
       const { data: clients } = await supabase
         .from('clients')
-        .select('id, acquisition_source, lifecycle_stage, total_spend');
+        .select('id, acquisition_source, lifecycle_stage, total_spend, email')
+        .order('created_at', { ascending: false })
+        .limit(10000);
 
       // Get transactions for revenue calculation (last 30 days)
-      // FIX: Use stripe_created_at for accurate date filtering and include both 'succeeded' and 'paid' statuses
+      // OPTIMIZATION: Limit to 5000 transactions
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const { data: transactions } = await supabase
         .from('transactions')
         .select('customer_email, amount, status, currency, stripe_created_at')
         .in('status', ['succeeded', 'paid'])
-        .gte('stripe_created_at', thirtyDaysAgo);
+        .gte('stripe_created_at', thirtyDaysAgo)
+        .order('stripe_created_at', { ascending: false })
+        .limit(5000);
 
       if (!clients) {
         setMetrics([]);
         return;
       }
 
-      // Build email to source mapping
-      const { data: clientsWithEmail } = await supabase
-        .from('clients')
-        .select('email, acquisition_source');
-
+      // Build email to source mapping from the same clients query
       const emailToSource: Record<string, string> = {};
-      clientsWithEmail?.forEach(c => {
+      clients.forEach(c => {
         if (c.email && c.acquisition_source) {
           emailToSource[c.email.toLowerCase()] = c.acquisition_source;
         }

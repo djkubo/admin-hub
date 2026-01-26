@@ -66,11 +66,14 @@ export function useMetrics() {
       const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetHours * 3600000);
       
       // Fetch monthly sales - ONLY count 'succeeded' and 'paid' status
+      // OPTIMIZATION: Limit to 5000 rows max to prevent statement timeout
       const { data: monthlyTransactions } = await supabase
         .from('transactions')
         .select('amount, currency, status, stripe_created_at')
         .gte('stripe_created_at', firstDayOfMonth.toISOString())
-        .in('status', ['succeeded', 'paid']); // ONLY paid transactions
+        .in('status', ['succeeded', 'paid'])
+        .order('stripe_created_at', { ascending: false })
+        .limit(5000); // Safety limit
 
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
@@ -97,10 +100,13 @@ export function useMetrics() {
       const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
 
       // Fetch failed transactions for recovery list (EXCLUDE paid/succeeded)
+      // OPTIMIZATION: Limit to 500 to prevent timeout
       const { data: failedTransactions } = await supabase
         .from('transactions')
         .select('customer_email, amount, source, failure_code')
-        .or('status.eq.failed,failure_code.in.(requires_payment_method,requires_action,requires_confirmation)');
+        .or('status.eq.failed,failure_code.in.(requires_payment_method,requires_action,requires_confirmation)')
+        .order('stripe_created_at', { ascending: false })
+        .limit(500);
 
       // Deduplicate failed transactions by email
       const failedByEmail = new Map<string, { amount: number; source: string }>();
@@ -158,52 +164,28 @@ export function useMetrics() {
       recoveryList.sort((a, b) => b.amount - a.amount);
 
       // Fetch lifecycle stage counts from clients table
-      const { data: clientsData } = await supabase
-        .from('clients')
-        .select('email, status, trial_started_at, converted_at, lifecycle_stage');
+      // OPTIMIZATION: Use count queries instead of fetching all rows
+      const [
+        { count: leadCount },
+        { count: trialCount },
+        { count: customerCount },
+        { count: churnCount },
+        { count: convertedCount }
+      ] = await Promise.all([
+        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'LEAD'),
+        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'TRIAL'),
+        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CUSTOMER'),
+        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CHURN'),
+        supabase.from('clients').select('*', { count: 'exact', head: true }).not('converted_at', 'is', null),
+      ]);
       
-      // Count unique emails by lifecycle stage
-      const trialEmails = new Set<string>();
-      const convertedEmails = new Set<string>();
-      let leadCount = 0;
-      let customerCount = 0;
-      let churnCount = 0;
-      
-      for (const client of clientsData || []) {
-        if (!client.email) continue;
-        
-        const stage = client.lifecycle_stage as string;
-        
-        switch (stage) {
-          case 'LEAD':
-            leadCount++;
-            break;
-          case 'TRIAL':
-            trialEmails.add(client.email);
-            break;
-          case 'CUSTOMER':
-            customerCount++;
-            if (client.converted_at) {
-              convertedEmails.add(client.email);
-            }
-            break;
-          case 'CHURN':
-            churnCount++;
-            break;
-        }
-        
-        // Also track trial_started_at for conversion rate
-        if (client.trial_started_at) {
-          trialEmails.add(client.email);
-        }
-        if (client.converted_at) {
-          convertedEmails.add(client.email);
-        }
-      }
-      
-      const trialCount = trialEmails.size;
-      const convertedCount = convertedEmails.size;
-      const conversionRate = trialCount > 0 ? (convertedCount / trialCount) * 100 : 0;
+      // Use counts from parallel queries
+      const finalLeadCount = leadCount || 0;
+      const finalTrialCount = trialCount || 0;
+      const finalCustomerCount = customerCount || 0;
+      const finalChurnCount = churnCount || 0;
+      const finalConvertedCount = convertedCount || 0;
+      const conversionRate = finalTrialCount > 0 ? (finalConvertedCount / finalTrialCount) * 100 : 0;
 
       setMetrics({
         salesTodayUSD,
@@ -213,12 +195,12 @@ export function useMetrics() {
         salesMonthMXN,
         salesMonthTotal,
         conversionRate,
-        trialCount,
-        convertedCount,
-        churnCount,
+        trialCount: finalTrialCount,
+        convertedCount: finalConvertedCount,
+        churnCount: finalChurnCount,
         recoveryList,
-        leadCount,
-        customerCount
+        leadCount: finalLeadCount,
+        customerCount: finalCustomerCount
       });
     } catch (error) {
       console.error('Error fetching metrics:', error);
@@ -230,23 +212,31 @@ export function useMetrics() {
   useEffect(() => {
     fetchMetrics();
 
+    // OPTIMIZATION: Debounce realtime changes to prevent excessive refetches
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedFetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        console.log('🔄 Transaction change detected, refreshing metrics...');
+        fetchMetrics();
+      }, 3000); // 3 second debounce
+    };
+
     // Subscribe to realtime changes for automatic updates
     const channel = supabase
       .channel('metrics-realtime')
       .on('postgres_changes', 
         { event: 'INSERT', schema: 'public', table: 'transactions' },
-        () => {
-          console.log('🔄 New transaction detected, refreshing metrics...');
-          fetchMetrics();
-        }
+        debouncedFetch
       )
       .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'transactions' },
-        () => fetchMetrics()
+        debouncedFetch
       )
       .subscribe();
 
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [fetchMetrics]);

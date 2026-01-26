@@ -77,7 +77,8 @@ export function SyncResultsPanel() {
 
   useEffect(() => {
     fetchRuns();
-    const interval = setInterval(fetchRuns, 3000);
+    // OPTIMIZATION: Reduced polling frequency from 3s to 5s
+    const interval = setInterval(fetchRuns, 5000);
     return () => clearInterval(interval);
   }, []);
 

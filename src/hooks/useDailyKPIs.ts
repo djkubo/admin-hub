@@ -161,17 +161,27 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
   useEffect(() => {
     fetchKPIs();
     
+    // OPTIMIZATION: Debounce realtime changes to prevent excessive refetches
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedFetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => fetchKPIs(), 2000); // 2 second debounce
+    };
+    
     // Subscribe to realtime changes on transactions, subscriptions, and invoices
     const channel = supabase.channel('kpis-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, () => fetchKPIs())
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transactions' }, () => fetchKPIs())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, () => fetchKPIs())
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, () => fetchKPIs())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'invoices' }, () => fetchKPIs())
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'invoices' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, debouncedFetch)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transactions' }, debouncedFetch)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, debouncedFetch)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, debouncedFetch)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'invoices' }, debouncedFetch)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'invoices' }, debouncedFetch)
       .subscribe();
       
-    return () => { supabase.removeChannel(channel); };
+    return () => { 
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel); 
+    };
   }, [fetchKPIs]);
 
   return { kpis, isLoading, error, refetch: fetchKPIs };

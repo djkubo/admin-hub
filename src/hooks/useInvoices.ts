@@ -107,6 +107,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Fetch invoices with filters - JOIN with clients for unified identity
+  // OPTIMIZATION: Add limit to prevent statement timeout on large tables
   const { data: invoices = [], isLoading, refetch } = useQuery({
     queryKey: ["invoices", statusFilter, searchQuery, startDate, endDate],
     queryFn: async () => {
@@ -121,7 +122,8 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
             phone_e164
           )
         `)
-        .order("stripe_created_at", { ascending: false, nullsFirst: false });
+        .order("stripe_created_at", { ascending: false, nullsFirst: false })
+        .limit(1000); // Safety limit to prevent timeout
 
       // Status filter
       if (statusFilter !== 'all') {
@@ -154,15 +156,22 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     },
   });
 
-  // Realtime subscription for invoices table
+  // OPTIMIZATION: Debounced realtime subscription for invoices table
   useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => refetch(), 2000);
+    };
+    
     const channel = supabase.channel('invoices-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, () => {
-        refetch();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, debouncedRefetch)
       .subscribe();
       
-    return () => { supabase.removeChannel(channel); };
+    return () => { 
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel); 
+    };
   }, [refetch]);
 
   // Full paginated sync - handles 10,000+ invoices

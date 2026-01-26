@@ -66,6 +66,7 @@ export function useConversations() {
   return useQuery({
     queryKey: ["conversations"],
     queryFn: async () => {
+      // OPTIMIZATION: Limit to most recent 500 messages to prevent timeout
       // Get latest message per client with aggregations
       const { data, error } = await supabase
         .from("messages")
@@ -79,7 +80,8 @@ export function useConversations() {
           from_address,
           client:clients(id, full_name, email, phone)
         `)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(500);
 
       if (error) throw error;
 
