@@ -85,6 +85,12 @@ verify_jwt = false
 [functions.twilio-templates]
 verify_jwt = false
 
+[functions.export-ghl-csv]
+verify_jwt = false
+
+[functions.process-ghl-csv]
+verify_jwt = false
+
 # ============================================
 # CROSS-PLATFORM IDENTITY UNIFICATION
 # ============================================
