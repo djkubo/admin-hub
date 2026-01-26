@@ -20,7 +20,7 @@ import {
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 
-type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl' | 'manychat';
+type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl' | 'manychat' | 'master';
 
 interface CSVFile {
   name: string;
@@ -55,6 +55,22 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       
       console.log(`[CSV Detection] File: ${file.name}`);
       console.log(`[CSV Detection] Headers: ${firstLine.substring(0, 200)}...`);
+      
+      // MASTER CSV DETECTION: Has prefixed columns from multiple sources
+      // Prefixes: CNT_ (GHL/Contact), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
+      const hasCNT = firstLine.includes('cnt_') || firstLine.includes('cnt_contact id');
+      const hasPP = firstLine.includes('pp_') || firstLine.includes('pp_bruto');
+      const hasST = firstLine.includes('st_') || firstLine.includes('st_amount');
+      const hasSUB = firstLine.includes('sub_') || firstLine.includes('sub_plan name');
+      const hasUSR = firstLine.includes('usr_') || firstLine.includes('usr_nombre');
+      const hasAutoMaster = firstLine.includes('auto_master_') || firstLine.includes('auto_total_spend');
+      
+      // If has 2+ prefixes OR has Auto_Master fields, it's a Master CSV
+      const prefixCount = [hasCNT, hasPP, hasST, hasSUB, hasUSR].filter(Boolean).length;
+      if (prefixCount >= 2 || hasAutoMaster) {
+        console.log(`[CSV Detection] Detected as: MASTER CSV (prefixes: CNT=${hasCNT}, PP=${hasPP}, ST=${hasST}, SUB=${hasSUB}, USR=${hasUSR})`);
+        return 'master';
+      }
       
       // STRIPE CUSTOMERS (unified_customers.csv) - detect by Total Spend or Delinquent columns
       // Must check BEFORE Stripe Payments to avoid misclassification
@@ -139,6 +155,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       }
       
       // Fallback to filename patterns
+      if (lowerName.includes('master') || lowerName.includes('maestro') || lowerName.includes('unificado')) {
+        console.log(`[CSV Detection] Filename fallback: Master CSV`);
+        return 'master';
+      }
+      
       if (lowerName.includes('manychat')) {
         console.log(`[CSV Detection] Filename fallback: ManyChat`);
         return 'manychat';
@@ -218,6 +239,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Stripe Payments -> Subscriptions -> Legacy Stripe/PayPal
     const sortedFiles = [...files].sort((a, b) => {
       const priority: Record<CSVFileType, number> = { 
+        master: -1, // Master CSV processes first (contains everything)
         ghl: 0, 
         web: 1, 
         manychat: 2,
@@ -247,7 +269,66 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         
         const text = await file.file.text();
 
-        if (file.type === 'subscriptions') {
+        // MASTER CSV - Process via Edge Function (contains all sources)
+        if (file.type === 'master') {
+          const fileSizeMB = file.file.size / (1024 * 1024);
+          const lineCount = text.split('\n').length;
+          
+          toast.info(`🗂️ Procesando CSV Maestro (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas) en servidor...`, { duration: 10000 });
+          
+          const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
+            'process-csv-bulk',
+            { csvText: text, csvType: 'master', filename: file.name }
+          );
+
+          if (!response || (response.success === false) || (response.ok === false)) {
+            const errorMsg = response?.error || 'Error desconocido';
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { ...f, status: 'error' } : f
+            ));
+            toast.error(`Error procesando CSV Maestro: ${errorMsg}`);
+            continue;
+          }
+
+          const result = (response as any).result || response;
+          const masterResult: ProcessingResult = {
+            clientsCreated: result.clientsCreated || result.created || 0,
+            clientsUpdated: result.clientsUpdated || result.updated || 0,
+            transactionsCreated: result.transactionsCreated || 0,
+            transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
+            errors: result.errors || []
+          };
+          
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done' as const, 
+              result: masterResult
+            } : f
+          ));
+          
+          toast.success(
+            `✅ CSV Maestro: ${masterResult.clientsCreated} nuevos, ${masterResult.clientsUpdated} actualizados. ` +
+            `${masterResult.transactionsCreated} transacciones importadas.`
+          );
+          
+          if (result.ghlContacts) {
+            toast.info(`📋 GHL: ${result.ghlContacts} contactos`);
+          }
+          if (result.stripePayments) {
+            toast.info(`💳 Stripe: ${result.stripePayments} pagos`);
+          }
+          if (result.paypalPayments) {
+            toast.info(`🅿️ PayPal: ${result.paypalPayments} pagos`);
+          }
+          if (result.subscriptions) {
+            toast.info(`📦 Suscripciones: ${result.subscriptions}`);
+          }
+          
+          if (masterResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${masterResult.errors.length} errores`);
+          }
+        } else if (file.type === 'subscriptions') {
           const subsResult = await processSubscriptionsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 

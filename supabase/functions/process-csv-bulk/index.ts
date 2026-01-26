@@ -12,7 +12,7 @@ const corsHeaders = {
 
 const logger = createLogger('process-csv-bulk', LogLevel.INFO);
 
-type CSVType = 'ghl' | 'stripe_payments' | 'stripe_customers' | 'paypal' | 'subscriptions' | 'auto';
+type CSVType = 'ghl' | 'stripe_payments' | 'stripe_customers' | 'paypal' | 'subscriptions' | 'master' | 'auto';
 
 // deno-lint-ignore no-explicit-any
 type AnySupabaseClient = SupabaseClient<any, any, any>;
@@ -25,6 +25,14 @@ interface ProcessingResult {
   skipped: number;
   errors: string[];
   duration: number;
+  // Master CSV specific counts
+  ghlContacts?: number;
+  stripePayments?: number;
+  paypalPayments?: number;
+  subscriptions?: number;
+  transactionsCreated?: number;
+  clientsCreated?: number;
+  clientsUpdated?: number;
 }
 
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
@@ -97,6 +105,21 @@ function normalizeAmount(value: string): number {
 
 function detectCSVType(headers: string[]): CSVType {
   const normalized = headers.map(h => h.toLowerCase().trim());
+  const headerStr = normalized.join(',');
+  
+  // MASTER CSV: Has prefixed columns from multiple sources
+  // Prefixes: CNT_ (GHL/Contact), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
+  const hasCNT = normalized.some(h => h.startsWith('cnt_'));
+  const hasPP = normalized.some(h => h.startsWith('pp_'));
+  const hasST = normalized.some(h => h.startsWith('st_'));
+  const hasSUB = normalized.some(h => h.startsWith('sub_'));
+  const hasUSR = normalized.some(h => h.startsWith('usr_'));
+  const hasAutoMaster = normalized.some(h => h.startsWith('auto_'));
+  
+  const prefixCount = [hasCNT, hasPP, hasST, hasSUB, hasUSR].filter(Boolean).length;
+  if (prefixCount >= 2 || hasAutoMaster) {
+    return 'master';
+  }
   
   // GHL: Has "contact id" or specific GHL fields
   if (normalized.some(h => h.includes('contact id') || h === 'ghl_contact_id')) {
@@ -702,6 +725,423 @@ async function processStripeCustomers(
   return result;
 }
 
+// ============= MASTER CSV PROCESSOR =============
+// Processes CSV with prefixed columns: CNT_ (GHL), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
+async function processMasterCSV(
+  lines: string[],
+  headers: string[],
+  supabase: AnySupabaseClient
+): Promise<ProcessingResult> {
+  const startTime = Date.now();
+  const result: ProcessingResult = {
+    csvType: 'master',
+    totalRows: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    duration: 0,
+    ghlContacts: 0,
+    stripePayments: 0,
+    paypalPayments: 0,
+    subscriptions: 0,
+    transactionsCreated: 0,
+    clientsCreated: 0,
+    clientsUpdated: 0
+  };
+
+  // Build column index maps by prefix
+  const colMap: Record<string, number> = {};
+  headers.forEach((h, idx) => {
+    colMap[h] = idx;
+  });
+
+  // Find key columns
+  const emailIdx = headers.findIndex(h => h === 'email');
+  
+  // Auto_Master fields (pre-calculated unified data)
+  const autoNameIdx = colMap['auto_master_name'] ?? -1;
+  const autoPhoneIdx = colMap['auto_master_phone'] ?? -1;
+  const autoSpendIdx = colMap['auto_total_spend'] ?? -1;
+  const autoSourcesIdx = colMap['auto_data_sources'] ?? -1;
+  
+  // CNT_ (GHL Contact) fields
+  const cntContactIdIdx = colMap['cnt_contact id'] ?? -1;
+  const cntFirstNameIdx = colMap['cnt_first name'] ?? -1;
+  const cntLastNameIdx = colMap['cnt_last name'] ?? -1;
+  const cntPhoneIdx = colMap['cnt_phone'] ?? -1;
+  const cntTagsIdx = colMap['cnt_tags'] ?? -1;
+  const cntCreatedIdx = colMap['cnt_created'] ?? -1;
+  
+  // ST_ (Stripe) fields
+  const stIdIdx = colMap['st_id'] ?? -1;
+  const stAmountIdx = colMap['st_amount'] ?? -1;
+  const stStatusIdx = colMap['st_status'] ?? -1;
+  const stCurrencyIdx = colMap['st_currency'] ?? -1;
+  const stCreatedIdx = colMap['st_created date (utc)'] ?? -1;
+  const stCustomerIdIdx = colMap['st_customer id'] ?? -1;
+  const stPaymentIntentIdx = colMap['st_paymentintent id'] ?? -1;
+  
+  // PP_ (PayPal) fields
+  const ppTxIdIdx = colMap['pp_id. de transacción'] ?? colMap['pp_id de transacción'] ?? -1;
+  const ppBrutoIdx = colMap['pp_bruto'] ?? -1;
+  const ppEstadoIdx = colMap['pp_estado'] ?? -1;
+  const ppFechaIdx = colMap['pp_fecha'] ?? -1;
+  const ppNombreIdx = colMap['pp_nombre'] ?? -1;
+  
+  // SUB_ (Subscription) fields
+  const subPlanNameIdx = colMap['sub_plan name'] ?? -1;
+  const subStatusIdx = colMap['sub_status'] ?? -1;
+  const subPriceIdx = colMap['sub_price'] ?? -1;
+  const subExpiresIdx = colMap['sub_expires at (cdmx)'] ?? -1;
+  const subCreatedIdx = colMap['sub_created at (cdmx)'] ?? -1;
+  
+  // USR_ (User) fields
+  const usrNombreIdx = colMap['usr_nombre'] ?? -1;
+  const usrTelefonoIdx = colMap['usr_telefono'] ?? -1;
+  const usrRoleIdx = colMap['usr_role'] ?? -1;
+
+  if (emailIdx === -1) {
+    result.errors.push('Missing Email column in Master CSV');
+    return result;
+  }
+
+  logger.info('Master CSV column mapping', { 
+    emailIdx, autoNameIdx, autoPhoneIdx, cntContactIdIdx, stIdIdx, ppTxIdIdx, subPlanNameIdx,
+    totalColumns: headers.length
+  });
+
+  interface MasterRow {
+    email: string;
+    // Unified fields
+    fullName: string | null;
+    phone: string | null;
+    totalSpend: number;
+    dataSources: string[];
+    // GHL fields
+    ghlContactId: string | null;
+    ghlTags: string[];
+    ghlCreated: string | null;
+    // Stripe transaction
+    stripeId: string | null;
+    stripeAmount: number;
+    stripeStatus: string | null;
+    stripeCurrency: string | null;
+    stripeCreated: string | null;
+    stripeCustomerId: string | null;
+    stripePaymentIntent: string | null;
+    // PayPal transaction
+    paypalTxId: string | null;
+    paypalAmount: number;
+    paypalStatus: string | null;
+    paypalDate: string | null;
+    // Subscription
+    subPlanName: string | null;
+    subStatus: string | null;
+    subPrice: number;
+    subExpires: string | null;
+    subCreated: string | null;
+    // User
+    userRole: string | null;
+  }
+
+  const rows: MasterRow[] = [];
+
+  // Parse all rows
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
+    try {
+      const values = parseCSVLine(line);
+      const email = values[emailIdx]?.replace(/"/g, '').trim().toLowerCase();
+      
+      if (!email || !email.includes('@')) {
+        result.skipped++;
+        continue;
+      }
+
+      // Parse unified fields
+      const autoName = autoNameIdx >= 0 ? values[autoNameIdx]?.replace(/"/g, '').trim() || null : null;
+      const autoPhone = autoPhoneIdx >= 0 ? normalizePhone(values[autoPhoneIdx] || '') : null;
+      const autoSpend = autoSpendIdx >= 0 ? normalizeAmount(values[autoSpendIdx] || '0') : 0;
+      const autoSources = autoSourcesIdx >= 0 ? (values[autoSourcesIdx]?.replace(/"/g, '').trim() || '').split(',').filter(Boolean) : [];
+
+      // Parse GHL fields
+      const cntContactId = cntContactIdIdx >= 0 ? values[cntContactIdIdx]?.replace(/"/g, '').trim() || null : null;
+      const cntFirstName = cntFirstNameIdx >= 0 ? values[cntFirstNameIdx]?.replace(/"/g, '').trim() || '' : '';
+      const cntLastName = cntLastNameIdx >= 0 ? values[cntLastNameIdx]?.replace(/"/g, '').trim() || '' : '';
+      const cntFullName = [cntFirstName, cntLastName].filter(Boolean).join(' ') || null;
+      const cntPhone = cntPhoneIdx >= 0 ? normalizePhone(values[cntPhoneIdx] || '') : null;
+      const cntTags = cntTagsIdx >= 0 ? (values[cntTagsIdx]?.replace(/"/g, '').trim() || '').split(',').map(t => t.trim()).filter(Boolean) : [];
+      const cntCreated = cntCreatedIdx >= 0 ? values[cntCreatedIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Parse Stripe fields
+      const stId = stIdIdx >= 0 ? values[stIdIdx]?.replace(/"/g, '').trim() || null : null;
+      const stAmount = stAmountIdx >= 0 ? normalizeAmount(values[stAmountIdx] || '0') : 0;
+      const stStatus = stStatusIdx >= 0 ? values[stStatusIdx]?.replace(/"/g, '').trim() || null : null;
+      const stCurrency = stCurrencyIdx >= 0 ? values[stCurrencyIdx]?.replace(/"/g, '').trim().toLowerCase() || 'usd' : 'usd';
+      const stCreated = stCreatedIdx >= 0 ? values[stCreatedIdx]?.replace(/"/g, '').trim() || null : null;
+      const stCustomerId = stCustomerIdIdx >= 0 ? values[stCustomerIdIdx]?.replace(/"/g, '').trim() || null : null;
+      const stPaymentIntent = stPaymentIntentIdx >= 0 ? values[stPaymentIntentIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Parse PayPal fields
+      const ppTxId = ppTxIdIdx >= 0 ? values[ppTxIdIdx]?.replace(/"/g, '').trim() || null : null;
+      const ppAmount = ppBrutoIdx >= 0 ? normalizeAmount(values[ppBrutoIdx] || '0') : 0;
+      const ppStatus = ppEstadoIdx >= 0 ? values[ppEstadoIdx]?.replace(/"/g, '').trim() || null : null;
+      const ppDate = ppFechaIdx >= 0 ? values[ppFechaIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Parse Subscription fields
+      const subPlanName = subPlanNameIdx >= 0 ? values[subPlanNameIdx]?.replace(/"/g, '').trim() || null : null;
+      const subStatus = subStatusIdx >= 0 ? values[subStatusIdx]?.replace(/"/g, '').trim() || null : null;
+      const subPrice = subPriceIdx >= 0 ? normalizeAmount(values[subPriceIdx] || '0') : 0;
+      const subExpires = subExpiresIdx >= 0 ? values[subExpiresIdx]?.replace(/"/g, '').trim() || null : null;
+      const subCreated = subCreatedIdx >= 0 ? values[subCreatedIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Parse User fields
+      const usrNombre = usrNombreIdx >= 0 ? values[usrNombreIdx]?.replace(/"/g, '').trim() || null : null;
+      const usrPhone = usrTelefonoIdx >= 0 ? normalizePhone(values[usrTelefonoIdx] || '') : null;
+      const usrRole = usrRoleIdx >= 0 ? values[usrRoleIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Determine best name and phone (priority: Auto > GHL > USR > PayPal)
+      const bestName = autoName || cntFullName || usrNombre || (ppNombreIdx >= 0 ? values[ppNombreIdx]?.replace(/"/g, '').trim() : null);
+      const bestPhone = autoPhone || cntPhone || usrPhone;
+
+      rows.push({
+        email,
+        fullName: bestName,
+        phone: bestPhone,
+        totalSpend: autoSpend,
+        dataSources: autoSources,
+        ghlContactId: cntContactId,
+        ghlTags: cntTags,
+        ghlCreated: cntCreated,
+        stripeId: stId,
+        stripeAmount: stAmount,
+        stripeStatus: stStatus,
+        stripeCurrency: stCurrency,
+        stripeCreated: stCreated,
+        stripeCustomerId: stCustomerId,
+        stripePaymentIntent: stPaymentIntent,
+        paypalTxId: ppTxId,
+        paypalAmount: ppAmount,
+        paypalStatus: ppStatus,
+        paypalDate: ppDate,
+        subPlanName: subPlanName,
+        subStatus: subStatus,
+        subPrice: subPrice,
+        subExpires: subExpires,
+        subCreated: subCreated,
+        userRole: usrRole
+      });
+
+      result.totalRows++;
+      if (cntContactId) result.ghlContacts = (result.ghlContacts || 0) + 1;
+      if (stId) result.stripePayments = (result.stripePayments || 0) + 1;
+      if (ppTxId) result.paypalPayments = (result.paypalPayments || 0) + 1;
+      if (subPlanName) result.subscriptions = (result.subscriptions || 0) + 1;
+
+    } catch (err) {
+      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
+    }
+  }
+
+  logger.info('Master CSV parsed', { 
+    total: rows.length, 
+    ghl: result.ghlContacts, 
+    stripe: result.stripePayments, 
+    paypal: result.paypalPayments,
+    subs: result.subscriptions
+  });
+
+  const BATCH_SIZE = 500;
+
+  // 1. UPSERT CLIENTS
+  const uniqueEmails = [...new Set(rows.map(r => r.email))];
+  const existingEmails = new Set<string>();
+  
+  for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
+    const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
+    const { data } = await supabase.from('clients').select('email').in('email', batch);
+    data?.forEach(c => existingEmails.add(c.email));
+  }
+
+  // Group rows by email to aggregate data
+  const emailMap = new Map<string, MasterRow[]>();
+  for (const row of rows) {
+    const existing = emailMap.get(row.email) || [];
+    existing.push(row);
+    emailMap.set(row.email, existing);
+  }
+
+  const clientRecords: Record<string, unknown>[] = [];
+  
+  for (const [email, emailRows] of emailMap) {
+    // Aggregate data from all rows for this email
+    const firstRow = emailRows[0];
+    let totalSpend = 0;
+    let hasPayment = false;
+    const allTags: string[] = [];
+    
+    for (const row of emailRows) {
+      if (row.stripeAmount > 0 && row.stripeStatus?.toLowerCase() === 'succeeded') {
+        totalSpend += row.stripeAmount;
+        hasPayment = true;
+      }
+      if (row.paypalAmount > 0 && (row.paypalStatus?.toLowerCase() === 'completado' || row.paypalStatus?.toLowerCase() === 'completed')) {
+        totalSpend += row.paypalAmount;
+        hasPayment = true;
+      }
+      allTags.push(...row.ghlTags);
+    }
+
+    // Determine lifecycle stage
+    let lifecycleStage = 'LEAD';
+    if (hasPayment || totalSpend > 0) {
+      lifecycleStage = 'CUSTOMER';
+    } else if (firstRow.subStatus?.toLowerCase() === 'trial' || firstRow.subPlanName?.toLowerCase().includes('trial')) {
+      lifecycleStage = 'TRIAL';
+    }
+
+    clientRecords.push({
+      email,
+      full_name: firstRow.fullName,
+      phone: firstRow.phone,
+      phone_e164: firstRow.phone,
+      total_spend: totalSpend > 0 ? totalSpend : (firstRow.totalSpend || 0),
+      ghl_contact_id: firstRow.ghlContactId,
+      stripe_customer_id: firstRow.stripeCustomerId,
+      tags: [...new Set(allTags)],
+      lifecycle_stage: lifecycleStage,
+      payment_status: hasPayment ? 'active' : null,
+      acquisition_source: firstRow.dataSources[0] || 'master_import',
+      last_sync: new Date().toISOString()
+    });
+
+    if (existingEmails.has(email)) {
+      result.clientsUpdated = (result.clientsUpdated || 0) + 1;
+    } else {
+      result.clientsCreated = (result.clientsCreated || 0) + 1;
+    }
+  }
+
+  // Upsert clients
+  const totalClientBatches = Math.ceil(clientRecords.length / BATCH_SIZE);
+  for (let i = 0; i < clientRecords.length; i += BATCH_SIZE) {
+    const batch = clientRecords.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    
+    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
+    if (error) {
+      result.errors.push(`Client batch ${batchNum}/${totalClientBatches}: ${error.message}`);
+    }
+    
+    if (batchNum % 10 === 0 || batchNum === 1) {
+      logger.info('Master CSV client upsert progress', { batch: batchNum, total: totalClientBatches });
+    }
+  }
+
+  result.updated = result.clientsUpdated || 0;
+  result.created = result.clientsCreated || 0;
+
+  // 2. INSERT STRIPE TRANSACTIONS
+  const stripeTransactions: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    if (row.stripeId && row.stripeAmount > 0) {
+      stripeTransactions.push({
+        stripe_payment_intent_id: row.stripePaymentIntent || row.stripeId,
+        payment_key: row.stripeId,
+        amount: row.stripeAmount,
+        currency: row.stripeCurrency || 'usd',
+        status: row.stripeStatus?.toLowerCase() === 'succeeded' ? 'succeeded' : row.stripeStatus?.toLowerCase() || 'pending',
+        customer_email: row.email,
+        stripe_customer_id: row.stripeCustomerId,
+        stripe_created_at: row.stripeCreated ? new Date(row.stripeCreated).toISOString() : null,
+        source: 'stripe'
+      });
+    }
+  }
+
+  for (let i = 0; i < stripeTransactions.length; i += BATCH_SIZE) {
+    const batch = stripeTransactions.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
+    if (error) {
+      result.errors.push(`Stripe tx batch: ${error.message}`);
+    } else {
+      result.transactionsCreated = (result.transactionsCreated || 0) + batch.length;
+    }
+  }
+
+  // 3. INSERT PAYPAL TRANSACTIONS
+  const paypalTransactions: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    if (row.paypalTxId && row.paypalAmount !== 0) {
+      paypalTransactions.push({
+        stripe_payment_intent_id: `paypal_${row.paypalTxId}`,
+        payment_key: row.paypalTxId,
+        external_transaction_id: row.paypalTxId,
+        amount: row.paypalAmount,
+        currency: 'usd', // PayPal amounts will be in original currency
+        status: row.paypalStatus?.toLowerCase() === 'completado' || row.paypalStatus?.toLowerCase() === 'completed' ? 'succeeded' : 'pending',
+        customer_email: row.email,
+        stripe_created_at: row.paypalDate ? new Date(row.paypalDate).toISOString() : null,
+        source: 'paypal'
+      });
+    }
+  }
+
+  for (let i = 0; i < paypalTransactions.length; i += BATCH_SIZE) {
+    const batch = paypalTransactions.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
+    if (error) {
+      result.errors.push(`PayPal tx batch: ${error.message}`);
+    } else {
+      result.transactionsCreated = (result.transactionsCreated || 0) + batch.length;
+    }
+  }
+
+  // 4. INSERT SUBSCRIPTIONS (if subscription table exists)
+  const subscriptionRecords: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    if (row.subPlanName) {
+      subscriptionRecords.push({
+        stripe_subscription_id: `master_${row.email}_${row.subPlanName}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+        customer_email: row.email,
+        plan_name: row.subPlanName,
+        status: row.subStatus?.toLowerCase() || 'active',
+        amount: row.subPrice,
+        current_period_end: row.subExpires ? new Date(row.subExpires).toISOString() : null,
+        created_at: row.subCreated ? new Date(row.subCreated).toISOString() : new Date().toISOString(),
+        provider: 'master_import'
+      });
+    }
+  }
+
+  for (let i = 0; i < subscriptionRecords.length; i += BATCH_SIZE) {
+    const batch = subscriptionRecords.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from('subscriptions').upsert(batch, { onConflict: 'stripe_subscription_id' });
+    if (error) {
+      result.errors.push(`Subscription batch: ${error.message}`);
+    }
+  }
+
+  result.duration = Date.now() - startTime;
+  
+  logger.info('Master CSV processing complete', {
+    totalRows: result.totalRows,
+    clientsCreated: result.clientsCreated,
+    clientsUpdated: result.clientsUpdated,
+    transactionsCreated: result.transactionsCreated,
+    ghlContacts: result.ghlContacts,
+    stripePayments: result.stripePayments,
+    paypalPayments: result.paypalPayments,
+    subscriptions: result.subscriptions,
+    duration: result.duration
+  });
+
+  return result;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -755,7 +1195,7 @@ Deno.serve(async (req) => {
     const headerLine = lines[0];
     const headers = parseCSVLine(headerLine).map(h => h.toLowerCase().replace(/"/g, '').trim());
 
-    logger.info('CSV headers parsed', { headerCount: headers.length, sampleHeaders: headers.slice(0, 5) });
+    logger.info('CSV headers parsed', { headerCount: headers.length, sampleHeaders: headers.slice(0, 10) });
 
     // Detect or use requested type
     const csvType = requestedType && requestedType !== 'auto' ? requestedType : detectCSVType(headers);
@@ -765,6 +1205,9 @@ Deno.serve(async (req) => {
     let result: ProcessingResult;
 
     switch (csvType) {
+      case 'master':
+        result = await processMasterCSV(lines, headers, supabase);
+        break;
       case 'ghl':
         result = await processGHL(lines, headers, supabase);
         break;
