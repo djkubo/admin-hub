@@ -10,13 +10,16 @@ import {
   RefreshCw,
   CreditCard,
   FileText,
-  Users
+  Users,
+  StopCircle
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { toast } from "sonner";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 import type { Json } from "@/integrations/supabase/types";
 
 interface SyncRun {
@@ -47,6 +50,7 @@ export function SyncResultsPanel() {
   const [recentRuns, setRecentRuns] = useState<SyncRun[]>([]);
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSyncs, setActiveSyncs] = useState<SyncRun[]>([]);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const fetchRuns = async () => {
     // Active/running syncs
@@ -160,6 +164,48 @@ export function SyncResultsPanel() {
     return Math.max(estimated, 10);
   };
 
+  const getElapsedTime = (startedAt: string): string => {
+    const startDate = new Date(startedAt);
+    const now = new Date();
+    const diffMs = now.getTime() - startDate.getTime();
+    const seconds = Math.floor(diffMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    
+    if (minutes >= 15) return `${minutes}m ⚠️ (posiblemente atascado)`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+  };
+
+  const handleCancelSync = async (source: string) => {
+    setIsCancelling(true);
+    try {
+      let endpoint = 'fetch-stripe';
+      if (source === 'paypal') endpoint = 'fetch-paypal';
+      // Default to stripe for command-center since it's the main one
+      
+      const result = await invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+        endpoint,
+        { forceCancel: true }
+      );
+      
+      if (result?.success) {
+        toast.success('Sync cancelado', {
+          description: result.message || `Sincronización de ${source} cancelada`,
+        });
+        fetchRuns();
+      } else {
+        toast.error('Error al cancelar');
+      }
+    } catch (error) {
+      console.error('Cancel sync error:', error);
+      toast.error('Error al cancelar', {
+        description: error instanceof Error ? error.message : 'Error desconocido',
+      });
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
   const formatDuration = (start: string, end: string | null) => {
     const startDate = new Date(start);
     const endDate = end ? new Date(end) : new Date();
@@ -206,11 +252,30 @@ export function SyncResultsPanel() {
           {/* Active syncs */}
           {activeSyncs.length > 0 && (
             <div className="p-4 space-y-3 bg-blue-500/5">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
+                {activeSyncs.some(s => s.source === 'stripe' || s.source === 'command-center') && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleCancelSync('stripe')}
+                    disabled={isCancelling}
+                    className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  >
+                    {isCancelling ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <StopCircle className="h-3 w-3 mr-1" />
+                    )}
+                    Cancelar todo
+                  </Button>
+                )}
+              </div>
               {activeSyncs.map((sync) => {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
                 const progress = getProgressPercent(sync);
+                const elapsed = getElapsedTime(sync.started_at);
                 
                 return (
                   <div key={sync.id} className="space-y-2">
@@ -220,6 +285,9 @@ export function SyncResultsPanel() {
                         <span className="text-sm font-medium">{config.label}</span>
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        <span>{elapsed}</span>
+                        <span>•</span>
                         <span>{sync.total_fetched?.toLocaleString() || 0} registros</span>
                         <Loader2 className="h-3 w-3 animate-spin" />
                       </div>

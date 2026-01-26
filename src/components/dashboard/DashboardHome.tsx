@@ -116,6 +116,33 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     all: 'Todo',
   };
 
+  const handleForceCancel = async () => {
+    try {
+      setSyncProgress('Cancelando syncs...');
+      const result = await invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+        'fetch-stripe',
+        { forceCancel: true }
+      );
+      
+      if (result?.success) {
+        toast.success('Syncs cancelados', {
+          description: result.message || `Se cancelaron ${result.cancelled} sincronizaciones`,
+        });
+        queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
+      } else {
+        toast.error('Error al cancelar syncs');
+      }
+    } catch (error) {
+      console.error('Force cancel error:', error);
+      toast.error('Error al cancelar', {
+        description: error instanceof Error ? error.message : 'Error desconocido',
+      });
+    } finally {
+      setSyncProgress('');
+      setIsSyncing(false);
+    }
+  };
+
   const handleSyncAll = async (range: SyncRange = 'today') => {
     // Prevent multiple clicks
     if (isSyncing) {
@@ -219,11 +246,19 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido en sincronización';
       
-      // Handle 409 sync_already_running error specifically
+      // Handle 409 sync_already_running error with action button
       if (errorMessage.includes('sync_already_running') || errorMessage.includes('sync en progreso')) {
         toast.warning('Sincronización en progreso', {
-          description: 'Ya hay una sincronización activa. Espera a que termine o revisa el panel de resultados.',
-          duration: 8000,
+          description: 'Ya hay una sincronización activa. Puedes cancelarla y reiniciar.',
+          duration: 10000,
+          action: {
+            label: 'Cancelar y reiniciar',
+            onClick: async () => {
+              await handleForceCancel();
+              // Wait a bit then restart
+              setTimeout(() => handleSyncAll(range), 1000);
+            },
+          },
         });
       } else {
         toast.error('Error en sincronización', {
