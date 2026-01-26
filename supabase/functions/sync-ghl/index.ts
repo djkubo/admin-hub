@@ -71,14 +71,10 @@ async function processSinglePage(
     const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
 
     // Construct pagination params strictly according to V2 docs
+    // Note: 'checks' parameter is not valid in API v2.0 - removed
     const bodyParams: any = {
       locationId: ghlLocationId,
-      pageLimit: CONTACTS_PER_PAGE,
-      // We explicitly ask for these fields to ensure we get email/phone
-      checks: {
-        email: true,
-        phone: true
-      }
+      pageLimit: CONTACTS_PER_PAGE
     };
 
     // Pagination logic: use startAfterId if available
