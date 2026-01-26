@@ -120,95 +120,51 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     setSyncProgress('Iniciando...');
 
     // Configurar rango de fechas
-    const { startDate, endDate, fetchAll, maxPages } = getSyncDateRange(range);
+    const { startDate, endDate, fetchAll } = getSyncDateRange(range);
 
-    toast.info(`Sincronizando ${syncRangeLabels[range]}... esto puede tomar un momento.`);
+    toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      let currentStep = 'Iniciando';
-      let totalRecords = 0;
-      let hasMore = true;
-      let continuingSteps: string[] | undefined = undefined;
-
       // Estado inicial de sync params
-      let syncParams: any = {
+      // NOTA: Eliminamos el loop infinito del frontend.
+      // El edge function manejará la paginación internamente hasta el timeout o maxPages.
+      // 100 páginas x 100 items = 10,000 items, suficiente para "Hoy" o "7 días".
+      const syncParams: any = {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
         fetchAll,
-        limit: 50, // Límite por página
-        maxPages: 10, // Límite de seguridad por request
-        includeContacts: true, // IMPORTANTE: Incluir unificación de identidades
+        limit: 100,
+        maxPages: 100,
+        includeContacts: true,
       };
 
-      // Loop para manejar paginación y "continuing" status
-      while (hasMore) {
-        setSyncProgress(`${currentStep}... ${totalRecords > 0 ? `(${totalRecords} rec)` : ''}`);
+      const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
 
-        const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
+      if (!response?.success) {
+        throw new Error(response?.error || 'Error desconocido en sync');
+      }
 
-        if (!response?.success) {
-          throw new Error(response?.error || 'Error desconocido en sync');
-        }
+      // Procesar resultados
+      const totalRecords = response.totalRecords || 0;
 
-        // Actualizar totales y estado
-        totalRecords = response.totalRecords || 0;
-        continuingSteps = response.continuingSteps;
-
-        // Log de progreso específico
-        if (response.results) {
-          const steps = Object.keys(response.results);
-          const lastStep = steps[steps.length - 1];
-          if (lastStep) currentStep = lastStep;
-
-          // Mostrar toast de progreso si hay cambios significativos
-          if (response.results.stripe?.count) toast.info(`Stripe: ${response.results.stripe.count} items`, { id: 'sync-prog' });
-          if (response.results.invoices?.count) toast.info(`Facturas: ${response.results.invoices.count} items`, { id: 'sync-prog' });
-        }
-
-        // Determinar si debemos continuar
-        if (response.status === 'continuing' && continuingSteps && continuingSteps.length > 0) {
-          console.log('Sync continuing...', continuingSteps);
-          // Actualizar params con los cursors retornados implícitamente en el estado del servidor
-          // Ojo: En este diseño, el servidor guarda el estado en `sync_runs`. 
-          // Para la siguiente iteración, el servidor debería ser capaz de retomar si le pasamos el mismo ID o params.
-          // PERO, el `sync-command-center` actual parece aceptar cursors explícitos.
-          // Vamos a asumir que el cliente debe re-invocar con los mismos parámetros y el servidor maneja la continuidad
-          // O mejor, pasamos los IDs de sync run si el servidor los devolviera, pero revisando el código del servidor,
-          // usa `sync_runs` para guardar estado.
-
-          // REVISIÓN DEL SERVER CODE:
-          // El servidor acepta `stripeSyncRunId`, `stripeCursor`, etc.
-          // Y devuelve `results` pero no explícitamente los nextCursors en el top level response,
-          // SINO en la metadata del `sync_run`. 
-          // Sin embargo, para simplificar en el frontend y dado que el servidor maneja "continuing",
-          // vamos a confiar en que la siguiente llamada retomará si le pasamos lo necesario o si simplemente
-          // llamamos de nuevo (not optimal without cursors).
-
-          // FIX: El servidor SÍ devuelve `continuingSteps`.
-          // Para que sea robusto, idealmente deberíamos pasar los cursors que devuelve la respuesta.
-          // Revisando `index.ts`, la respuesta NO devuelve los cursors en el top level JSON.
-          // Solo devuelve `results`.
-          // PERO devuelve `syncRunId`.
-
-          // Si el servidor es stateless en cuanto a request params, necesitamos pasar los cursors.
-          // Si no los devuelve, estamos limitados.
-          // Asumamos que para "Sync All" (Command Center), el objetivo principal es triggers y updates masivos.
-          // Si se corta, el usuario puede darle click de nuevo.
-
-          // Para evitar loops infinitos si no avanza:
-          hasMore = false; // Por seguridad en esta iteración, no loopeamos ciegamente.
-          toast.warning('Sync parcial completado. Si faltan datos, intente de nuevo.');
-        } else {
-          hasMore = false;
-        }
+      // Mostrar detalles específicos
+      if (response.results) {
+        if (response.results.stripe?.count) toast.info(`Stripe: ${response.results.stripe.count}`, { id: 'sync-stripe' });
+        if (response.results.paypal?.count) toast.info(`PayPal: ${response.results.paypal.count}`, { id: 'sync-paypal' });
+        if (response.results.invoices?.count) toast.info(`Facturas: ${response.results.invoices.count}`, { id: 'sync-invoices' });
+        if (response.results.unify?.count) toast.info(`Usuarios: ${response.results.unify.count} unificados`, { id: 'sync-unify' });
       }
 
       setSyncStatus('ok');
       setSyncProgress('');
-      toast.success(`✅ Sincronización completada: ${totalRecords} registros procesados`);
+
+      if (response.status === 'continuing') {
+        toast.warning(`Sincronización parcial (${totalRecords} registros). Límite de tiempo alcanzado. Intente de nuevo si faltan datos.`);
+      } else {
+        toast.success(`✅ Completado: ${totalRecords} registros procesados`);
+      }
 
       // Invalidar queries para refrescar UI
-      // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
@@ -347,8 +303,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                   key={f}
                   onClick={() => setFilter(f)}
                   className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${filter === f
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-card text-muted-foreground hover:text-foreground'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-card text-muted-foreground hover:text-foreground'
                     }`}
                 >
                   {filterLabels[f]}
