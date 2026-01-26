@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { startOfDay, endOfDay, subDays, subMonths, subYears } from 'date-fns';
+import { startOfDay, endOfDay, subDays, subMonths, subYears, format } from 'date-fns';
 
 export type TimeFilter = 'today' | '7d' | 'month' | 'all';
 
@@ -36,7 +36,7 @@ const defaultKPIs: DailyKPIs = {
 
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
   const now = new Date();
-  
+
   let startDate: Date;
   let endDate = endOfDay(now);
   let rangeParam: string = filter;
@@ -60,10 +60,10 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
       rangeParam = 'today';
   }
 
-  return { 
-    start: startDate.toISOString(), 
-    end: endDate.toISOString(), 
-    rangeParam 
+  return {
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+    rangeParam
   };
 }
 
@@ -78,8 +78,8 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
     try {
       const { start, end, rangeParam } = getDateRange(filter);
-      const startDateOnly = start.split('T')[0];
-      const endDateOnly = end.split('T')[0];
+      const startDateOnly = format(new Date(start), 'yyyy-MM-dd');
+      const endDateOnly = format(new Date(end), 'yyyy-MM-dd');
 
       // Fetch each query separately with error handling
       let newCustomers: { new_customer_count: number; total_revenue: number; currency: string }[] = [];
@@ -181,7 +181,7 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
   useEffect(() => {
     fetchKPIs();
-    
+
     // Subscribe to sync run completions instead of row-level inserts
     const channel = supabase.channel('kpis-sync-runs')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'sync_runs' }, (payload) => {
@@ -191,7 +191,7 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         }
       })
       .subscribe();
-      
+
     return () => { supabase.removeChannel(channel); };
   }, [fetchKPIs]);
 
