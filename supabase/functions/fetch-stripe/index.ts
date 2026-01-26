@@ -510,11 +510,13 @@ Deno.serve(async (req) => {
     let endDate: number | null = null;
     let resumeSyncId: string | null = null;
     let cleanupStale = false;
+    let forceCancel = false;
 
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
+      forceCancel = body.forceCancel === true;
       resumeSyncId = body.resumeSyncId || null;
 
       if (body.startDate) startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
@@ -523,9 +525,35 @@ Deno.serve(async (req) => {
       // No body - use defaults
     }
 
+    // ============ FORCE CANCEL ALL SYNCS ============
+    if (forceCancel) {
+      const { data: cancelledSyncs, error: cancelError } = await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(), 
+          error_message: 'Cancelado forzosamente por usuario' 
+        })
+        .eq('source', 'stripe')
+        .in('status', ['running', 'continuing'])
+        .select('id');
+
+      logger.info('Force cancelled syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'cancelled', 
+          cancelled: cancelledSyncs?.length || 0,
+          message: `Se cancelaron ${cancelledSyncs?.length || 0} sincronizaciones` 
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
-      const staleThreshold = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const staleThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString(); // Reduced from 30 to 15 min
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
         .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout' })
@@ -576,13 +604,18 @@ Deno.serve(async (req) => {
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
-    // Clean up stale syncs first
-    await supabase
+    // Auto-cleanup stale syncs (15 min threshold - aggressive cleanup to prevent blocking)
+    const staleAutoCleanup = await supabase
       .from('sync_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - stale' })
+      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - auto-cleanup 15min' })
       .eq('source', 'stripe')
       .in('status', ['running', 'continuing'])
-      .lt('started_at', new Date(Date.now() - 30 * 60 * 1000).toISOString());
+      .lt('started_at', new Date(Date.now() - 15 * 60 * 1000).toISOString())
+      .select('id');
+    
+    if (staleAutoCleanup.data && staleAutoCleanup.data.length > 0) {
+      logger.info('Auto-cleaned stale syncs', { count: staleAutoCleanup.data.length });
+    }
 
     const { data: existingRuns } = await supabase
       .from('sync_runs')
