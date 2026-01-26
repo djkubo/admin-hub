@@ -189,10 +189,20 @@ export function SyncResultsPanel() {
                 size="sm"
                 onClick={async (e) => {
                   e.stopPropagation();
+                  setActiveSyncs([]); // Limpiar UI inmediatamente
+                  toast.loading('Deteniendo procesos...', { id: 'reset-toast' });
+
                   const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
+
                   if (!error) {
-                    toast.success('Procesos detenidos');
-                    fetchRuns();
+                    toast.success('Procesos detenidos. Recargando...', { id: 'reset-toast' });
+                    // Give DB a moment to process before reload
+                    setTimeout(() => {
+                      window.location.reload();
+                    }, 1000);
+                  } else {
+                    toast.error('Error al detener: ' + error.message, { id: 'reset-toast' });
+                    fetchRuns(); // Revert UI if failed
                   }
                 }}
                 className="h-6 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1 mr-2"
