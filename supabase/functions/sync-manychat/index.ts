@@ -1,9 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
+import { createLogger, LogLevel } from '../_shared/logger.ts';
+import { RATE_LIMITERS } from '../_shared/rate-limiter.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+const logger = createLogger('sync-manychat', LogLevel.INFO);
+const rateLimiter = RATE_LIMITERS.MANYCHAT;
 
 // ============ VERIFY ADMIN ============
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
@@ -14,7 +20,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
@@ -55,7 +61,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log("✅ Admin verified via JWT");
+    logger.info('Admin verified via JWT');
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -63,7 +69,7 @@ Deno.serve(async (req) => {
 
     if (!manychatApiKey) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           ok: false,
           status: 'error',
           error: 'MANYCHAT_API_KEY required',
@@ -79,7 +85,7 @@ Deno.serve(async (req) => {
     const cursor = body.cursor ?? 0;
     let syncRunId = body.syncRunId;
 
-    console.log(`[sync-manychat] Starting sync, dry_run=${dryRun}, cursor=${cursor}`);
+    logger.info('Starting ManyChat sync', { dryRun, cursor });
 
     // Create or update sync run
     if (!syncRunId) {
@@ -118,25 +124,35 @@ Deno.serve(async (req) => {
       .limit(100);
 
     if (clientsError) {
-      console.error('[sync-manychat] Error fetching clients:', clientsError);
+      logger.error('Error fetching clients', clientsError);
     }
 
     const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
     const hasMore = emailsToSearch.length >= 100;
-    
-    console.log(`[sync-manychat] Found ${emailsToSearch.length} clients to search in ManyChat`);
+
+    logger.info('Found clients to search in ManyChat', { count: emailsToSearch.length });
 
     for (const email of emailsToSearch) {
       try {
         const encodedEmail = encodeURIComponent(email);
-        const searchResponse = await fetch(
-          `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+
+        // Wrap API call with retry + rate limiting
+        const searchResponse = await retryWithBackoff(
+          () => rateLimiter.execute(() =>
+            fetch(
+              `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+              {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${manychatApiKey}`,
+                  'Accept': 'application/json'
+                }
+              }
+            )
+          ),
           {
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${manychatApiKey}`,
-              'Accept': 'application/json'
-            }
+            ...RETRY_CONFIGS.FAST,
+            retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
           }
         );
 
@@ -146,21 +162,20 @@ Deno.serve(async (req) => {
             totalSkipped++;
             continue;
           }
-          console.error(`[sync-manychat] Search error for ${email}: ${status}`);
+          logger.warn('Search error for email', { email, status });
           totalSkipped++;
           continue;
         }
 
         const searchData = await searchResponse.json();
-        
+
         if (searchData.status !== 'success' || !searchData.data) {
           totalSkipped++;
           continue;
         }
 
         const subscriber = searchData.data;
-        totalFetched++;
-        console.log(`[sync-manychat] Found subscriber ${subscriber.id} for ${email}`);
+        logger.info('Found subscriber', { subscriberId: subscriber.id, email });
 
         if (!dryRun) {
           await supabase
@@ -197,7 +212,7 @@ Deno.serve(async (req) => {
         });
 
         if (mergeError) {
-          console.error(`[sync-manychat] Merge error for ${subscriber.id}:`, mergeError);
+          logger.error('Merge error for subscriber', mergeError, { subscriberId: subscriber.id });
           totalSkipped++;
           continue;
         }
@@ -211,7 +226,7 @@ Deno.serve(async (req) => {
         await new Promise(resolve => setTimeout(resolve, 150));
 
       } catch (subError) {
-        console.error(`[sync-manychat] Error for ${email}:`, subError);
+        logger.error('Error processing email', subError, { email });
         totalSkipped++;
       }
     }
@@ -228,14 +243,14 @@ Deno.serve(async (req) => {
         total_updated: totalUpdated,
         total_skipped: totalSkipped,
         total_conflicts: totalConflicts,
-        metadata: { 
+        metadata: {
           method: 'subscriber_search_get',
           emails_searched: emailsToSearch.length
         }
       })
       .eq('id', syncRunId);
 
-    console.log(`[sync-manychat] ${status}: ${totalFetched} found, ${totalInserted} inserted, ${totalUpdated} updated`);
+    logger.info('ManyChat sync status', { status, totalFetched, totalInserted, totalUpdated });
 
     return new Response(
       JSON.stringify({
@@ -254,7 +269,7 @@ Deno.serve(async (req) => {
           total_skipped: totalSkipped,
           total_conflicts: totalConflicts
         },
-        note: totalFetched === 0 
+        note: totalFetched === 0
           ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients.'
           : `Found ${totalFetched} subscribers matching your client emails.`
       }),
@@ -264,7 +279,7 @@ Deno.serve(async (req) => {
   } catch (error: any) {
     console.error('[sync-manychat] Error:', error);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         ok: false,
         status: 'error',
         error: error.message || 'Unknown error',

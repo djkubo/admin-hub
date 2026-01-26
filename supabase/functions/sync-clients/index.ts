@@ -1,4 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createLogger, LogLevel } from '../_shared/logger.ts';
+
+const logger = createLogger('sync-clients', LogLevel.INFO);
 
 const ALLOWED_ORIGINS = [
   "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
@@ -9,8 +12,8 @@ const ALLOWED_ORIGINS = [
 ];
 
 function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => o === "*" || origin.startsWith(o.replace(/\/$/, ''))) 
-    ? origin 
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => o === "*" || origin.startsWith(o.replace(/\/$/, '')))
+    ? origin
     : "*";
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
@@ -31,7 +34,7 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-    
+
     // Create admin client for DB operations
     const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false }
@@ -40,7 +43,7 @@ Deno.serve(async (req) => {
     // Check for x-admin-key authentication (for external scripts)
     const adminKeyHeader = req.headers.get("x-admin-key");
     const authHeader = req.headers.get("Authorization");
-    
+
     let isAuthenticated = false;
     let authMethod = "";
 
@@ -51,14 +54,14 @@ Deno.serve(async (req) => {
         .select('value')
         .eq('key', 'admin_api_key')
         .single();
-      
+
       if (settingsData?.value && adminKeyHeader === settingsData.value) {
         isAuthenticated = true;
         authMethod = "x-admin-key";
         console.log("✅ Authenticated via x-admin-key (external script)");
       }
     }
-    
+
     // Fallback to JWT authentication
     if (!isAuthenticated && authHeader?.startsWith("Bearer ")) {
       const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
@@ -67,7 +70,7 @@ Deno.serve(async (req) => {
 
       const token = authHeader.replace("Bearer ", "");
       const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
-      
+
       if (!claimsError && claimsData?.user) {
         isAuthenticated = true;
         authMethod = "JWT";
@@ -143,12 +146,12 @@ Deno.serve(async (req) => {
 
     for (let i = 0; i < mergedClients.length; i += batchSize) {
       const batch = mergedClients.slice(i, i + batchSize);
-      
+
       const { data, error } = await supabaseAdmin
         .from('clients')
-        .upsert(batch, { 
+        .upsert(batch, {
           onConflict: 'email',
-          ignoreDuplicates: false 
+          ignoreDuplicates: false
         })
         .select('id');
 
@@ -186,8 +189,8 @@ Deno.serve(async (req) => {
     }
 
     // Build payment map: email -> first payment info
-    const paymentMap = new Map<string, { 
-      hasPaid: boolean; 
+    const paymentMap = new Map<string, {
+      hasPaid: boolean;
       firstPaymentDate: string | null;
       totalPaid: number;
       paymentType: string | null;
@@ -228,7 +231,7 @@ Deno.serve(async (req) => {
         if (currentStage !== 'CUSTOMER') {
           const { error: updateError } = await supabaseAdmin
             .from('clients')
-            .update({ 
+            .update({
               lifecycle_stage: 'CUSTOMER',
               first_payment_at: paymentInfo.firstPaymentDate,
               total_paid: paymentInfo.totalPaid
