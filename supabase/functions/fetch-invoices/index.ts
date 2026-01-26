@@ -131,19 +131,19 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
+
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
+
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -247,7 +247,7 @@ async function enrichClientIfNeeded(
   stripeCustomerId: string | null
 ): Promise<void> {
   if (!clientId) return;
-  
+
   try {
     // Fetch current client data
     const { data: client, error: fetchError } = await supabase
@@ -255,17 +255,17 @@ async function enrichClientIfNeeded(
       .select('full_name, phone_e164, stripe_customer_id')
       .eq('id', clientId)
       .single();
-    
+
     if (fetchError || !client) return;
 
     // Build update object only with missing fields
     const updates: Record<string, unknown> = {};
-    
+
     // Enrich full_name if missing and we have it from Stripe
     if (!client.full_name && customerName) {
       updates.full_name = customerName;
     }
-    
+
     // Enrich phone_e164 if missing and we have it from Stripe
     if (!client.phone_e164 && customerPhone) {
       // Normalize phone to E.164 format
@@ -278,21 +278,21 @@ async function enrichClientIfNeeded(
         updates.phone = customerPhone; // Keep original format too
       }
     }
-    
+
     // Ensure stripe_customer_id is set
     if (!client.stripe_customer_id && stripeCustomerId) {
       updates.stripe_customer_id = stripeCustomerId;
     }
-    
+
     // Only update if there's something to update
     if (Object.keys(updates).length > 0) {
       updates.last_sync = new Date().toISOString();
-      
+
       const { error: updateError } = await supabase
         .from('clients')
         .update(updates)
         .eq('id', clientId);
-      
+
       if (updateError) {
         console.warn(`Failed to enrich client ${clientId}:`, updateError.message);
       } else {
@@ -393,7 +393,7 @@ Deno.serve(async (req) => {
       syncRunId = body.syncRunId || null;
       fetchAll = body.fetchAll === true;
       limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
-      
+
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
     } catch {
@@ -405,7 +405,7 @@ Deno.serve(async (req) => {
     // Check for existing running sync (prevent duplicates)
     if (!syncRunId) {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      
+
       const { data: existingSync } = await supabase
         .from('sync_runs')
         .select('id, started_at, total_fetched, checkpoint')
@@ -415,7 +415,7 @@ Deno.serve(async (req) => {
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      
+
       if (existingSync) {
         console.log('⚠️ Sync already running:', existingSync.id);
         return new Response(
@@ -428,7 +428,7 @@ Deno.serve(async (req) => {
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      
+
       // Create new sync run
       const { data: syncRun } = await supabase
         .from('sync_runs')
@@ -469,7 +469,7 @@ Deno.serve(async (req) => {
     }
 
     const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
-    
+
     const response = await fetch(stripeUrl, {
       headers: {
         Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
@@ -494,7 +494,12 @@ Deno.serve(async (req) => {
     let upsertedCount = 0;
     let errorCount = 0;
 
-    for (const invoice of invoices) {
+    // Stats counters
+    const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+    let upsertedCount = 0;
+
+    // Batch processing
+    const invoiceRecords = invoices.map(invoice => {
       // Count by status
       if (invoice.status === 'draft') stats.draft++;
       else if (invoice.status === 'open') stats.open++;
@@ -504,7 +509,7 @@ Deno.serve(async (req) => {
 
       // Extract enriched plan info
       const { planName, planInterval, productName } = extractPlanInfo(invoice);
-      
+
       // Get customer info
       const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
       const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
@@ -520,29 +525,12 @@ Deno.serve(async (req) => {
       const customerDetails = invoice.customer_details || null;
       const invoiceMetadata = invoice.metadata || null;
 
-      // Resolve client_id via unify_identity (preferred) or fallback
-      const unifyResult = await resolveClientViaUnify(
-        supabase, 
-        stripeCustomerId, 
-        customerEmail, 
-        customerPhone,
-        customerName
-      );
-      
-      let clientId = unifyResult.clientId;
-      
-      // Fallback if unify_identity didn't work
-      if (!clientId) {
-        clientId = await resolveClientFallback(supabase, stripeCustomerId, customerEmail, customerPhone);
-      }
-      
-      // Enrich client data if we have new info from Stripe
-      if (clientId && (unifyResult.shouldEnrich || !unifyResult.clientId)) {
-        await enrichClientIfNeeded(supabase, clientId, customerName, customerPhone, stripeCustomerId);
-      }
+      // NOTE: We do NOT resolve client_id here anymore to save time.
+      // The 'harvest_recent_contacts' SQL function (run by sync-command-center)
+      // will handle linking invoices to clients in bulk.
 
       // Get subscription ID
-      const subscriptionId = invoice.subscription 
+      const subscriptionId = invoice.subscription
         ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
         : null;
 
@@ -567,8 +555,8 @@ Deno.serve(async (req) => {
         price_nickname: line.price?.nickname,
         unit_amount: line.price?.unit_amount,
         interval: line.price?.recurring?.interval,
-        product_name: line.price?.product && typeof line.price.product === 'object' 
-          ? line.price.product.name 
+        product_name: line.price?.product && typeof line.price.product === 'object'
+          ? line.price.product.name
           : null,
       })) || null;
 
@@ -576,19 +564,19 @@ Deno.serve(async (req) => {
       const paidAt = invoice.status_transitions?.paid_at
         ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
         : (invoice.status === 'paid' ? new Date().toISOString() : null);
-      
+
       const finalizedAt = invoice.status_transitions?.finalized_at
         ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
         : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
 
-      const invoiceRecord = {
+      return {
         stripe_invoice_id: invoice.id,
         invoice_number: invoice.number,
         customer_email: customerEmail?.toLowerCase() || null,
         customer_name: customerName,
         customer_phone: customerPhone,
         stripe_customer_id: stripeCustomerId,
-        client_id: clientId,
+        // client_id: Link via Harvester SQL
         amount_due: invoice.amount_due,
         amount_paid: invoice.amount_paid,
         amount_remaining: invoice.amount_remaining,
@@ -596,16 +584,16 @@ Deno.serve(async (req) => {
         total: invoice.total,
         currency: invoice.currency,
         status: invoice.status,
-        stripe_created_at: invoice.created 
-          ? new Date(invoice.created * 1000).toISOString() 
+        stripe_created_at: invoice.created
+          ? new Date(invoice.created * 1000).toISOString()
           : null,
         finalized_at: finalizedAt,
         paid_at: paidAt,
-        automatically_finalizes_at: invoice.automatically_finalizes_at 
-          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
+        automatically_finalizes_at: invoice.automatically_finalizes_at
+          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString()
           : null,
-        period_end: invoice.period_end 
-          ? new Date(invoice.period_end * 1000).toISOString() 
+        period_end: invoice.period_end
+          ? new Date(invoice.period_end * 1000).toISOString()
           : null,
         next_payment_attempt: invoice.next_payment_attempt
           ? new Date(invoice.next_payment_attempt * 1000).toISOString()
@@ -633,19 +621,22 @@ Deno.serve(async (req) => {
         raw_data: invoice as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       };
+    });
 
-      const { error } = await supabase
+    if (invoiceRecords.length > 0) {
+      const { error, count } = await supabase
         .from("invoices")
-        .upsert(invoiceRecord, { 
+        .upsert(invoiceRecords, {
           onConflict: "stripe_invoice_id",
-          ignoreDuplicates: false 
+          ignoreDuplicates: false,
+          count: 'exact'
         });
 
       if (error) {
-        console.error(`❌ Error upserting invoice ${invoice.id}:`, error.message);
-        errorCount++;
+        console.error(`❌ Error bulk upserting invoices:`, error.message);
+        throw error;
       } else {
-        upsertedCount++;
+        upsertedCount = invoiceRecords.length; // or count if provided
       }
     }
 
@@ -693,7 +684,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
-    
+
     return new Response(
       JSON.stringify({ success: false, error: errorMessage, duration_ms: Date.now() - startTime }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
