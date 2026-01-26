@@ -494,10 +494,6 @@ Deno.serve(async (req) => {
     let upsertedCount = 0;
     let errorCount = 0;
 
-    // Stats counters
-    const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
-    let upsertedCount = 0;
-
     // Batch processing
     const invoiceRecords = invoices.map(invoice => {
       // Count by status
