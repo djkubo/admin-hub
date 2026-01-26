@@ -71,8 +71,8 @@ async function processSinglePage(
     const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
 
     // Construct pagination params strictly according to V2 docs
-    // Note: 'checks' parameter is not valid in API v2.0 - removed
-    const bodyParams: any = {
+    // Note: 'checks' parameter is NOT valid in API v2.0 - DO NOT INCLUDE
+    const bodyParams: Record<string, unknown> = {
       locationId: ghlLocationId,
       pageLimit: CONTACTS_PER_PAGE
     };
@@ -88,7 +88,22 @@ async function processSinglePage(
       logger.info('Using startAfter (timestamp) for pagination', { startAfter });
     }
 
-    logger.info('Fetching GHL contacts (V2 Search)', { startAfterId, limit: CONTACTS_PER_PAGE });
+    // Log the exact body being sent (for debugging)
+    logger.info('Fetching GHL contacts (V2 Search)', { 
+      startAfterId, 
+      limit: CONTACTS_PER_PAGE,
+      bodyKeys: Object.keys(bodyParams),
+      bodyParams: JSON.stringify(bodyParams)
+    });
+
+    // Ensure bodyParams does NOT contain 'checks' - explicitly remove if present
+    const { checks, ...cleanBodyParams } = bodyParams as any;
+    if (checks !== undefined) {
+      logger.warn('WARNING: checks parameter was present and removed!', { originalBody: bodyParams });
+    }
+    
+    const finalBody = JSON.stringify(cleanBodyParams);
+    logger.info('Final request body (no checks)', { body: finalBody });
 
     // Wrap API call with retry + rate limiting
     const ghlResponse = await retryWithBackoff(
@@ -101,7 +116,7 @@ async function processSinglePage(
             'Accept': 'application/json',
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(bodyParams)
+          body: finalBody
         })
       ),
       {
