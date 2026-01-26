@@ -104,12 +104,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       
       // MASTER CSV DETECTION: Has prefixed columns from multiple sources
       // Prefixes: CNT_ (GHL/Contact), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
-      const hasCNT = firstLine.includes('cnt_') || firstLine.includes('cnt_contact id');
-      const hasPP = firstLine.includes('pp_') || firstLine.includes('pp_bruto');
-      const hasST = firstLine.includes('st_') || firstLine.includes('st_amount');
-      const hasSUB = firstLine.includes('sub_') || firstLine.includes('sub_plan name');
-      const hasUSR = firstLine.includes('usr_') || firstLine.includes('usr_nombre');
-      const hasAutoMaster = firstLine.includes('auto_master_') || firstLine.includes('auto_total_spend');
+      // NOTE: Check is case-insensitive since CSV headers may be in UPPER, lower, or Mixed case
+      const hasCNT = /\bcnt_/i.test(firstLine) || /\bcnt_contact\s*id/i.test(firstLine);
+      const hasPP = /\bpp_/i.test(firstLine) || /\bpp_bruto/i.test(firstLine);
+      const hasST = /\bst_/i.test(firstLine) || /\bst_amount/i.test(firstLine);
+      const hasSUB = /\bsub_/i.test(firstLine) || /\bsub_plan\s*name/i.test(firstLine);
+      const hasUSR = /\busr_/i.test(firstLine) || /\busr_nombre/i.test(firstLine);
+      const hasAutoMaster = /\bauto_master_/i.test(firstLine) || /\bauto_total_spend/i.test(firstLine);
       
       // If has 2+ prefixes OR has Auto_Master fields, it's a Master CSV
       const prefixCount = [hasCNT, hasPP, hasST, hasSUB, hasUSR].filter(Boolean).length;
