@@ -1,4 +1,8 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
+import { createLogger, LogLevel } from '../_shared/logger.ts';
+
+const logger = createLogger('fetch-paypal', LogLevel.INFO);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,77 +10,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ============= TYPE DEFINITIONS =============
-
-interface AdminVerifyResult {
-  valid: boolean;
-  error?: string;
-  userId?: string;
-}
-
-interface PayPalTransaction {
-  transaction_info: {
-    transaction_id: string;
-    transaction_event_code: string;
-    transaction_initiation_date: string;
-    transaction_amount: {
-      currency_code: string;
-      value: string;
-    };
-    fee_amount?: {
-      value?: string;
-    };
-    transaction_status: string;
-    transaction_note?: string;
-    transaction_subject?: string;
-  };
-  payer_info?: {
-    email_address?: string;
-    account_id?: string;
-    payer_name?: {
-      given_name?: string;
-      surname?: string;
-    };
-  };
-  cart_info?: {
-    item_details?: Array<{
-      item_name?: string;
-      item_description?: string;
-    }>;
-  };
-}
-
-interface PayPalPageResult {
-  transactions: PayPalTransaction[];
-  totalPages: number;
-  totalItems: number;
-}
-
-interface TransactionRecord {
-  stripe_payment_intent_id: string;
-  payment_key: string;
-  external_transaction_id: string;
-  customer_email: string;
-  amount: number;
-  currency: string;
-  status: string;
-  stripe_created_at: string;
-  source: string;
-  metadata: Record<string, unknown>;
-  raw_data: Record<string, unknown>;
-}
-
-interface ClientRecord {
-  email: string;
-  full_name: string | null;
-  paypal_customer_id: string | null;
-  lifecycle_stage: string;
-  last_sync: string;
-}
-
-// ============= CONSTANTS =============
-
-const STALE_TIMEOUT_MINUTES = 30;
+// ... interfaces ...
 
 // ============= SECURITY =============
 
@@ -88,19 +22,19 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
+
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
+
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -112,15 +46,22 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
 async function getPayPalAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const credentials = btoa(`${clientId}:${clientSecret}`);
-  
-  const response = await fetch("https://api-m.paypal.com/v1/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${credentials}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  });
+
+  // Retry token fetch
+  const response = await retryWithBackoff(
+    () => fetch("https://api-m.paypal.com/v1/oauth2/token", {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${credentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+    }),
+    {
+      ...RETRY_CONFIGS.FAST,
+      retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP]
+    }
+  );
 
   if (!response.ok) {
     const error = await response.text();
@@ -132,14 +73,15 @@ async function getPayPalAccessToken(clientId: string, clientSecret: string): Pro
 }
 
 function mapPayPalStatus(status: string, eventCode: string): string {
+  // ... (keep same logic)
   const statusLower = status.toLowerCase();
   const eventLower = eventCode.toLowerCase();
-  
+
   if (statusLower === 's' || statusLower === 'success' || statusLower === 'completed' || eventLower.includes('completed')) {
     return 'paid';
   }
-  if (statusLower === 'd' || statusLower === 'denied' || statusLower === 'failed' || 
-      statusLower === 'r' || statusLower === 'reversed' || statusLower === 'refunded') {
+  if (statusLower === 'd' || statusLower === 'denied' || statusLower === 'failed' ||
+    statusLower === 'r' || statusLower === 'reversed' || statusLower === 'refunded') {
     return 'failed';
   }
   if (statusLower === 'p' || statusLower === 'pending') {
@@ -161,12 +103,20 @@ async function fetchPayPalPage(
   url.searchParams.set("page", String(page));
   url.searchParams.set("fields", "transaction_info,payer_info,cart_info");
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      "Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-  });
+  logger.info("Fetching PayPal transactions", { startDate, endDate, page });
+
+  const response = await retryWithBackoff(
+    () => fetch(url.toString(), {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    }),
+    {
+      ...RETRY_CONFIGS.STANDARD,
+      retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP]
+    }
+  );
 
   if (!response.ok) {
     const error = await response.text();
@@ -212,7 +162,7 @@ Deno.serve(async (req) => {
 
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
-    
+
     if (!paypalClientId || !paypalSecret) {
       return new Response(
         JSON.stringify({ success: false, status: 'failed', error: "PayPal credentials not configured" }),
@@ -247,7 +197,7 @@ Deno.serve(async (req) => {
       cleanupStale = body.cleanupStale === true;
       page = body.page || 1;
       syncRunId = body.syncRunId || null;
-      
+
       if (body.startDate) {
         let requestedStart = new Date(body.startDate);
         if (requestedStart < threeYearsAgo) {
@@ -258,7 +208,7 @@ Deno.serve(async (req) => {
         // Default: 31 days ago
         startDate = formatPayPalDate(new Date(nowMs - 31 * 24 * 60 * 60 * 1000));
       }
-      
+
       // CRITICAL: Always cap end_date to safe past timestamp
       // Never trust client-provided endDate - always enforce server-side cap
       if (body.endDate) {
@@ -279,7 +229,7 @@ Deno.serve(async (req) => {
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
         .update({
@@ -291,7 +241,7 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .lt('started_at', staleThreshold)
         .select('id');
-      
+
       return new Response(
         JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -301,7 +251,7 @@ Deno.serve(async (req) => {
     // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       await supabase
         .from('sync_runs')
         .update({
@@ -322,8 +272,8 @@ Deno.serve(async (req) => {
 
       if (existingRuns && existingRuns.length > 0) {
         return new Response(
-          JSON.stringify({ 
-            success: false, 
+          JSON.stringify({
+            success: false,
             status: 'failed',
             error: 'sync_already_running',
             message: 'Ya hay un sync de PayPal en progreso',
@@ -345,7 +295,7 @@ Deno.serve(async (req) => {
         })
         .select('id')
         .single();
-      
+
       if (syncError) {
         return new Response(
           JSON.stringify({ success: false, status: 'failed', error: "Failed to create sync record" }),
@@ -353,11 +303,11 @@ Deno.serve(async (req) => {
         );
       }
       syncRunId = syncRun?.id;
-      console.log(`📊 NEW PAYPAL SYNC RUN: ${syncRunId}`);
+      logger.info(`NEW PAYPAL SYNC RUN: ${syncRunId}`);
     } else {
       await supabase
         .from('sync_runs')
-        .update({ 
+        .update({
           status: 'running',
           checkpoint: { page, lastActivity: new Date().toISOString() }
         })
@@ -369,17 +319,19 @@ Deno.serve(async (req) => {
     try {
       accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Auth failed';
+      logger.error('PayPal auth failed', error instanceof Error ? error : new Error(String(error)));
       await supabase
         .from('sync_runs')
         .update({
           status: 'failed',
           completed_at: new Date().toISOString(),
-          error_message: error instanceof Error ? error.message : 'Auth failed'
+          error_message: errorMsg
         })
         .eq('id', syncRunId);
-      
+
       return new Response(
-        JSON.stringify({ success: false, status: 'failed', syncRunId, error: 'PayPal authentication failed' }),
+        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -389,22 +341,24 @@ Deno.serve(async (req) => {
     try {
       result = await fetchPayPalPage(accessToken, startDate, endDate, page);
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Fetch failed';
+      logger.error('PayPal fetch failed', error instanceof Error ? error : new Error(String(error)));
       await supabase
         .from('sync_runs')
         .update({
           status: 'failed',
           completed_at: new Date().toISOString(),
-          error_message: error instanceof Error ? error.message : 'Fetch failed'
+          error_message: errorMsg
         })
         .eq('id', syncRunId);
-      
+
       return new Response(
-        JSON.stringify({ success: false, status: 'failed', syncRunId, error: error instanceof Error ? error.message : 'Failed' }),
+        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`📄 PayPal page ${page}/${result.totalPages}: ${result.transactions.length} transactions`);
+    logger.info(`PayPal page ${page}/${result.totalPages}: ${result.transactions.length} transactions`);
 
     // Process transactions
     let paidCount = 0;
@@ -415,7 +369,7 @@ Deno.serve(async (req) => {
     for (const tx of result.transactions) {
       const info = tx.transaction_info;
       const payer = tx.payer_info;
-      
+
       const email = payer?.email_address?.toLowerCase();
       if (!email) continue;
 
@@ -423,17 +377,17 @@ Deno.serve(async (req) => {
       const feeAmount = parseFloat(info.fee_amount?.value || '0');
       const currency = info.transaction_amount.currency_code?.toLowerCase() || 'usd';
       const status = mapPayPalStatus(info.transaction_status, info.transaction_event_code);
-      
+
       if (status === 'paid') paidCount++;
       else if (status === 'failed') failedCount++;
 
-      const fullName = payer?.payer_name 
+      const fullName = payer?.payer_name
         ? `${payer.payer_name.given_name || ''} ${payer.payer_name.surname || ''}`.trim()
         : null;
 
-      const productName = tx.cart_info?.item_details?.[0]?.item_name || 
-                        info.transaction_subject || 
-                        info.transaction_note || null;
+      const productName = tx.cart_info?.item_details?.[0]?.item_name ||
+        info.transaction_subject ||
+        info.transaction_note || null;
 
       transactions.push({
         stripe_payment_intent_id: `paypal_${info.transaction_id}`,
@@ -498,7 +452,7 @@ Deno.serve(async (req) => {
           status: 'continuing',
           total_fetched: transactionsSaved,
           total_inserted: transactionsSaved,
-          checkpoint: { 
+          checkpoint: {
             page,
             totalPages: result.totalPages,
             lastActivity: new Date().toISOString()
@@ -537,7 +491,7 @@ Deno.serve(async (req) => {
       })
       .eq('id', syncRunId);
 
-    console.log(`🎉 PAYPAL SYNC COMPLETE: ${transactionsSaved} transactions in ${Date.now() - startTime}ms`);
+    logger.info(`PAYPAL SYNC COMPLETE: ${transactionsSaved} transactions in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({

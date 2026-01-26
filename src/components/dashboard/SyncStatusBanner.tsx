@@ -235,8 +235,8 @@ export function SyncStatusBanner() {
         <div
           key={sync.id}
           className={`rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm transition-all ${sync.status === "completed"
-              ? "bg-green-500/10 border border-green-500/30"
-              : "bg-destructive/10 border border-destructive/30"
+            ? "bg-green-500/10 border border-green-500/30"
+            : "bg-destructive/10 border border-destructive/30"
             }`}
         >
           <div className="flex items-center gap-3">
