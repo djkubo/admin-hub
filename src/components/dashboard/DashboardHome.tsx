@@ -118,20 +118,41 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
   const handleForceCancel = async () => {
     try {
-      setSyncProgress('Cancelando syncs...');
-      const result = await invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
-        'fetch-stripe',
-        { forceCancel: true }
-      );
+      setSyncProgress('Cancelando todos los syncs...');
       
-      if (result?.success) {
-        toast.success('Syncs cancelados', {
-          description: result.message || `Se cancelaron ${result.cancelled} sincronizaciones`,
-        });
-        queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
-      } else {
-        toast.error('Error al cancelar syncs');
+      // Cancel ALL sync sources in parallel
+      const cancelResults = await Promise.allSettled([
+        invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+          'fetch-stripe',
+          { forceCancel: true }
+        ),
+        invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+          'fetch-paypal',
+          { forceCancel: true }
+        ),
+        invokeWithAdminKey<{ ok: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+          'sync-ghl',
+          { forceCancel: true }
+        ),
+        invokeWithAdminKey<{ ok: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
+          'sync-manychat',
+          { forceCancel: true }
+        ),
+      ]);
+      
+      // Count total cancelled
+      let totalCancelled = 0;
+      for (const result of cancelResults) {
+        if (result.status === 'fulfilled' && result.value) {
+          const val = result.value as { cancelled?: number };
+          totalCancelled += val.cancelled || 0;
+        }
       }
+      
+      toast.success('Todos los syncs cancelados', {
+        description: `Se cancelaron ${totalCancelled} sincronizaciones en total`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
     } catch (error) {
       console.error('Force cancel error:', error);
       toast.error('Error al cancelar', {

@@ -80,10 +80,38 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const body: SyncRequest = await req.json().catch(() => ({}));
+    const body: SyncRequest & { forceCancel?: boolean } = await req.json().catch(() => ({}));
     const dryRun = body.dry_run ?? false;
     const cursor = body.cursor ?? 0;
+    const forceCancel = body.forceCancel === true;
     let syncRunId = body.syncRunId;
+
+    // ============ FORCE CANCEL ALL SYNCS ============
+    if (forceCancel) {
+      const { data: cancelledSyncs, error: cancelError } = await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(), 
+          error_message: 'Cancelado forzosamente por usuario' 
+        })
+        .eq('source', 'manychat')
+        .in('status', ['running', 'continuing'])
+        .select('id');
+
+      logger.info('Force cancelled ManyChat syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
+
+      return new Response(
+        JSON.stringify({ 
+          ok: true,
+          success: true, 
+          status: 'cancelled', 
+          cancelled: cancelledSyncs?.length || 0,
+          message: `Se cancelaron ${cancelledSyncs?.length || 0} sincronizaciones de ManyChat` 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     logger.info('Starting ManyChat sync', { dryRun, cursor });
 

@@ -179,18 +179,56 @@ export function SyncResultsPanel() {
   const handleCancelSync = async (source: string) => {
     setIsCancelling(true);
     try {
+      // If 'all' is passed, cancel ALL syncs from ALL sources
+      if (source === 'all') {
+        const cancelResults = await Promise.allSettled([
+          invokeWithAdminKey<{ success: boolean; cancelled: number }, { forceCancel: boolean }>(
+            'fetch-stripe',
+            { forceCancel: true }
+          ),
+          invokeWithAdminKey<{ success: boolean; cancelled: number }, { forceCancel: boolean }>(
+            'fetch-paypal',
+            { forceCancel: true }
+          ),
+          invokeWithAdminKey<{ ok: boolean; cancelled: number }, { forceCancel: boolean }>(
+            'sync-ghl',
+            { forceCancel: true }
+          ),
+          invokeWithAdminKey<{ ok: boolean; cancelled: number }, { forceCancel: boolean }>(
+            'sync-manychat',
+            { forceCancel: true }
+          ),
+        ]);
+        
+        let totalCancelled = 0;
+        for (const result of cancelResults) {
+          if (result.status === 'fulfilled' && result.value) {
+            const val = result.value as { cancelled?: number };
+            totalCancelled += val.cancelled || 0;
+          }
+        }
+        
+        toast.success('Todos los syncs cancelados', {
+          description: `Se cancelaron ${totalCancelled} sincronizaciones`,
+        });
+        fetchRuns();
+        return;
+      }
+      
+      // Otherwise, cancel specific source
       let endpoint = 'fetch-stripe';
       if (source === 'paypal') endpoint = 'fetch-paypal';
-      // Default to stripe for command-center since it's the main one
+      else if (source === 'ghl') endpoint = 'sync-ghl';
+      else if (source === 'manychat') endpoint = 'sync-manychat';
       
       const result = await invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
         endpoint,
         { forceCancel: true }
       );
       
-      if (result?.success) {
+      if (result?.success || (result as any)?.ok) {
         toast.success('Sync cancelado', {
-          description: result.message || `Sincronización de ${source} cancelada`,
+          description: result?.message || `Sincronización de ${source} cancelada`,
         });
         fetchRuns();
       } else {
@@ -254,11 +292,11 @@ export function SyncResultsPanel() {
             <div className="p-4 space-y-3 bg-blue-500/5">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
-                {activeSyncs.some(s => s.source === 'stripe' || s.source === 'command-center') && (
+                {activeSyncs.length > 0 && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleCancelSync('stripe')}
+                    onClick={() => handleCancelSync('all')}
                     disabled={isCancelling}
                     className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
                   >

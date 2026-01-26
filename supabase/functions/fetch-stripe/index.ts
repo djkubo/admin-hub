@@ -553,13 +553,13 @@ Deno.serve(async (req) => {
 
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
-      const staleThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString(); // Reduced from 30 to 15 min
+      const cleanupThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min threshold
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout' })
+        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - cleanup' })
         .eq('source', 'stripe')
         .in('status', ['running', 'continuing'])
-        .lt('started_at', staleThreshold)
+        .lt('started_at', cleanupThreshold)
         .select('id');
 
       return new Response(
@@ -604,13 +604,14 @@ Deno.serve(async (req) => {
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
-    // Auto-cleanup stale syncs (15 min threshold - aggressive cleanup to prevent blocking)
+    // Auto-cleanup stale syncs (10 min threshold - aggressive cleanup to prevent blocking)
+    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const staleAutoCleanup = await supabase
       .from('sync_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - auto-cleanup 15min' })
+      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - auto-cleanup 10min' })
       .eq('source', 'stripe')
       .in('status', ['running', 'continuing'])
-      .lt('started_at', new Date(Date.now() - 15 * 60 * 1000).toISOString())
+      .lt('started_at', staleThreshold)
       .select('id');
     
     if (staleAutoCleanup.data && staleAutoCleanup.data.length > 0) {

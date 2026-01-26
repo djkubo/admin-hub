@@ -170,17 +170,64 @@ Deno.serve(async (req: Request) => {
     });
 
     // ============ PARSE CONFIG ============
-    let config: SyncConfig = { mode: 'today' };
+    let config: SyncConfig & { forceCancel?: boolean } = { mode: 'today' };
     try {
-      const body = await req.json() as Partial<SyncConfig>;
+      const body = await req.json() as Partial<SyncConfig & { forceCancel?: boolean }>;
       config = {
         mode: body.mode ?? 'today',
         startDate: body.startDate,
         endDate: body.endDate,
         includeContacts: body.includeContacts ?? false,
+        forceCancel: body.forceCancel ?? false,
       };
     } catch {
       // Use defaults
+    }
+
+    // ============ FORCE CANCEL ALL SYNCS (ALL SOURCES) ============
+    if (config.forceCancel) {
+      console.log("🛑 Force cancelling ALL syncs from ALL sources...");
+      const { data: cancelledSyncs, error: cancelError } = await dbClient
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(), 
+          error_message: 'Cancelado forzosamente desde command-center' 
+        })
+        .in('status', ['running', 'continuing'])
+        .select('id, source');
+
+      const count = cancelledSyncs?.length || 0;
+      console.log(`✅ Force cancelled ${count} syncs`, { error: cancelError });
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'cancelled', 
+          cancelled: count,
+          details: cancelledSyncs,
+          message: `Se cancelaron ${count} sincronizaciones de todas las fuentes` 
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ============ AUTO-CLEANUP STALE SYNCS (ALL SOURCES) ============
+    // Clean up syncs older than 10 minutes from ANY source before starting
+    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { data: staleSyncs, error: staleError } = await dbClient
+      .from('sync_runs')
+      .update({ 
+        status: 'failed', 
+        completed_at: new Date().toISOString(), 
+        error_message: 'Timeout - auto-cleanup by command-center (10min)' 
+      })
+      .in('status', ['running', 'continuing'])
+      .lt('started_at', staleThreshold)
+      .select('id, source');
+
+    if (staleSyncs && staleSyncs.length > 0) {
+      console.log(`🧹 Auto-cleaned ${staleSyncs.length} stale syncs:`, staleSyncs.map(s => `${s.source}:${s.id}`));
     }
 
     // Calculate date range based on mode

@@ -375,16 +375,45 @@ Deno.serve(async (req) => {
     let startAfter: number | null = null;
     let syncRunId: string | null = null;
     let cleanupStale = false;
+    let forceCancel = false;
 
     try {
       const body = await req.json();
       dryRun = body.dry_run ?? false;
       cleanupStale = body.cleanupStale === true;
+      forceCancel = body.forceCancel === true;
       startAfterId = body.startAfterId || null;
       startAfter = body.startAfter || null;
       syncRunId = body.syncRunId || null;
     } catch {
       // Empty body is OK
+    }
+
+    // ============ FORCE CANCEL ALL SYNCS ============
+    if (forceCancel) {
+      const { data: cancelledSyncs, error: cancelError } = await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(), 
+          error_message: 'Cancelado forzosamente por usuario' 
+        })
+        .eq('source', 'ghl')
+        .in('status', ['running', 'continuing'])
+        .select('id');
+
+      logger.info('Force cancelled GHL syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
+
+      return new Response(
+        JSON.stringify({ 
+          ok: true,
+          success: true, 
+          status: 'cancelled', 
+          cancelled: cancelledSyncs?.length || 0,
+          message: `Se cancelaron ${cancelledSyncs?.length || 0} sincronizaciones de GHL` 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // ============ CLEANUP STALE SYNCS ============
