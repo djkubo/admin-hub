@@ -106,6 +106,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         return 'subscriptions';
       }
       
+      // ManyChat detection: has subscriber_id, optin fields, or manychat keywords
+      if ((firstLine.includes('subscriber_id') || firstLine.includes('subscriberid')) ||
+          (firstLine.includes('optin_email') || firstLine.includes('optin_sms') || firstLine.includes('optin_whatsapp')) ||
+          firstLine.includes('manychat')) {
+        console.log(`[CSV Detection] Detected as: ManyChat`);
+        return 'manychat';
+      }
+
       // GoHighLevel detection: has contactId, firstName/lastName patterns, or dndSettings
       if (firstLine.includes('contactid') ||
           firstLine.includes('contact id') ||
@@ -292,6 +300,30 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           if (ghlResult.errors.length > 0) {
             toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
+          }
+        } else if (file.type === 'manychat') {
+          // Process ManyChat CSV
+          const manychatResult = await processManyChatCSV(text);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done', 
+              result: manychatResult,
+              manychatStats: {
+                withEmail: manychatResult.withEmail,
+                withPhone: manychatResult.withPhone,
+                withTags: manychatResult.withTags
+              }
+            } : f
+          ));
+          
+          toast.success(
+            `${file.name}: ${manychatResult.clientsCreated} nuevos, ${manychatResult.clientsUpdated} actualizados. ` +
+            `Total: ${manychatResult.totalSubscribers} suscriptores ManyChat`
+          );
+          
+          if (manychatResult.errors.length > 0) {
+            toast.warning(`${file.name}: ${manychatResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_payments') {
           // Process Stripe Payments (unified_payments.csv)
