@@ -702,7 +702,6 @@ Deno.serve(async (req: Request) => {
       console.error("Metrics refresh error:", e);
       results["metrics"] = { success: false, count: 0, error: String(e) };
     }
-  }
 
     // ============ COMPLETE SYNC RUN ============
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
