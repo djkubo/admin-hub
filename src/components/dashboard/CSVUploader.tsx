@@ -239,6 +239,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       ));
 
       try {
+        // Show progress for large files
+        const fileSizeMB = file.file.size / (1024 * 1024);
+        if (fileSizeMB > 5) {
+          toast.info(`Cargando ${file.name} (${fileSizeMB.toFixed(1)}MB)...`, { duration: 3000 });
+        }
+        
         const text = await file.file.text();
 
         if (file.type === 'stripe_customers') {
@@ -374,6 +380,19 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             toast.warning(`${file.name}: ${manychatResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_payments') {
+          // For large Stripe Payments CSVs (> 10MB), use Edge Function
+          const fileSizeMB = file.file.size / (1024 * 1024);
+          const lineCount = text.split('\n').length;
+          const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
+
+          if (useEdgeFunction) {
+            toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+            
+            // TODO: Create Edge Function for large Stripe Payments CSV
+            // For now, fallback to local processing with warning
+            toast.warning('Archivo muy grande. Procesando localmente (puede tardar)...', { duration: 10000 });
+          }
+          
           // Process Stripe Payments (unified_payments.csv)
           const paymentsResult = await processStripePaymentsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
@@ -430,7 +449,19 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
 
     setIsProcessing(false);
-    toast.success('Procesamiento completado');
+    
+    // Check if there were any errors
+    const hasErrors = files.some(f => f.status === 'error');
+    const hasSuccess = files.some(f => f.status === 'done');
+    
+    if (hasErrors && hasSuccess) {
+      toast.warning('Procesamiento completado con algunos errores');
+    } else if (hasErrors) {
+      toast.error('Procesamiento completado con errores');
+    } else {
+      toast.success('Procesamiento completado');
+    }
+    
     onProcessingComplete();
   };
 
@@ -538,9 +569,19 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         <div className="mt-4 space-y-2">
           {files.map((file, index) => (
             <div key={index} className="flex items-center justify-between p-3 bg-[#0f1225] rounded-lg border border-gray-700/50">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
                 {getStatusIcon(file.status)}
-                <span className="text-sm font-medium text-white">{file.name}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-white block truncate">{file.name}</span>
+                  {file.status === 'done' && file.result && (
+                    <span className="text-xs text-gray-400">
+                      {file.result.clientsCreated} nuevos, {file.result.clientsUpdated} actualizados
+                    </span>
+                  )}
+                  {file.status === 'error' && (
+                    <span className="text-xs text-red-400">Error al procesar</span>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <select
