@@ -48,7 +48,7 @@ interface CSVUploaderProps {
 }
 
 // Split CSV text into chunks of approximately maxSizeBytes
-function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 4 * 1024 * 1024): string[] {
+function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 2 * 1024 * 1024): string[] {
   const lines = csvText.split('\n');
   if (lines.length < 2) return [csvText];
   
@@ -285,22 +285,29 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     filename: string
   ): Promise<{ ok: boolean; result?: ProcessingResult; error?: string }> => {
     const fileSizeBytes = new Blob([csvText]).size;
-    const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per chunk
+    const MAX_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk (reduced for reliability)
     
     // If file is small enough, send directly
     if (fileSizeBytes <= MAX_CHUNK_SIZE) {
       console.log(`[Chunking] File ${filename} is small (${(fileSizeBytes / 1024 / 1024).toFixed(2)}MB), sending directly`);
-      const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
-        'process-csv-bulk',
-        { csvText, csvType, filename }
-      );
       
-      if (!response || response.success === false || response.ok === false) {
-        return { ok: false, error: response?.error || 'Error desconocido' };
+      try {
+        const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
+          'process-csv-bulk',
+          { csvText, csvType, filename }
+        );
+        
+        if (!response || response.success === false || response.ok === false) {
+          return { ok: false, error: response?.error || 'Error desconocido' };
+        }
+        
+        const result = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
+        return { ok: true, result };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Error de conexión';
+        console.error('[Chunking] Direct processing failed:', err);
+        return { ok: false, error: errorMsg };
       }
-      
-      const result = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
-      return { ok: true, result };
     }
     
     // Split into chunks
@@ -321,6 +328,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     };
     
     let rowsProcessed = 0;
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3;
     
     // Process each chunk sequentially
     for (let i = 0; i < chunks.length; i++) {
@@ -337,7 +346,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       console.log(`[Chunking] Processing chunk ${i + 1}/${chunks.length} (${chunkRows} rows)`);
       
       try {
-        const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
+        // Add timeout for each chunk (90 seconds max)
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Timeout: El servidor tardó demasiado en responder')), 90000);
+        });
+        
+        const fetchPromise = invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
           'process-csv-bulk',
           { 
             csvText: chunk, 
@@ -349,41 +363,87 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
         );
         
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        
         if (!response || response.success === false || response.ok === false) {
-          const errorMsg = response?.error || `Error en chunk ${i + 1}`;
+          const errorMsg = response?.error || `Error en parte ${i + 1}`;
           accumulatedResult.errors.push(errorMsg);
           console.error(`[Chunking] Chunk ${i + 1} failed:`, errorMsg);
+          consecutiveFailures++;
+          
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            toast.error(`❌ Demasiados errores consecutivos. Abortando procesamiento.`);
+            break;
+          }
+          
+          // Show progress toast for failed chunk
+          toast.warning(`⚠️ Parte ${i + 1}/${chunks.length} tuvo errores, continuando...`);
           continue;
         }
         
+        // Reset consecutive failures on success
+        consecutiveFailures = 0;
+        
         const chunkResult = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
         
+        // Handle staging response format (may have different field names)
+        const staged = (chunkResult as unknown as { staged?: number }).staged || 0;
+        const resultAny = chunkResult as unknown as Record<string, number | undefined>;
+        const created = chunkResult.clientsCreated || resultAny['created'] || staged || 0;
+        const updated = chunkResult.clientsUpdated || resultAny['updated'] || 0;
+        
         // Accumulate results
-        accumulatedResult.clientsCreated += chunkResult.clientsCreated || 0;
-        accumulatedResult.clientsUpdated += chunkResult.clientsUpdated || 0;
+        accumulatedResult.clientsCreated += created;
+        accumulatedResult.clientsUpdated += updated;
         accumulatedResult.transactionsCreated += (chunkResult.transactionsCreated || 0);
         accumulatedResult.transactionsSkipped += (chunkResult.transactionsSkipped || 0);
         if (chunkResult.errors?.length) {
-          accumulatedResult.errors.push(...chunkResult.errors.slice(0, 5)); // Limit errors per chunk
+          accumulatedResult.errors.push(...chunkResult.errors.slice(0, 3)); // Limit errors per chunk
         }
         
         rowsProcessed += chunkRows;
         
+        // Show periodic progress toast every 5 chunks
+        if ((i + 1) % 5 === 0 || i === chunks.length - 1) {
+          toast.info(`📊 Progreso: ${i + 1}/${chunks.length} partes (${rowsProcessed.toLocaleString()} filas)`, { duration: 2000 });
+        }
+        
         // Small delay between chunks to avoid overwhelming the server
         if (i < chunks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
         
       } catch (chunkError) {
         const errorMsg = chunkError instanceof Error ? chunkError.message : 'Error desconocido';
-        accumulatedResult.errors.push(`Chunk ${i + 1}: ${errorMsg}`);
+        accumulatedResult.errors.push(`Parte ${i + 1}: ${errorMsg}`);
         console.error(`[Chunking] Chunk ${i + 1} exception:`, chunkError);
+        consecutiveFailures++;
+        
+        if (errorMsg.includes('Timeout')) {
+          toast.error(`⏱️ Timeout en parte ${i + 1}. Intenta con un archivo más pequeño.`);
+          if (consecutiveFailures >= 2) break;
+        }
+        
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          toast.error(`❌ Demasiados errores consecutivos. Abortando.`);
+          break;
+        }
       }
     }
     
     setChunkProgress(null);
     
-    return { ok: true, result: accumulatedResult };
+    // If we processed at least some rows, consider it a partial success
+    if (rowsProcessed > 0) {
+      return { ok: true, result: accumulatedResult };
+    }
+    
+    return { 
+      ok: false, 
+      error: accumulatedResult.errors.length > 0 
+        ? accumulatedResult.errors.join('; ') 
+        : 'No se pudieron procesar las filas' 
+    };
   };
 
   const processFiles = async () => {
