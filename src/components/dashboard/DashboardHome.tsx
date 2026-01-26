@@ -44,7 +44,9 @@ import type {
   FetchPayPalResponse,
   FetchSubscriptionsResponse,
   FetchInvoicesBody,
-  FetchInvoicesResponse 
+  FetchInvoicesResponse,
+  SyncCommandCenterBody,
+  SyncCommandCenterResponse
 } from '@/types/edgeFunctions';
 
 type SyncRange = 'today' | '7d' | 'month' | 'full';
@@ -119,136 +121,63 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     setSyncStatus(null);
     setSyncProgress('');
     
-    const { startDate, endDate, fetchAll } = getSyncDateRange(range);
-    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
-
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
-      // 1. Stripe - now runs entirely in background on backend
-      setSyncProgress('Stripe...');
-      try {
-        const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-          'fetch-stripe', 
-          { 
-            fetchAll, 
-            startDate: startDate.toISOString(), 
-            endDate: endDate.toISOString()
-          }
-        );
-        
-        if (!stripeData) {
-          toast.error('Error al iniciar sync de Stripe');
-          results.errors++;
-        } else if (stripeData.error === 'sync_already_running') {
-          toast.warning('Stripe sync ya está en progreso. Revisa el panel de sync.');
-        } else if (stripeData.status === 'running') {
-          toast.success('Stripe sync iniciado en segundo plano. Monitorea el progreso en el panel.');
-          results.stripe = 0; // Will update via realtime
-        } else if (stripeData.status === 'completed') {
-          results.stripe = stripeData.synced_transactions ?? 0;
-        } else if (stripeData.error) {
-          console.error('[Stripe] Error:', stripeData.error);
-          results.errors++;
+      // Use sync-command-center for orchestrated sync
+      setSyncProgress('Iniciando sync completo...');
+      
+      const commandCenterData = await invokeWithAdminKey<SyncCommandCenterResponse, SyncCommandCenterBody>(
+        'sync-command-center',
+        {
+          mode: range,
+          includeContacts: false, // Don't sync contacts by default (can be slow)
         }
-      } catch (e) {
-        console.error('[Stripe] Error:', e);
-        results.errors++;
+      );
+
+      if (!commandCenterData) {
+        throw new Error('No se recibió respuesta del servidor');
       }
 
-      // 2. PayPal (with pagination loop)
-      setSyncProgress('PayPal...');
-      try {
-        let hasMore = true;
-        let page = 1;
-        let syncRunId: string | null = null;
-        let attempts = 0;
-        const maxAttempts = 100;
-        
-        while (hasMore && attempts < maxAttempts) {
-          attempts++;
-          const paypalData = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-            'fetch-paypal', 
-            { 
-              fetchAll, 
-              startDate: startDate.toISOString(), 
-              endDate: endDate.toISOString(),
-              page,
-              syncRunId
-            }
-          );
-          
-          if (paypalData?.error === 'sync_already_running') {
-            toast.warning('Ya hay un sync de PayPal en progreso');
-            hasMore = false;
-            break;
-          }
-          
-          results.paypal += paypalData?.synced_transactions ?? 0;
-          syncRunId = paypalData?.syncRunId ?? syncRunId;
-          hasMore = paypalData?.hasMore === true;
-          page = paypalData?.nextPage ?? page + 1;
-          
-          if (hasMore) {
-            setSyncProgress(`PayPal... ${results.paypal} tx`);
-          }
-        }
-      } catch (e) {
-        console.error('PayPal sync error:', e);
-        results.errors++;
+      if (commandCenterData.error) {
+        throw new Error(commandCenterData.error);
       }
 
-      // 3. Subscriptions
-      setSyncProgress('Suscripciones...');
-      try {
-        const subsData = await invokeWithAdminKey<FetchSubscriptionsResponse>('fetch-subscriptions', {});
-        results.subs = subsData?.synced ?? subsData?.upserted ?? 0;
-      } catch (e) {
-        console.error('Subscriptions sync error:', e);
-        results.errors++;
+      if (!commandCenterData.success) {
+        throw new Error('El sync falló sin detalles');
       }
 
-      // 4. Invoices - with pagination
-      setSyncProgress('Facturas...');
-      try {
-        let invoicesCursor: string | null = null;
-        let invoicesSyncRunId: string | null = null;
-        let invoicesHasMore = true;
-        let invoicesAttempts = 0;
-        
-        while (invoicesHasMore && invoicesAttempts < 50) {
-          invoicesAttempts++;
-          const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse, FetchInvoicesBody>('fetch-invoices', {
-            mode: 'recent',
-            cursor: invoicesCursor,
-            syncRunId: invoicesSyncRunId,
-          });
-          
-          if (!invoicesData || invoicesData.error) {
-            console.error('[Invoices] Error:', invoicesData?.error);
-            results.errors++;
-            break;
-          }
-          
-          results.invoices += invoicesData.upserted ?? invoicesData.synced ?? 0;
-          invoicesCursor = invoicesData.nextCursor;
-          invoicesSyncRunId = invoicesData.syncRunId;
-          invoicesHasMore = invoicesData.hasMore === true && !!invoicesCursor;
-          
-          if (invoicesHasMore) {
-            setSyncProgress(`Facturas... ${results.invoices}`);
-          }
-        }
-      } catch (e) {
-        console.error('Invoices sync error:', e);
-        results.errors++;
-      }
+      // Extract results from command center response
+      const results = commandCenterData.results || {};
+      const failedSteps = commandCenterData.failedSteps || [];
+      const totalRecords = commandCenterData.totalRecords || 0;
 
-      setSyncStatus(results.errors > 0 ? 'warning' : 'ok');
+      // Calculate totals
+      const stripeCount = results.stripe?.count || 0;
+      const paypalCount = results.paypal?.count || 0;
+      const subsCount = results.subscriptions?.count || 0;
+      const invoicesCount = results.invoices?.count || 0;
+      const errorsCount = failedSteps.length;
+
+      setSyncStatus(errorsCount > 0 ? 'warning' : 'ok');
       setSyncProgress('');
 
-      const totalTx = results.stripe + results.paypal;
-      toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      // Show detailed results
+      if (errorsCount > 0) {
+        const errorDetails = failedSteps.map(step => {
+          const stepResult = results[step];
+          return `${step}: ${stepResult?.error || 'Error desconocido'}`;
+        }).join(', ');
+        
+        toast.warning(`Sync completado con ${errorsCount} error(es)`, {
+          description: errorDetails,
+          duration: 8000,
+        });
+      } else {
+        toast.success(`✅ ${syncRangeLabels[range]}: ${totalRecords} registros sincronizados`, {
+          description: `Stripe: ${stripeCount}, PayPal: ${paypalCount}, Subs: ${subsCount}, Facturas: ${invoicesCount}`,
+        });
+      }
       
       // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
@@ -257,13 +186,18 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
       queryClient.invalidateQueries({ queryKey: ['daily-kpis'] });
+      queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
       
       refetch();
     } catch (error) {
       console.error('Sync error:', error);
       setSyncStatus('warning');
       setSyncProgress('');
-      toast.error('Error en sincronización');
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido en sincronización';
+      toast.error('Error en sincronización', {
+        description: errorMessage,
+        duration: 6000,
+      });
     } finally {
       setIsSyncing(false);
     }

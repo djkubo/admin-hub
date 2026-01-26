@@ -13,7 +13,92 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ... interfaces keep same ...
+// ============= TYPES =============
+
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  userId?: string;
+}
+
+interface StripeCustomer {
+  id: string;
+  email: string | null;
+  name: string | null;
+  phone: string | null;
+}
+
+interface StripeCharge {
+  payment_method_details?: {
+    card?: {
+      last4?: string;
+      brand?: string;
+    };
+  };
+  failure_code?: string | null;
+  failure_message?: string | null;
+}
+
+interface StripeInvoice {
+  number?: string | null;
+  subscription?: string | null;
+  lines?: {
+    data?: Array<{
+      description?: string | null;
+    }>;
+  };
+}
+
+interface StripePaymentIntent {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  created: number;
+  customer: string | StripeCustomer | null;
+  receipt_email?: string | null;
+  description?: string | null;
+  latest_charge?: string | StripeCharge | null;
+  invoice?: string | StripeInvoice | null;
+  last_payment_error?: {
+    code?: string;
+    decline_code?: string;
+    message?: string;
+  } | null;
+}
+
+interface StripeListResponse {
+  data: StripePaymentIntent[];
+  has_more: boolean;
+}
+
+interface TransactionRecord {
+  stripe_payment_intent_id: string;
+  external_transaction_id: string;
+  payment_key: string;
+  amount: number;
+  currency: string;
+  status: string;
+  customer_email: string;
+  stripe_customer_id: string | null;
+  stripe_created_at: string;
+  source: string;
+  subscription_id: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  payment_type: string;
+  metadata: Record<string, unknown>;
+  raw_data: Record<string, unknown>;
+}
+
+interface ClientRecord {
+  email: string;
+  full_name: string | null;
+  phone: string | null;
+  stripe_customer_id: string | null;
+  lifecycle_stage: string;
+  last_sync: string;
+}
 
 // ============= SECURITY =============
 
@@ -64,6 +149,7 @@ const DECLINE_REASONS_ES: Record<string, string> = {
 
 const RECORDS_PER_PAGE = 100;
 const MAX_PAGES = 2000;
+const STRIPE_API_DELAY_MS = 50; // Small delay to avoid rate limits when fetching customer details
 
 const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

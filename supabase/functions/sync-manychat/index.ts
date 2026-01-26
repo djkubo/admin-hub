@@ -175,6 +175,7 @@ Deno.serve(async (req) => {
         }
 
         const subscriber = searchData.data;
+        totalFetched++; // Increment fetched count when we find a subscriber
         logger.info('Found subscriber', { subscriberId: subscriber.id, email });
 
         if (!dryRun) {
@@ -277,12 +278,30 @@ Deno.serve(async (req) => {
     );
 
   } catch (error: any) {
-    console.error('[sync-manychat] Error:', error);
+    const errorMessage = error?.message || 'Unknown error';
+    logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
+    
+    // Update sync run if it exists
+    if (syncRunId) {
+      try {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage
+          })
+          .eq('id', syncRunId);
+      } catch (updateError) {
+        logger.error('Failed to update sync run', updateError instanceof Error ? updateError : new Error(String(updateError)));
+      }
+    }
+    
     return new Response(
       JSON.stringify({
         ok: false,
         status: 'error',
-        error: error.message || 'Unknown error',
+        error: errorMessage,
         duration_ms: Date.now() - startTime
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

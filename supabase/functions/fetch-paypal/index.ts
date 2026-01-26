@@ -3,6 +3,7 @@ import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/re
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 
 const logger = createLogger('fetch-paypal', LogLevel.INFO);
+const STALE_TIMEOUT_MINUTES = 30; // Mark syncs as stale after 30 minutes
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,7 +11,72 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ... interfaces ...
+// ============= TYPES =============
+
+interface AdminVerifyResult {
+  valid: boolean;
+  error?: string;
+  userId?: string;
+}
+
+interface PayPalPageResult {
+  transactions: PayPalTransaction[];
+  totalPages: number;
+  totalItems: number;
+}
+
+interface PayPalTransaction {
+  transaction_info: {
+    transaction_id: string;
+    transaction_status: string;
+    transaction_event_code: string;
+    transaction_amount: {
+      value: string;
+      currency_code: string;
+    };
+    fee_amount?: {
+      value: string;
+    };
+    transaction_subject?: string;
+    transaction_note?: string;
+    transaction_initiation_date: string;
+  };
+  payer_info: {
+    email_address?: string;
+    account_id?: string;
+    payer_name?: {
+      given_name?: string;
+      surname?: string;
+    };
+  };
+  cart_info?: {
+    item_details?: Array<{
+      item_name?: string;
+    }>;
+  };
+}
+
+interface TransactionRecord {
+  stripe_payment_intent_id: string;
+  payment_key: string;
+  external_transaction_id: string;
+  customer_email: string;
+  amount: number;
+  currency: string;
+  status: string;
+  stripe_created_at: string;
+  source: string;
+  metadata: Record<string, unknown>;
+  raw_data: Record<string, unknown>;
+}
+
+interface ClientRecord {
+  email: string;
+  full_name: string | null;
+  paypal_customer_id: string | null;
+  lifecycle_stage: string;
+  last_sync: string;
+}
 
 // ============= SECURITY =============
 
@@ -509,9 +575,27 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    console.error("Fatal error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
+    
+    // Update sync run if it exists
+    if (syncRunId) {
+      try {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage
+          })
+          .eq('id', syncRunId);
+      } catch (updateError) {
+        logger.error("Failed to update sync run", updateError instanceof Error ? updateError : new Error(String(updateError)));
+      }
+    }
+    
     return new Response(
-      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ success: false, status: 'failed', error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

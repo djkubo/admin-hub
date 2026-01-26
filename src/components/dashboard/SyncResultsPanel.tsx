@@ -40,6 +40,7 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; co
   invoices: { label: "Facturas", icon: FileText, color: "text-amber-400" },
   ghl: { label: "GoHighLevel", icon: Users, color: "text-cyan-400" },
   manychat: { label: "ManyChat", icon: Users, color: "text-pink-400" },
+  "command-center": { label: "Command Center", icon: RefreshCw, color: "text-yellow-400" },
 };
 
 export function SyncResultsPanel() {
@@ -62,7 +63,7 @@ export function SyncResultsPanel() {
     const { data: recent } = await supabase
       .from("sync_runs")
       .select("*")
-      .in("status", ["completed", "failed"])
+      .in("status", ["completed", "completed_with_errors", "failed"])
       .gte("completed_at", oneHourAgo)
       .order("completed_at", { ascending: false })
       .limit(10);
@@ -109,6 +110,13 @@ export function SyncResultsPanel() {
           <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
             <CheckCircle className="h-3 w-3 mr-1" />
             OK
+          </Badge>
+        );
+      case "completed_with_errors":
+        return (
+          <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/30">
+            <XCircle className="h-3 w-3 mr-1" />
+            Con errores
           </Badge>
         );
       case "failed":

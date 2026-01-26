@@ -226,14 +226,14 @@ Deno.serve(async (req) => {
       const paymentInfo = paymentMap.get(client.email);
       const currentStage = client.lifecycle_stage;
 
-      if (paymentInfo?.hasPaid) {
+        if (paymentInfo?.hasPaid) {
         // Has payment history -> should be CUSTOMER
         if (currentStage !== 'CUSTOMER') {
           const { error: updateError } = await supabaseAdmin
             .from('clients')
             .update({
               lifecycle_stage: 'CUSTOMER',
-              first_payment_at: paymentInfo.firstPaymentDate,
+              converted_at: paymentInfo.firstPaymentDate,
               total_paid: paymentInfo.totalPaid
             })
             .eq('email', client.email);

@@ -410,7 +410,28 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
-    return new Response(JSON.stringify({ ok: false, error: String(error) }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    
+    // Update sync run if it exists
+    if (syncRunId) {
+      try {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage
+          })
+          .eq('id', syncRunId);
+      } catch (updateError) {
+        logger.error('Failed to update sync run', updateError instanceof Error ? updateError : new Error(String(updateError)));
+      }
+    }
+    
+    return new Response(
+      JSON.stringify({ ok: false, error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   }
 });

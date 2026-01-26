@@ -105,10 +105,14 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const startTime = Date.now();
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const startTime = Date.now();
+    
+    // Track sync run ID for error handling
+    let syncRunId: string | null = null;
+    let syncRun: SyncRun | null = null;
   
   try {
     // ============ AUTHENTICATION ============
@@ -136,6 +140,9 @@ Deno.serve(async (req: Request) => {
 
     const userEmail = authCheck.email ?? "";
     console.log("✅ Admin authenticated:", userEmail);
+    
+    // Store userEmail for error handling
+    const userEmailForError = userEmail;
 
     // ============ SEPARATE CLIENTS ============
     const dbClient = createClient(supabaseUrl, serviceRoleKey);
@@ -205,8 +212,8 @@ Deno.serve(async (req: Request) => {
       throw new Error(`Failed to create sync run: ${syncRunError.message}`);
     }
 
-    const syncRun = syncRunData as SyncRun;
-    const syncRunId = syncRun.id;
+    syncRun = syncRunData as SyncRun;
+    syncRunId = syncRun.id;
     console.log(`📊 Master sync run created: ${syncRunId}`);
 
     // Helper to update progress
@@ -215,7 +222,7 @@ Deno.serve(async (req: Request) => {
       details: string, 
       counts?: { fetched?: number; inserted?: number }
     ): Promise<void> => {
-      const currentMetadata = syncRun.metadata ?? { steps: [] };
+      const currentMetadata = (syncRun?.metadata ?? { steps: [] }) as SyncRunMetadata;
       const steps = [...(currentMetadata.steps ?? []), `${step}: ${details}`];
       
       const updateData: Record<string, unknown> = {
@@ -229,10 +236,10 @@ Deno.serve(async (req: Request) => {
       };
 
       if (counts?.fetched) {
-        updateData.total_fetched = (syncRun.total_fetched ?? 0) + counts.fetched;
+        updateData.total_fetched = ((syncRun?.total_fetched ?? 0) as number) + counts.fetched;
       }
       if (counts?.inserted) {
-        updateData.total_inserted = (syncRun.total_inserted ?? 0) + counts.inserted;
+        updateData.total_inserted = ((syncRun?.total_inserted ?? 0) as number) + counts.inserted;
       }
 
       await dbClient
@@ -501,7 +508,7 @@ Deno.serve(async (req: Request) => {
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
     
     const finalMetadata: SyncRunMetadata = {
-      ...syncRun.metadata,
+      ...(syncRun?.metadata || {}),
       results,
       completedAt: new Date().toISOString(),
     };
@@ -537,9 +544,43 @@ Deno.serve(async (req: Request) => {
     );
 
   } catch (error) {
-    console.error("Fatal error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Fatal error:", errorMessage);
+    
+    // Try to update sync run if it exists
+    if (syncRunId) {
+      try {
+        const dbClient = createClient(supabaseUrl, serviceRoleKey);
+        await dbClient
+          .from("sync_runs")
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage,
+            metadata: {
+              mode: 'unknown',
+              startDate: new Date().toISOString(),
+              endDate: new Date().toISOString(),
+              authMethod: "jwt+is_admin",
+              userEmail: userEmailForError || "unknown",
+              steps: [],
+              fatalError: errorMessage,
+              completedAt: new Date().toISOString(),
+            }
+          })
+          .eq("id", syncRunId);
+      } catch (updateError) {
+        console.error("Failed to update sync run:", updateError);
+      }
+    }
+    
     return new Response(
-      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ 
+        success: false, 
+        status: 'failed', 
+        error: errorMessage,
+        syncRunId: syncRunId || undefined
+      }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

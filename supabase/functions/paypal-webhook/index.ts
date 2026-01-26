@@ -251,8 +251,8 @@ async function upsertClient(supabase: any, data: {
   if (data.isPaying) {
     updateData.lifecycle_stage = 'CUSTOMER';
     updateData.total_paid = (existing?.total_paid || 0) + (data.paymentAmount || 0);
-    if (!existing?.first_payment_at) {
-      updateData.first_payment_at = new Date().toISOString();
+    if (!existing?.converted_at) {
+      updateData.converted_at = new Date().toISOString();
     }
   }
   
