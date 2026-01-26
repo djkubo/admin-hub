@@ -110,9 +110,10 @@ Deno.serve(async (req: Request) => {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const startTime = Date.now();
     
-    // Track sync run ID for error handling
+    // Track sync run ID and user email for error handling
     let syncRunId: string | null = null;
     let syncRun: SyncRun | null = null;
+    let userEmailForError: string = "unknown";
   
   try {
     // ============ AUTHENTICATION ============
@@ -142,7 +143,7 @@ Deno.serve(async (req: Request) => {
     console.log("✅ Admin authenticated:", userEmail);
     
     // Store userEmail for error handling
-    const userEmailForError = userEmail;
+    userEmailForError = userEmail;
 
     // ============ SEPARATE CLIENTS ============
     const dbClient = createClient(supabaseUrl, serviceRoleKey);

@@ -32,7 +32,7 @@ export interface SyncCommandCenterBody {
   startDate?: string;
   endDate?: string;
   includeContacts?: boolean;
-  [key: string]: unknown;
+  [key: string]: unknown; // Index signature for compatibility with Record<string, unknown>
 }
 
 export interface SyncStepResult {
