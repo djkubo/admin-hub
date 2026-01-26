@@ -101,7 +101,7 @@ async function processSinglePage(
         conflicts: 0,
         hasMore: false,
         nextOffset: offset,
-        error: `GHL API error: ${ghlResponse.status}`
+        error: `GHL API error: ${ghlResponse.status} - ${errorText.substring(0, 300)}`
       };
     }
 
