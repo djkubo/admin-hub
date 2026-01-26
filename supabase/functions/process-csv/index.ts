@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import Papa from "https://deno.land/x/papaparse@v5.4.1/papaparse.min.js";
+import Papa from "https://esm.sh/papaparse@5.4.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

@@ -32,24 +32,43 @@ export function SourceAnalytics() {
   const fetchSourceMetrics = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.rpc('source_metrics', { p_days: 30 });
+      // Fetch source metrics directly from clients table since source_metrics RPC doesn't exist
+      const { data: clients, error } = await supabase
+        .from('clients')
+        .select('acquisition_source, lifecycle_stage, total_spend')
+        .not('acquisition_source', 'is', null);
+      
       if (error) throw error;
 
-      const rows = Array.isArray(data) ? data : [];
-      const result: SourceMetrics[] = rows
-        .map((row) => {
-          const totalPipeline = Number(row.leads ?? 0) + Number(row.trials ?? 0) + Number(row.customers ?? 0);
-          const customerCount = Number(row.customer_count ?? 0);
+      // Aggregate metrics by source
+      const sourceMap = new Map<string, { leads: number; trials: number; customers: number; totalSpend: number }>();
+      
+      for (const client of clients || []) {
+        const source = client.acquisition_source || 'unknown';
+        const existing = sourceMap.get(source) || { leads: 0, trials: 0, customers: 0, totalSpend: 0 };
+        
+        if (client.lifecycle_stage === 'LEAD') existing.leads++;
+        else if (client.lifecycle_stage === 'TRIAL') existing.trials++;
+        else if (client.lifecycle_stage === 'CUSTOMER') existing.customers++;
+        
+        existing.totalSpend += Number(client.total_spend ?? 0);
+        sourceMap.set(source, existing);
+      }
+
+      const result: SourceMetrics[] = Array.from(sourceMap.entries())
+        .map(([source, data]) => {
+          const totalPipeline = data.leads + data.trials + data.customers;
+          const customerCount = data.customers;
           return {
-            source: row.source || 'unknown',
-            leads: Number(row.leads ?? 0),
-            trials: Number(row.trials ?? 0),
-            customers: Number(row.customers ?? 0),
-            revenue: Math.round(Number(row.revenue ?? 0) / 100),
-            ltv: customerCount > 0 ? Math.round(Number(row.total_spend ?? 0) / customerCount / 100) : 0,
-            conversionRate: totalPipeline > 0 ? Math.round((Number(row.customers ?? 0) / totalPipeline) * 100) : 0,
-            trialToPaid: Number(row.trials ?? 0) + Number(row.customers ?? 0) > 0 
-              ? Math.round((Number(row.customers ?? 0) / (Number(row.trials ?? 0) + Number(row.customers ?? 0))) * 100) 
+            source,
+            leads: data.leads,
+            trials: data.trials,
+            customers: data.customers,
+            revenue: Math.round(data.totalSpend / 100),
+            ltv: customerCount > 0 ? Math.round(data.totalSpend / customerCount / 100) : 0,
+            conversionRate: totalPipeline > 0 ? Math.round((data.customers / totalPipeline) * 100) : 0,
+            trialToPaid: data.trials + data.customers > 0 
+              ? Math.round((data.customers / (data.trials + data.customers)) * 100) 
               : 0,
           };
         })

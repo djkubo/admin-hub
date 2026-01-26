@@ -43,6 +43,7 @@ interface PayPalSyncResponse {
   synced_transactions?: number;
   syncRunId?: string;
   nextPage?: number;
+  nextCursor?: string | null;
   hasMore?: boolean;
 }
 

@@ -405,7 +405,7 @@ export interface SyncContactsBody {
   [key: string]: unknown;
 }
 
-export interface SyncContactsStats {
+export interface SyncContactsStats extends Record<string, unknown> {
   total_fetched?: number;
   total_inserted?: number;
   total_updated?: number;

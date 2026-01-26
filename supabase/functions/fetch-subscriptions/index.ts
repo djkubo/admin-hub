@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.21.0";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,7 +40,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
 }
 
 async function processPage(
-  serviceClient: SupabaseClient,
+  serviceClient: SupabaseClient<any, any, any>,
   stripe: Stripe,
   cursor: string | null,
   limit: number
@@ -56,7 +56,7 @@ async function processPage(
   const hasMore = response.has_more;
   const nextCursor = subscriptions.length > 0 ? subscriptions[subscriptions.length - 1].id : null;
 
-  const records = subscriptions.map((sub) => {
+  const records = subscriptions.map((sub: any) => {
     const customer = sub.customer;
     const plan = sub.plan;
     const product = plan?.product;

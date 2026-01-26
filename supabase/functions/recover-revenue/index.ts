@@ -80,11 +80,12 @@ interface ProcessResult {
   skipped_cents: number;
 }
 
+// deno-lint-ignore no-explicit-any
 async function processInvoice(
   stripe: Stripe,
   invoice: Stripe.Invoice,
   result: ProcessResult,
-  supabaseService: ReturnType<typeof createClient>,
+  supabaseService: any,
   syncRunId: string,
   attemptedBy: string
 ): Promise<boolean> {

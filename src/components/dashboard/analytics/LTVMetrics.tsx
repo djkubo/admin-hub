@@ -28,21 +28,13 @@ export function LTVMetrics() {
   useEffect(() => {
     const fetchMetrics = async () => {
       setLoading(true);
-      const now = new Date();
-      const lastMonthStart = startOfMonth(subMonths(now, 1));
-      const lastMonthEnd = endOfMonth(subMonths(now, 1));
 
       try {
+        // Use kpi_mrr and kpi_churn_30d which exist in the database
         const [{ data: mrrRows, error: mrrError }, { data: churnRows, error: churnError }] =
           await Promise.all([
-            supabase.rpc("metrics_mrr", {
-              start_date: lastMonthStart.toISOString(),
-              end_date: lastMonthEnd.toISOString(),
-            }),
-            supabase.rpc("metrics_churn", {
-              start_date: lastMonthStart.toISOString(),
-              end_date: lastMonthEnd.toISOString(),
-            }),
+            supabase.rpc("kpi_mrr"),
+            supabase.rpc("kpi_churn_30d"),
           ]);
 
         if (mrrError) throw mrrError;
@@ -50,10 +42,10 @@ export function LTVMetrics() {
 
         const mrrRow = Array.isArray(mrrRows) ? mrrRows[0] : mrrRows;
         const churnRow = Array.isArray(churnRows) ? churnRows[0] : churnRows;
-        const mrrValue = Number(mrrRow?.mrr ?? 0) / 100;
-        const activeCustomers = Number(mrrRow?.active_customers ?? 0);
+        const mrrValue = Number((mrrRow as any)?.mrr ?? 0) / 100;
+        const activeCustomers = Number((mrrRow as any)?.active_subscriptions ?? 0);
         const arpu = activeCustomers > 0 ? mrrValue / activeCustomers : 0;
-        const churnRate = Number(churnRow?.churn_rate ?? 0);
+        const churnRate = Number((churnRow as any)?.churn_rate ?? 0);
 
         const effectiveChurnRate = Math.max(churnRate, 5) / 100;
         const ltv = arpu / effectiveChurnRate;
