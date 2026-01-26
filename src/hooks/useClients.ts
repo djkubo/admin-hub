@@ -35,8 +35,12 @@ export interface Client {
   // External IDs
   manychat_subscriber_id: string | null;
   ghl_contact_id: string | null;
+  paypal_customer_id?: string | null;
   // Tags
   tags: string[] | null;
+  // Staging fields (from view)
+  import_status?: string | null;
+  import_id?: string | null;
 }
 
 const DEFAULT_PAGE_SIZE = 50;

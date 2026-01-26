@@ -1,9 +1,13 @@
 // Edge Function: process-csv-bulk
-// Universal CSV processor for GHL, Stripe Payments, Stripe Customers, PayPal
-// Handles 200k+ records server-side without browser timeout limits
+// 2-Phase CSV Processor: Staging (sync) + Merge (background)
+// Phase 1: Fast staging - data visible immediately
+// Phase 2: Background merge - identity unification
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
+
+// Declare EdgeRuntime for TypeScript
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -17,6 +21,22 @@ type CSVType = 'ghl' | 'stripe_payments' | 'stripe_customers' | 'paypal' | 'subs
 // deno-lint-ignore no-explicit-any
 type AnySupabaseClient = SupabaseClient<any, any, any>;
 
+interface StagingResult {
+  importId: string;
+  staged: number;
+  totalRows: number;
+  sourceType: string;
+  phase: 'staged';
+}
+
+interface MergeResult {
+  importId: string;
+  merged: number;
+  conflicts: number;
+  errors: number;
+  phase: 'merged';
+}
+
 interface ProcessingResult {
   csvType: string;
   totalRows: number;
@@ -25,7 +45,6 @@ interface ProcessingResult {
   skipped: number;
   errors: string[];
   duration: number;
-  // Master CSV specific counts
   ghlContacts?: number;
   stripePayments?: number;
   paypalPayments?: number;
@@ -69,35 +88,29 @@ function normalizePhone(phone: string): string | null {
   return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
 }
 
-// Normalize header: remove dots, accents, parentheses, extra spaces
 function normalizeHeader(h: string): string {
   return h
     .toLowerCase()
-    .replace(/\./g, '')           // Remove dots
-    .replace(/[áàäâ]/g, 'a')       // Normalize accents
+    .replace(/\./g, '')
+    .replace(/[áàäâ]/g, 'a')
     .replace(/[éèëê]/g, 'e')
     .replace(/[íìïî]/g, 'i')
     .replace(/[óòöô]/g, 'o')
     .replace(/[úùüû]/g, 'u')
     .replace(/ñ/g, 'n')
-    .replace(/\(/g, '')            // Remove parentheses
+    .replace(/\(/g, '')
     .replace(/\)/g, '')
-    .replace(/\s+/g, ' ')          // Collapse multiple spaces
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-// Find column index with flexible matching
 function findColumnIndex(headers: string[], patterns: string[]): number {
   const normalizedHeaders = headers.map(normalizeHeader);
   
   for (const pattern of patterns) {
     const normalizedPattern = normalizeHeader(pattern);
-    
-    // Try exact match first
     const exactIdx = normalizedHeaders.findIndex(h => h === normalizedPattern);
     if (exactIdx !== -1) return exactIdx;
-    
-    // Try contains match
     const containsIdx = normalizedHeaders.findIndex(h => h.includes(normalizedPattern));
     if (containsIdx !== -1) return containsIdx;
   }
@@ -112,7 +125,6 @@ function parseCSVLine(line: string): string[] {
   
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
-    
     if (char === '"') {
       if (inQuotes && line[i + 1] === '"') {
         current += '"';
@@ -136,15 +148,12 @@ function normalizeAmount(value: string): number {
   if (!value) return 0;
   const cleaned = value.replace(/[^0-9.-]/g, '');
   const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : Math.round(num * 100); // Convert to cents
+  return isNaN(num) ? 0 : Math.round(num * 100);
 }
 
 function detectCSVType(headers: string[]): CSVType {
   const normalized = headers.map(h => h.toLowerCase().trim());
-  const headerStr = normalized.join(',');
   
-  // MASTER CSV: Has prefixed columns from multiple sources
-  // Prefixes: CNT_ (GHL/Contact), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
   const hasCNT = normalized.some(h => h.startsWith('cnt_'));
   const hasPP = normalized.some(h => h.startsWith('pp_'));
   const hasST = normalized.some(h => h.startsWith('st_'));
@@ -157,35 +166,373 @@ function detectCSVType(headers: string[]): CSVType {
     return 'master';
   }
   
-  // GHL: Has "contact id" or specific GHL fields
   if (normalized.some(h => h.includes('contact id') || h === 'ghl_contact_id')) {
     return 'ghl';
   }
   
-  // Stripe Payments: Has payment_intent or id with amount
   if (normalized.includes('id') && normalized.includes('amount') && 
       (normalized.includes('payment_intent') || normalized.includes('customer') || normalized.includes('status'))) {
     return 'stripe_payments';
   }
   
-  // Stripe Customers: Has customer_id or stripe_customer_id
   if (normalized.some(h => h.includes('customer_id') || h === 'customer') && 
       normalized.includes('email') && !normalized.includes('amount')) {
     return 'stripe_customers';
   }
   
-  // PayPal: Has "Nombre" or Spanish PayPal fields, or "Transaction ID"
   if (normalized.some(h => h === 'nombre' || h === 'transaction id' || h.includes('correo electrónico'))) {
     return 'paypal';
   }
   
-  // Subscriptions: Has subscription_id and plan
   if (normalized.some(h => h.includes('subscription')) && normalized.some(h => h.includes('plan'))) {
     return 'subscriptions';
   }
   
   return 'auto';
 }
+
+// ============= PHASE 1: STAGING (FAST, SYNC) =============
+// Stores raw CSV data immediately without any validation or merging
+async function stageCSVData(
+  lines: string[],
+  headers: string[],
+  sourceType: string,
+  filename: string,
+  supabase: AnySupabaseClient
+): Promise<StagingResult> {
+  const importId = crypto.randomUUID();
+  
+  // Create import run record
+  const { error: runError } = await supabase.from('csv_import_runs').insert({
+    id: importId,
+    filename,
+    source_type: sourceType,
+    total_rows: lines.length - 1,
+    status: 'staging'
+  });
+  
+  if (runError) {
+    logger.error('Failed to create import run', runError);
+    throw new Error(`Failed to create import run: ${runError.message}`);
+  }
+
+  // Find email/phone columns for quick lookups later
+  const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo', 'customer_email']);
+  const phoneIdx = findColumnIndex(headers, ['phone', 'telefono', 'tel']);
+  const nameIdx = findColumnIndex(headers, [
+    'auto_master_name', 'full_name', 'name', 'nombre',
+    'cnt_first name', 'cnt_firstname'
+  ]);
+
+  // Prepare staging records
+  interface StagingRow {
+    import_id: string;
+    row_number: number;
+    email: string | null;
+    phone: string | null;
+    full_name: string | null;
+    source_type: string;
+    raw_data: Record<string, string>;
+    processing_status: string;
+  }
+
+  const stagingRows: StagingRow[] = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
+    try {
+      const values = parseCSVLine(line);
+      
+      // Build raw_data object with all columns
+      const rawData: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        const val = values[idx]?.replace(/"/g, '').trim();
+        if (val) rawData[h] = val;
+      });
+
+      // Extract email/phone for indexing
+      let email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() : null;
+      if (email && !email.includes('@')) email = null;
+      
+      const phone = phoneIdx >= 0 ? normalizePhone(values[phoneIdx] || '') : null;
+      const fullName = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
+
+      stagingRows.push({
+        import_id: importId,
+        row_number: i,
+        email,
+        phone,
+        full_name: fullName,
+        source_type: sourceType,
+        raw_data: rawData,
+        processing_status: 'pending'
+      });
+    } catch (err) {
+      logger.warn(`Failed to parse row ${i}`, err instanceof Error ? { message: err.message } : undefined);
+    }
+  }
+
+  // Batch insert into staging table
+  const BATCH_SIZE = 1000;
+  let stagedCount = 0;
+  
+  for (let i = 0; i < stagingRows.length; i += BATCH_SIZE) {
+    const batch = stagingRows.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from('csv_imports_raw').insert(batch);
+    
+    if (error) {
+      logger.error(`Staging batch ${i / BATCH_SIZE + 1} failed`, error);
+    } else {
+      stagedCount += batch.length;
+    }
+    
+    // Log progress every 5 batches
+    if ((i / BATCH_SIZE + 1) % 5 === 0) {
+      logger.info('Staging progress', { 
+        batch: i / BATCH_SIZE + 1, 
+        staged: stagedCount, 
+        total: stagingRows.length 
+      });
+    }
+  }
+
+  // Update import run status
+  await supabase.from('csv_import_runs').update({
+    rows_staged: stagedCount,
+    status: 'staged',
+    staged_at: new Date().toISOString()
+  }).eq('id', importId);
+
+  logger.info('Staging complete', { importId, staged: stagedCount, total: stagingRows.length });
+
+  return {
+    importId,
+    staged: stagedCount,
+    totalRows: stagingRows.length,
+    sourceType,
+    phase: 'staged'
+  };
+}
+
+// ============= PHASE 2: MERGE (BACKGROUND) =============
+// Processes staged data and merges into clients/transactions
+async function processMergeInBackground(
+  importId: string,
+  sourceType: string,
+  supabase: AnySupabaseClient
+): Promise<void> {
+  logger.info('Starting background merge', { importId, sourceType });
+  
+  try {
+    // Update status to processing
+    await supabase.from('csv_import_runs').update({
+      status: 'processing'
+    }).eq('id', importId);
+
+    // Fetch all pending rows for this import
+    const { data: pendingRows, error: fetchError } = await supabase
+      .from('csv_imports_raw')
+      .select('*')
+      .eq('import_id', importId)
+      .eq('processing_status', 'pending')
+      .order('row_number', { ascending: true });
+
+    if (fetchError) {
+      throw new Error(`Failed to fetch staged rows: ${fetchError.message}`);
+    }
+
+    if (!pendingRows || pendingRows.length === 0) {
+      logger.info('No pending rows to merge', { importId });
+      await supabase.from('csv_import_runs').update({
+        status: 'completed',
+        completed_at: new Date().toISOString()
+      }).eq('id', importId);
+      return;
+    }
+
+    let mergedCount = 0;
+    let conflictCount = 0;
+    let errorCount = 0;
+    const BATCH_SIZE = 500;
+
+    // Group by email for batch processing
+    const emailGroups = new Map<string, typeof pendingRows>();
+    for (const row of pendingRows) {
+      if (row.email) {
+        const existing = emailGroups.get(row.email) || [];
+        existing.push(row);
+        emailGroups.set(row.email, existing);
+      } else if (row.phone) {
+        // Group by phone if no email
+        const key = `phone:${row.phone}`;
+        const existing = emailGroups.get(key) || [];
+        existing.push(row);
+        emailGroups.set(key, existing);
+      } else {
+        // Skip rows without email or phone
+        await supabase.from('csv_imports_raw').update({
+          processing_status: 'skipped',
+          error_message: 'No email or phone',
+          processed_at: new Date().toISOString()
+        }).eq('id', row.id);
+        errorCount++;
+      }
+    }
+
+    // Process each email group
+    const emails = [...emailGroups.keys()].filter(k => !k.startsWith('phone:'));
+    
+    // Batch lookup existing clients
+    for (let i = 0; i < emails.length; i += BATCH_SIZE) {
+      const batchEmails = emails.slice(i, i + BATCH_SIZE);
+      
+      const { data: existingClients } = await supabase
+        .from('clients')
+        .select('id, email, ghl_contact_id, stripe_customer_id')
+        .in('email', batchEmails);
+
+      const existingByEmail = new Map(
+        (existingClients || []).map(c => [c.email, c])
+      );
+
+      // Process this batch
+      const clientsToUpsert: Record<string, unknown>[] = [];
+      const rowsToUpdate: { id: string; status: string; clientId?: string; error?: string }[] = [];
+
+      for (const email of batchEmails) {
+        const rows = emailGroups.get(email) || [];
+        if (rows.length === 0) continue;
+
+        // Merge all rows for this email
+        const mergedData: Record<string, unknown> = { email };
+        let ghlContactId: string | null = null;
+        let stripeCustomerId: string | null = null;
+        let totalSpend = 0;
+        const tags: string[] = [];
+
+        for (const row of rows) {
+          const rawData = row.raw_data as Record<string, string>;
+          
+          // Extract common fields
+          if (!mergedData.full_name && row.full_name) {
+            mergedData.full_name = row.full_name;
+          }
+          if (!mergedData.phone && row.phone) {
+            mergedData.phone = row.phone;
+          }
+
+          // GHL fields
+          if (rawData['cnt_contact id'] || rawData['ghl_contact_id']) {
+            ghlContactId = rawData['cnt_contact id'] || rawData['ghl_contact_id'];
+          }
+          
+          // Stripe fields
+          if (rawData['st_customer id'] || rawData['stripe_customer_id']) {
+            stripeCustomerId = rawData['st_customer id'] || rawData['stripe_customer_id'];
+          }
+
+          // Accumulate spend
+          const spend = normalizeAmount(rawData['auto_total_spend'] || rawData['total_spend'] || '0');
+          if (spend > totalSpend) totalSpend = spend;
+
+          // Merge tags
+          const rowTags = (rawData['cnt_tags'] || rawData['tags'] || '').split(',').map(t => t.trim()).filter(Boolean);
+          tags.push(...rowTags);
+        }
+
+        // Build upsert record
+        const existing = existingByEmail.get(email);
+        
+        if (ghlContactId) mergedData.ghl_contact_id = ghlContactId;
+        if (stripeCustomerId) mergedData.stripe_customer_id = stripeCustomerId;
+        if (totalSpend > 0) mergedData.total_spend = totalSpend;
+        if (tags.length > 0) mergedData.tags = [...new Set(tags)];
+        
+        mergedData.lifecycle_stage = totalSpend > 0 ? 'CUSTOMER' : 'LEAD';
+        mergedData.last_sync = new Date().toISOString();
+
+        clientsToUpsert.push(mergedData);
+
+        // Mark rows as processed
+        for (const row of rows) {
+          rowsToUpdate.push({
+            id: row.id,
+            status: 'merged',
+            clientId: existing?.id
+          });
+        }
+      }
+
+      // Upsert clients
+      if (clientsToUpsert.length > 0) {
+        const { error: upsertError } = await supabase
+          .from('clients')
+          .upsert(clientsToUpsert, { onConflict: 'email' });
+
+        if (upsertError) {
+          logger.error('Client upsert failed', upsertError);
+          for (const row of rowsToUpdate) {
+            row.status = 'error';
+            row.error = upsertError.message;
+            errorCount++;
+          }
+        } else {
+          mergedCount += clientsToUpsert.length;
+        }
+      }
+
+      // Update staging rows status
+      for (const update of rowsToUpdate) {
+        await supabase.from('csv_imports_raw').update({
+          processing_status: update.status,
+          merged_client_id: update.clientId,
+          error_message: update.error,
+          processed_at: new Date().toISOString()
+        }).eq('id', update.id);
+      }
+
+      // Log progress
+      logger.info('Merge progress', {
+        importId,
+        processed: i + batchEmails.length,
+        total: emails.length,
+        merged: mergedCount,
+        conflicts: conflictCount,
+        errors: errorCount
+      });
+    }
+
+    // Update import run with final stats
+    await supabase.from('csv_import_runs').update({
+      rows_merged: mergedCount,
+      rows_conflict: conflictCount,
+      rows_error: errorCount,
+      status: 'completed',
+      completed_at: new Date().toISOString()
+    }).eq('id', importId);
+
+    logger.info('Background merge complete', {
+      importId,
+      merged: mergedCount,
+      conflicts: conflictCount,
+      errors: errorCount
+    });
+
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error('Background merge failed', error instanceof Error ? error : new Error(errMsg));
+    await supabase.from('csv_import_runs').update({
+      status: 'failed',
+      error_message: errMsg,
+      completed_at: new Date().toISOString()
+    }).eq('id', importId);
+  }
+}
+
+// ============= LEGACY DIRECT PROCESSORS =============
+// These process directly without staging (for backwards compatibility)
 
 async function processGHL(
   lines: string[],
@@ -203,14 +550,12 @@ async function processGHL(
     duration: 0
   };
 
-  // Find column indices
   const contactIdIdx = headers.findIndex(h => h.includes('contact id') || h === 'id');
   const emailIdx = headers.findIndex(h => h === 'email');
   const phoneIdx = headers.findIndex(h => h === 'phone');
   const firstNameIdx = headers.findIndex(h => h.includes('first name') || h === 'firstname');
   const lastNameIdx = headers.findIndex(h => h.includes('last name') || h === 'lastname');
   const tagsIdx = headers.findIndex(h => h === 'tags' || h === 'tag');
-  const sourceIdx = headers.findIndex(h => h === 'source');
   const createdIdx = headers.findIndex(h => h.includes('created') || h === 'datecreated');
 
   if (contactIdIdx === -1) {
@@ -224,13 +569,11 @@ async function processGHL(
     phone: string | null;
     fullName: string | null;
     tags: string[];
-    source: string | null;
     dateCreated: string | null;
   }
 
   const contacts: GHLContact[] = [];
 
-  // Parse all rows
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim()) continue;
@@ -258,48 +601,30 @@ async function processGHL(
       const rawTags = tagsIdx >= 0 ? values[tagsIdx]?.replace(/"/g, '').trim() : '';
       const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
 
-      const source = sourceIdx >= 0 ? values[sourceIdx]?.replace(/"/g, '').trim() : null;
       const dateCreated = createdIdx >= 0 ? values[createdIdx]?.replace(/"/g, '').trim() : null;
 
-      contacts.push({ ghlContactId, email: email || null, phone, fullName, tags, source, dateCreated });
+      contacts.push({ ghlContactId, email: email || null, phone, fullName, tags, dateCreated });
       result.totalRows++;
     } catch (err) {
       result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  logger.info('GHL contacts parsed', { total: contacts.length });
-
-  // Load existing clients
-  const emailContacts = contacts.filter(c => c.email);
-  const uniqueEmails = [...new Set(emailContacts.map(c => c.email!))];
-  const existingByEmail = new Map<string, { tags?: string[]; full_name?: string }>();
-  const BATCH_SIZE = 500; // Reduced to avoid timeouts
-
-  for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
-    const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase.from('clients').select('email, tags, full_name').in('email', batch);
-    data?.forEach(c => existingByEmail.set(c.email, c));
-  }
-
-  // Prepare upserts
+  const BATCH_SIZE = 500;
   const toUpsert: Record<string, unknown>[] = [];
 
   for (const contact of contacts) {
     if (!contact.email) continue;
 
-    const existing = existingByEmail.get(contact.email);
     const record: Record<string, unknown> = {
       email: contact.email,
       ghl_contact_id: contact.ghlContactId,
       last_sync: new Date().toISOString()
     };
 
-    if (!existing?.full_name && contact.fullName) record.full_name = contact.fullName;
+    if (contact.fullName) record.full_name = contact.fullName;
     if (contact.phone) record.phone = contact.phone;
-    if (contact.tags.length > 0) {
-      record.tags = [...new Set([...(existing?.tags || []), ...contact.tags])];
-    }
+    if (contact.tags.length > 0) record.tags = contact.tags;
     record.acquisition_source = 'ghl';
     record.lifecycle_stage = 'LEAD';
 
@@ -310,40 +635,15 @@ async function processGHL(
     }
 
     toUpsert.push(record);
-    if (existing) result.updated++;
-    else result.created++;
   }
 
-  // Execute upserts with progress logging and delays
-  const totalBatches = Math.ceil(toUpsert.length / BATCH_SIZE);
   for (let i = 0; i < toUpsert.length; i += BATCH_SIZE) {
     const batch = toUpsert.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    
     const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
     if (error) {
-      result.errors.push(`Upsert batch ${batchNum}/${totalBatches}: ${error.message}`);
+      result.errors.push(`Upsert batch: ${error.message}`);
     } else {
-      if (existingByEmail.has(batch[0]?.email as string)) {
-        result.updated += batch.length;
-      } else {
-        result.created += batch.length;
-      }
-    }
-    
-    // Log progress every 10 batches
-    if (batchNum % 10 === 0 || batchNum === 1) {
-      logger.info('GHL upsert progress', { 
-        batch: batchNum, 
-        total: totalBatches, 
-        processed: i + batch.length, 
-        totalRecords: toUpsert.length 
-      });
-    }
-    
-    // Small delay every 50 batches to avoid overwhelming DB
-    if (batchNum % 50 === 0 && i + BATCH_SIZE < toUpsert.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      result.created += batch.length;
     }
   }
 
@@ -367,7 +667,6 @@ async function processStripePayments(
     duration: 0
   };
 
-  // Find column indices - support multiple formats
   const idIdx = headers.findIndex(h => h === 'id');
   const amountIdx = headers.findIndex(h => h === 'amount');
   const currencyIdx = headers.findIndex(h => h === 'currency');
@@ -382,19 +681,8 @@ async function processStripePayments(
     return result;
   }
 
-  interface Payment {
-    id: string;
-    amount: number;
-    currency: string;
-    status: string;
-    customerEmail: string | null;
-    customerId: string | null;
-    created: string | null;
-    paymentIntent: string | null;
-    rawData: Record<string, string>;
-  }
-
-  const payments: Payment[] = [];
+  const BATCH_SIZE = 500;
+  const transactions: Record<string, unknown>[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
@@ -418,77 +706,32 @@ async function processStripePayments(
       const created = createdIdx >= 0 ? values[createdIdx]?.replace(/"/g, '').trim() || null : null;
       const paymentIntent = paymentIntentIdx >= 0 ? values[paymentIntentIdx]?.replace(/"/g, '').trim() || null : null;
 
-      payments.push({ id, amount, currency, status, customerEmail, customerId, created, paymentIntent, rawData });
+      transactions.push({
+        stripe_payment_intent_id: paymentIntent || id,
+        payment_key: id,
+        amount,
+        currency,
+        status,
+        customer_email: customerEmail,
+        stripe_customer_id: customerId,
+        stripe_created_at: created ? new Date(created).toISOString() : null,
+        source: 'stripe',
+        raw_data: rawData
+      });
       result.totalRows++;
     } catch (err) {
       result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  logger.info('Stripe payments parsed', { total: payments.length });
-
-  // Prepare transaction inserts
-  const BATCH_SIZE = 500;
-  const transactions: Record<string, unknown>[] = [];
-
-  for (const payment of payments) {
-    const paymentKey = payment.id;
-    
-    transactions.push({
-      stripe_payment_intent_id: payment.paymentIntent || payment.id,
-      payment_key: paymentKey,
-      amount: payment.amount,
-      currency: payment.currency,
-      status: payment.status,
-      customer_email: payment.customerEmail,
-      stripe_customer_id: payment.customerId,
-      stripe_created_at: payment.created ? new Date(payment.created).toISOString() : null,
-      source: 'stripe',
-      raw_data: payment.rawData
-    });
-  }
-
-  // Upsert transactions with progress logging
-  const totalTxBatches = Math.ceil(transactions.length / BATCH_SIZE);
   for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
     const batch = transactions.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    
-    const { error } = await supabase
-      .from('transactions')
-      .upsert(batch, { onConflict: 'payment_key' });
-    
+    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
     if (error) {
-      result.errors.push(`Transaction batch ${batchNum}/${totalTxBatches}: ${error.message}`);
+      result.errors.push(`Transaction batch: ${error.message}`);
     } else {
       result.created += batch.length;
     }
-
-    // Log progress every 10 batches
-    if (batchNum % 10 === 0 || batchNum === 1) {
-      logger.info('Stripe payments upsert progress', { 
-        batch: batchNum, 
-        total: totalTxBatches, 
-        processed: i + batch.length, 
-        totalRecords: transactions.length 
-      });
-    }
-    
-    // Small delay every 50 batches
-    if (batchNum % 50 === 0 && i + BATCH_SIZE < transactions.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-
-  // Update clients lifecycle_stage to CUSTOMER for those with payments
-  const customerEmails = [...new Set(payments.filter(p => p.customerEmail).map(p => p.customerEmail!))];
-  
-  for (let i = 0; i < customerEmails.length; i += BATCH_SIZE) {
-    const batch = customerEmails.slice(i, i + BATCH_SIZE);
-    await supabase
-      .from('clients')
-      .update({ lifecycle_stage: 'CUSTOMER', payment_status: 'active' })
-      .in('email', batch);
   }
 
   result.duration = Date.now() - startTime;
@@ -511,29 +754,15 @@ async function processPayPal(
     duration: 0
   };
 
-  // PayPal Spanish headers mapping
   const nameIdx = headers.findIndex(h => h === 'nombre' || h === 'name');
   const emailIdx = headers.findIndex(h => h.includes('correo') || h === 'email' || h.includes('from email'));
   const amountIdx = headers.findIndex(h => h === 'bruto' || h === 'gross' || h === 'amount');
-  const currencyIdx = headers.findIndex(h => h === 'divisa' || h === 'currency');
-  const statusIdx = headers.findIndex(h => h === 'estado' || h === 'status');
   const transactionIdx = headers.findIndex(h => h.includes('transaction id') || h === 'id de transacción');
   const dateIdx = headers.findIndex(h => h === 'fecha' || h === 'date');
-  const typeIdx = headers.findIndex(h => h === 'tipo' || h === 'type');
+  const statusIdx = headers.findIndex(h => h === 'estado' || h === 'status');
 
-  interface PayPalTx {
-    transactionId: string;
-    name: string | null;
-    email: string | null;
-    amount: number;
-    currency: string;
-    status: string;
-    date: string | null;
-    type: string | null;
-    rawData: Record<string, string>;
-  }
-
-  const transactions: PayPalTx[] = [];
+  const BATCH_SIZE = 500;
+  const txRecords: Record<string, unknown>[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
@@ -541,118 +770,48 @@ async function processPayPal(
 
     try {
       const values = parseCSVLine(line);
-      
-      const rawData: Record<string, string> = {};
-      headers.forEach((h, idx) => {
-        if (values[idx]) rawData[h] = values[idx].replace(/"/g, '').trim();
-      });
-
       const transactionId = transactionIdx >= 0 ? values[transactionIdx]?.replace(/"/g, '').trim() : null;
       if (!transactionId) {
         result.skipped++;
         continue;
       }
 
-      const name = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
+      const rawData: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        if (values[idx]) rawData[h] = values[idx].replace(/"/g, '').trim();
+      });
+
       const email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() || null : null;
       const amount = normalizeAmount(values[amountIdx] || '0');
-      const currency = currencyIdx >= 0 ? values[currencyIdx]?.replace(/"/g, '').trim().toLowerCase() || 'usd' : 'usd';
-      const status = statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() || 'completed' : 'completed';
       const date = dateIdx >= 0 ? values[dateIdx]?.replace(/"/g, '').trim() || null : null;
-      const type = typeIdx >= 0 ? values[typeIdx]?.replace(/"/g, '').trim() || null : null;
+      const status = statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() || 'completed' : 'completed';
 
-      // Skip non-payment types
-      if (type && (type.toLowerCase().includes('retiro') || type.toLowerCase().includes('withdrawal'))) {
-        result.skipped++;
-        continue;
-      }
-
-      transactions.push({ transactionId, name, email, amount, currency, status, date, type, rawData });
+      txRecords.push({
+        stripe_payment_intent_id: `paypal_${transactionId}`,
+        payment_key: transactionId,
+        external_transaction_id: transactionId,
+        amount,
+        currency: 'usd',
+        status: status.toLowerCase() === 'completado' || status.toLowerCase() === 'completed' ? 'succeeded' : status.toLowerCase(),
+        customer_email: email,
+        stripe_created_at: date ? new Date(date).toISOString() : null,
+        source: 'paypal',
+        raw_data: rawData
+      });
       result.totalRows++;
     } catch (err) {
       result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  logger.info('PayPal transactions parsed', { total: transactions.length });
-
-  const BATCH_SIZE = 500;
-  const txRecords: Record<string, unknown>[] = [];
-
-  for (const tx of transactions) {
-    txRecords.push({
-      stripe_payment_intent_id: `paypal_${tx.transactionId}`,
-      payment_key: tx.transactionId,
-      external_transaction_id: tx.transactionId,
-      amount: tx.amount,
-      currency: tx.currency,
-      status: tx.status === 'Completado' || tx.status === 'completed' ? 'succeeded' : tx.status.toLowerCase(),
-      customer_email: tx.email,
-      stripe_created_at: tx.date ? new Date(tx.date).toISOString() : null,
-      source: 'paypal',
-      payment_type: tx.type,
-      raw_data: tx.rawData
-    });
-  }
-
-  const totalPayPalBatches = Math.ceil(txRecords.length / BATCH_SIZE);
   for (let i = 0; i < txRecords.length; i += BATCH_SIZE) {
     const batch = txRecords.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    
-    const { error } = await supabase
-      .from('transactions')
-      .upsert(batch, { onConflict: 'payment_key' });
-    
+    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
     if (error) {
-      result.errors.push(`PayPal batch ${batchNum}/${totalPayPalBatches}: ${error.message}`);
+      result.errors.push(`PayPal batch: ${error.message}`);
     } else {
       result.created += batch.length;
     }
-    
-    // Log progress every 10 batches
-    if (batchNum % 10 === 0 || batchNum === 1) {
-      logger.info('PayPal upsert progress', { 
-        batch: batchNum, 
-        total: totalPayPalBatches, 
-        processed: i + batch.length, 
-        totalRecords: txRecords.length 
-      });
-    }
-    
-    // Small delay every 50 batches
-    if (batchNum % 50 === 0 && i + BATCH_SIZE < txRecords.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-
-  // Create/update clients for PayPal customers
-  const customerEmails = [...new Set(transactions.filter(t => t.email).map(t => t.email!))];
-  const existingEmails = new Set<string>();
-
-  for (let i = 0; i < customerEmails.length; i += BATCH_SIZE) {
-    const batch = customerEmails.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase.from('clients').select('email').in('email', batch);
-    data?.forEach(c => existingEmails.add(c.email));
-  }
-
-  const newClients: Record<string, unknown>[] = [];
-  for (const tx of transactions) {
-    if (tx.email && !existingEmails.has(tx.email)) {
-      newClients.push({
-        email: tx.email,
-        full_name: tx.name,
-        lifecycle_stage: 'CUSTOMER',
-        acquisition_source: 'paypal',
-        payment_status: 'active'
-      });
-      existingEmails.add(tx.email);
-    }
-  }
-
-  for (let i = 0; i < newClients.length; i += BATCH_SIZE) {
-    const batch = newClients.slice(i, i + BATCH_SIZE);
-    await supabase.from('clients').upsert(batch, { onConflict: 'email' });
   }
 
   result.duration = Date.now() - startTime;
@@ -685,14 +844,8 @@ async function processStripeCustomers(
     return result;
   }
 
-  interface Customer {
-    email: string;
-    customerId: string | null;
-    name: string | null;
-    ltv: number;
-  }
-
-  const customers: Customer[] = [];
+  const BATCH_SIZE = 500;
+  const clientRecords: Record<string, unknown>[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
@@ -710,496 +863,35 @@ async function processStripeCustomers(
       const name = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
       const ltv = ltvIdx >= 0 ? normalizeAmount(values[ltvIdx] || '0') : 0;
 
-      customers.push({ email, customerId, name, ltv });
-      result.totalRows++;
-    } catch (err) {
-      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
-    }
-  }
-
-  logger.info('Stripe customers parsed', { total: customers.length });
-
-  const BATCH_SIZE = 500;
-  const clientRecords: Record<string, unknown>[] = [];
-
-  for (const customer of customers) {
-    clientRecords.push({
-      email: customer.email,
-      stripe_customer_id: customer.customerId,
-      full_name: customer.name,
-      total_spend: customer.ltv,
-      lifecycle_stage: customer.ltv > 0 ? 'CUSTOMER' : 'LEAD',
-      payment_status: customer.ltv > 0 ? 'active' : null
-    });
-  }
-
-  const totalCustomerBatches = Math.ceil(clientRecords.length / BATCH_SIZE);
-  for (let i = 0; i < clientRecords.length; i += BATCH_SIZE) {
-    const batch = clientRecords.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    
-    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
-    
-    if (error) {
-      result.errors.push(`Customer batch ${batchNum}/${totalCustomerBatches}: ${error.message}`);
-    } else {
-      result.updated += batch.length; // These are updates, not new clients
-    }
-    
-    // Log progress every 10 batches
-    if (batchNum % 10 === 0 || batchNum === 1) {
-      logger.info('Stripe customers upsert progress', { 
-        batch: batchNum, 
-        total: totalCustomerBatches, 
-        processed: i + batch.length, 
-        totalRecords: clientRecords.length 
-      });
-    }
-  }
-
-  result.duration = Date.now() - startTime;
-  return result;
-}
-
-// ============= MASTER CSV PROCESSOR =============
-// Processes CSV with prefixed columns: CNT_ (GHL), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
-async function processMasterCSV(
-  lines: string[],
-  headers: string[],
-  supabase: AnySupabaseClient
-): Promise<ProcessingResult> {
-  const startTime = Date.now();
-  const result: ProcessingResult = {
-    csvType: 'master',
-    totalRows: 0,
-    created: 0,
-    updated: 0,
-    skipped: 0,
-    errors: [],
-    duration: 0,
-    ghlContacts: 0,
-    stripePayments: 0,
-    paypalPayments: 0,
-    subscriptions: 0,
-    transactionsCreated: 0,
-    clientsCreated: 0,
-    clientsUpdated: 0
-  };
-
-  // Build column index maps by prefix - now with normalization
-  const colMap: Record<string, number> = {};
-  const normalizedColMap: Record<string, number> = {};
-  headers.forEach((h, idx) => {
-    colMap[h] = idx;
-    normalizedColMap[normalizeHeader(h)] = idx;
-  });
-
-  // Find key columns with flexible matching
-  const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo']);
-  
-  // Auto_Master fields (pre-calculated unified data)
-  const autoNameIdx = findColumnIndex(headers, ['auto_master_name', 'auto master name']);
-  const autoPhoneIdx = findColumnIndex(headers, ['auto_master_phone', 'auto master phone']);
-  const autoSpendIdx = findColumnIndex(headers, ['auto_total_spend', 'auto total spend']);
-  const autoSourcesIdx = findColumnIndex(headers, ['auto_data_sources', 'auto data sources']);
-  
-  // CNT_ (GHL Contact) fields
-  const cntContactIdIdx = findColumnIndex(headers, ['cnt_contact id', 'cnt_contactid', 'cnt contact id']);
-  const cntFirstNameIdx = findColumnIndex(headers, ['cnt_first name', 'cnt_firstname', 'cnt first name']);
-  const cntLastNameIdx = findColumnIndex(headers, ['cnt_last name', 'cnt_lastname', 'cnt last name']);
-  const cntPhoneIdx = findColumnIndex(headers, ['cnt_phone', 'cnt phone']);
-  const cntTagsIdx = findColumnIndex(headers, ['cnt_tags', 'cnt tags']);
-  const cntCreatedIdx = findColumnIndex(headers, ['cnt_created', 'cnt created']);
-  const cntBusinessNameIdx = findColumnIndex(headers, ['cnt_business name', 'cnt business name']);
-  const cntLastActivityIdx = findColumnIndex(headers, ['cnt_last activity', 'cnt last activity']);
-  
-  // ST_ (Stripe) fields - flexible matching for various formats
-  const stIdIdx = findColumnIndex(headers, ['st_id', 'st id']);
-  const stAmountIdx = findColumnIndex(headers, ['st_amount', 'st amount']);
-  const stStatusIdx = findColumnIndex(headers, ['st_status', 'st status']);
-  const stCurrencyIdx = findColumnIndex(headers, ['st_currency', 'st currency']);
-  const stCreatedIdx = findColumnIndex(headers, ['st_created date utc', 'st_created', 'st created date']);
-  const stCustomerIdIdx = findColumnIndex(headers, ['st_customer id', 'st customer id']);
-  const stPaymentIntentIdx = findColumnIndex(headers, ['st_paymentintent id', 'st paymentintent', 'st payment intent']);
-  const stCustomerEmailIdx = findColumnIndex(headers, ['st_correo electronico del cliente metadata', 'st customer email']);
-  
-  // PP_ (PayPal) fields - flexible matching for Spanish with special chars
-  const ppTxIdIdx = findColumnIndex(headers, ['pp_id de transaccion', 'pp_id transaccion', 'pp id de transaccion', 'pp transaction id']);
-  const ppBrutoIdx = findColumnIndex(headers, ['pp_bruto', 'pp bruto']);
-  const ppEstadoIdx = findColumnIndex(headers, ['pp_estado', 'pp estado']);
-  const ppFechaIdx = findColumnIndex(headers, ['pp_fecha', 'pp fecha']);
-  const ppNombreIdx = findColumnIndex(headers, ['pp_nombre', 'pp nombre']);
-  const ppNetoIdx = findColumnIndex(headers, ['pp_neto', 'pp neto']);
-  const ppCorreoIdx = findColumnIndex(headers, ['pp_correo electronico del destinatario', 'pp correo']);
-  const ppTipoIdx = findColumnIndex(headers, ['pp_tipo', 'pp tipo']);
-  
-  // SUB_ (Subscription) fields
-  const subPlanNameIdx = findColumnIndex(headers, ['sub_plan name', 'sub plan name']);
-  const subStatusIdx = findColumnIndex(headers, ['sub_status', 'sub status']);
-  const subPriceIdx = findColumnIndex(headers, ['sub_price', 'sub price']);
-  const subExpiresIdx = findColumnIndex(headers, ['sub_expires at cdmx', 'sub expires at', 'sub_expires at']);
-  const subCreatedIdx = findColumnIndex(headers, ['sub_created at cdmx', 'sub created at', 'sub_created at']);
-  const subPhoneIdx = findColumnIndex(headers, ['sub_phone', 'sub phone']);
-  const subUserNameIdx = findColumnIndex(headers, ['sub_user name', 'sub user name']);
-  const subSubscriptionIdIdx = findColumnIndex(headers, ['sub_subscription id', 'sub subscription id']);
-  
-  // USR_ (User) fields
-  const usrNombreIdx = findColumnIndex(headers, ['usr_nombre', 'usr nombre']);
-  const usrTelefonoIdx = findColumnIndex(headers, ['usr_telefono', 'usr telefono']);
-  const usrRoleIdx = findColumnIndex(headers, ['usr_role', 'usr role']);
-  const usrMetodoPagoIdx = findColumnIndex(headers, ['usr_metodo de pago', 'usr metodo pago']);
-
-  if (emailIdx === -1) {
-    result.errors.push('Missing Email column in Master CSV');
-    return result;
-  }
-
-  logger.info('Master CSV column mapping', { 
-    emailIdx, autoNameIdx, autoPhoneIdx, cntContactIdIdx, stIdIdx, ppTxIdIdx, subPlanNameIdx,
-    totalColumns: headers.length,
-    sampleHeaders: headers.slice(0, 10)
-  });
-
-  interface MasterRow {
-    email: string;
-    // Unified fields
-    fullName: string | null;
-    phone: string | null;
-    totalSpend: number;
-    dataSources: string[];
-    // GHL fields
-    ghlContactId: string | null;
-    ghlTags: string[];
-    ghlCreated: string | null;
-    ghlBusinessName: string | null;
-    // Stripe transaction
-    stripeId: string | null;
-    stripeAmount: number;
-    stripeStatus: string | null;
-    stripeCurrency: string | null;
-    stripeCreated: string | null;
-    stripeCustomerId: string | null;
-    stripePaymentIntent: string | null;
-    // PayPal transaction
-    paypalTxId: string | null;
-    paypalAmount: number;
-    paypalStatus: string | null;
-    paypalDate: string | null;
-    paypalType: string | null;
-    // Subscription
-    subPlanName: string | null;
-    subStatus: string | null;
-    subPrice: number;
-    subExpires: string | null;
-    subCreated: string | null;
-    subSubscriptionId: string | null;
-    // User
-    userRole: string | null;
-  }
-
-  const rows: MasterRow[] = [];
-
-  // Parse all rows
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-
-    try {
-      const values = parseCSVLine(line);
-      const email = values[emailIdx]?.replace(/"/g, '').trim().toLowerCase();
-      
-      if (!email || !email.includes('@')) {
-        result.skipped++;
-        continue;
-      }
-
-      // Parse unified fields
-      const autoName = autoNameIdx >= 0 ? values[autoNameIdx]?.replace(/"/g, '').trim() || null : null;
-      const autoPhone = autoPhoneIdx >= 0 ? normalizePhone(values[autoPhoneIdx] || '') : null;
-      const autoSpend = autoSpendIdx >= 0 ? normalizeAmount(values[autoSpendIdx] || '0') : 0;
-      const autoSources = autoSourcesIdx >= 0 ? (values[autoSourcesIdx]?.replace(/"/g, '').trim() || '').split(',').filter(Boolean) : [];
-
-      // Parse GHL fields
-      const cntContactId = cntContactIdIdx >= 0 ? values[cntContactIdIdx]?.replace(/"/g, '').trim() || null : null;
-      const cntFirstName = cntFirstNameIdx >= 0 ? values[cntFirstNameIdx]?.replace(/"/g, '').trim() || '' : '';
-      const cntLastName = cntLastNameIdx >= 0 ? values[cntLastNameIdx]?.replace(/"/g, '').trim() || '' : '';
-      const cntFullName = [cntFirstName, cntLastName].filter(Boolean).join(' ') || null;
-      const cntPhone = cntPhoneIdx >= 0 ? normalizePhone(values[cntPhoneIdx] || '') : null;
-      const cntTags = cntTagsIdx >= 0 ? (values[cntTagsIdx]?.replace(/"/g, '').trim() || '').split(',').map(t => t.trim()).filter(Boolean) : [];
-      const cntCreated = cntCreatedIdx >= 0 ? values[cntCreatedIdx]?.replace(/"/g, '').trim() || null : null;
-      const cntBusinessName = cntBusinessNameIdx >= 0 ? values[cntBusinessNameIdx]?.replace(/"/g, '').trim() || null : null;
-
-      // Parse Stripe fields
-      const stId = stIdIdx >= 0 ? values[stIdIdx]?.replace(/"/g, '').trim() || null : null;
-      const stAmount = stAmountIdx >= 0 ? normalizeAmount(values[stAmountIdx] || '0') : 0;
-      const stStatus = stStatusIdx >= 0 ? values[stStatusIdx]?.replace(/"/g, '').trim() || null : null;
-      const stCurrency = stCurrencyIdx >= 0 ? values[stCurrencyIdx]?.replace(/"/g, '').trim().toLowerCase() || 'usd' : 'usd';
-      const stCreated = stCreatedIdx >= 0 ? values[stCreatedIdx]?.replace(/"/g, '').trim() || null : null;
-      const stCustomerId = stCustomerIdIdx >= 0 ? values[stCustomerIdIdx]?.replace(/"/g, '').trim() || null : null;
-      const stPaymentIntent = stPaymentIntentIdx >= 0 ? values[stPaymentIntentIdx]?.replace(/"/g, '').trim() || null : null;
-
-      // Parse PayPal fields
-      const ppTxId = ppTxIdIdx >= 0 ? values[ppTxIdIdx]?.replace(/"/g, '').trim() || null : null;
-      const ppAmount = ppBrutoIdx >= 0 ? normalizeAmount(values[ppBrutoIdx] || '0') : 0;
-      const ppStatus = ppEstadoIdx >= 0 ? values[ppEstadoIdx]?.replace(/"/g, '').trim() || null : null;
-      const ppDate = ppFechaIdx >= 0 ? values[ppFechaIdx]?.replace(/"/g, '').trim() || null : null;
-      const ppType = ppTipoIdx >= 0 ? values[ppTipoIdx]?.replace(/"/g, '').trim() || null : null;
-
-      // Parse Subscription fields
-      const subPlanName = subPlanNameIdx >= 0 ? values[subPlanNameIdx]?.replace(/"/g, '').trim() || null : null;
-      const subStatus = subStatusIdx >= 0 ? values[subStatusIdx]?.replace(/"/g, '').trim() || null : null;
-      const subPrice = subPriceIdx >= 0 ? normalizeAmount(values[subPriceIdx] || '0') : 0;
-      const subExpires = subExpiresIdx >= 0 ? values[subExpiresIdx]?.replace(/"/g, '').trim() || null : null;
-      const subCreated = subCreatedIdx >= 0 ? values[subCreatedIdx]?.replace(/"/g, '').trim() || null : null;
-      const subSubscriptionId = subSubscriptionIdIdx >= 0 ? values[subSubscriptionIdIdx]?.replace(/"/g, '').trim() || null : null;
-
-      // Parse User fields
-      const usrNombre = usrNombreIdx >= 0 ? values[usrNombreIdx]?.replace(/"/g, '').trim() || null : null;
-      const usrPhone = usrTelefonoIdx >= 0 ? normalizePhone(values[usrTelefonoIdx] || '') : null;
-      const usrRole = usrRoleIdx >= 0 ? values[usrRoleIdx]?.replace(/"/g, '').trim() || null : null;
-
-      // Determine best name and phone (priority: Auto > GHL > USR > PayPal)
-      const bestName = autoName || cntFullName || usrNombre || (ppNombreIdx >= 0 ? values[ppNombreIdx]?.replace(/"/g, '').trim() : null);
-      const bestPhone = autoPhone || cntPhone || usrPhone;
-
-      rows.push({
+      clientRecords.push({
         email,
-        fullName: bestName,
-        phone: bestPhone,
-        totalSpend: autoSpend,
-        dataSources: autoSources,
-        ghlContactId: cntContactId,
-        ghlTags: cntTags,
-        ghlCreated: cntCreated,
-        ghlBusinessName: cntBusinessName,
-        stripeId: stId,
-        stripeAmount: stAmount,
-        stripeStatus: stStatus,
-        stripeCurrency: stCurrency,
-        stripeCreated: stCreated,
-        stripeCustomerId: stCustomerId,
-        stripePaymentIntent: stPaymentIntent,
-        paypalTxId: ppTxId,
-        paypalAmount: ppAmount,
-        paypalStatus: ppStatus,
-        paypalDate: ppDate,
-        paypalType: ppType,
-        subPlanName: subPlanName,
-        subStatus: subStatus,
-        subPrice: subPrice,
-        subExpires: subExpires,
-        subCreated: subCreated,
-        subSubscriptionId: subSubscriptionId,
-        userRole: usrRole
+        stripe_customer_id: customerId,
+        full_name: name,
+        total_spend: ltv,
+        lifecycle_stage: ltv > 0 ? 'CUSTOMER' : 'LEAD',
+        payment_status: ltv > 0 ? 'active' : null
       });
-
       result.totalRows++;
-      if (cntContactId) result.ghlContacts = (result.ghlContacts || 0) + 1;
-      if (stId) result.stripePayments = (result.stripePayments || 0) + 1;
-      if (ppTxId) result.paypalPayments = (result.paypalPayments || 0) + 1;
-      if (subPlanName) result.subscriptions = (result.subscriptions || 0) + 1;
-
     } catch (err) {
       result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  logger.info('Master CSV parsed', { 
-    total: rows.length, 
-    ghl: result.ghlContacts, 
-    stripe: result.stripePayments, 
-    paypal: result.paypalPayments,
-    subs: result.subscriptions
-  });
-
-  const BATCH_SIZE = 500;
-
-  // 1. UPSERT CLIENTS
-  const uniqueEmails = [...new Set(rows.map(r => r.email))];
-  const existingEmails = new Set<string>();
-  
-  for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
-    const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase.from('clients').select('email').in('email', batch);
-    data?.forEach(c => existingEmails.add(c.email));
-  }
-
-  // Group rows by email to aggregate data
-  const emailMap = new Map<string, MasterRow[]>();
-  for (const row of rows) {
-    const existing = emailMap.get(row.email) || [];
-    existing.push(row);
-    emailMap.set(row.email, existing);
-  }
-
-  const clientRecords: Record<string, unknown>[] = [];
-  
-  for (const [email, emailRows] of emailMap) {
-    // Aggregate data from all rows for this email
-    const firstRow = emailRows[0];
-    let totalSpend = 0;
-    let hasPayment = false;
-    const allTags: string[] = [];
-    
-    for (const row of emailRows) {
-      if (row.stripeAmount > 0 && row.stripeStatus?.toLowerCase() === 'succeeded') {
-        totalSpend += row.stripeAmount;
-        hasPayment = true;
-      }
-      if (row.paypalAmount > 0 && (row.paypalStatus?.toLowerCase() === 'completado' || row.paypalStatus?.toLowerCase() === 'completed')) {
-        totalSpend += row.paypalAmount;
-        hasPayment = true;
-      }
-      allTags.push(...row.ghlTags);
-    }
-
-    // Determine lifecycle stage
-    let lifecycleStage = 'LEAD';
-    if (hasPayment || totalSpend > 0) {
-      lifecycleStage = 'CUSTOMER';
-    } else if (firstRow.subStatus?.toLowerCase() === 'trial' || firstRow.subPlanName?.toLowerCase().includes('trial')) {
-      lifecycleStage = 'TRIAL';
-    }
-
-    clientRecords.push({
-      email,
-      full_name: firstRow.fullName,
-      phone: firstRow.phone,
-      phone_e164: firstRow.phone,
-      total_spend: totalSpend > 0 ? totalSpend : (firstRow.totalSpend || 0),
-      ghl_contact_id: firstRow.ghlContactId,
-      stripe_customer_id: firstRow.stripeCustomerId,
-      tags: [...new Set(allTags)],
-      lifecycle_stage: lifecycleStage,
-      payment_status: hasPayment ? 'active' : null,
-      acquisition_source: firstRow.dataSources[0] || 'master_import',
-      last_sync: new Date().toISOString()
-    });
-
-    if (existingEmails.has(email)) {
-      result.clientsUpdated = (result.clientsUpdated || 0) + 1;
-    } else {
-      result.clientsCreated = (result.clientsCreated || 0) + 1;
-    }
-  }
-
-  // Upsert clients
-  const totalClientBatches = Math.ceil(clientRecords.length / BATCH_SIZE);
   for (let i = 0; i < clientRecords.length; i += BATCH_SIZE) {
     const batch = clientRecords.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    
     const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
     if (error) {
-      result.errors.push(`Client batch ${batchNum}/${totalClientBatches}: ${error.message}`);
-    }
-    
-    if (batchNum % 10 === 0 || batchNum === 1) {
-      logger.info('Master CSV client upsert progress', { batch: batchNum, total: totalClientBatches });
-    }
-  }
-
-  result.updated = result.clientsUpdated || 0;
-  result.created = result.clientsCreated || 0;
-
-  // 2. INSERT STRIPE TRANSACTIONS
-  const stripeTransactions: Record<string, unknown>[] = [];
-  for (const row of rows) {
-    if (row.stripeId && row.stripeAmount > 0) {
-      stripeTransactions.push({
-        stripe_payment_intent_id: row.stripePaymentIntent || row.stripeId,
-        payment_key: row.stripeId,
-        amount: row.stripeAmount,
-        currency: row.stripeCurrency || 'usd',
-        status: row.stripeStatus?.toLowerCase() === 'succeeded' ? 'succeeded' : row.stripeStatus?.toLowerCase() || 'pending',
-        customer_email: row.email,
-        stripe_customer_id: row.stripeCustomerId,
-        stripe_created_at: row.stripeCreated ? new Date(row.stripeCreated).toISOString() : null,
-        source: 'stripe'
-      });
-    }
-  }
-
-  for (let i = 0; i < stripeTransactions.length; i += BATCH_SIZE) {
-    const batch = stripeTransactions.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
-    if (error) {
-      result.errors.push(`Stripe tx batch: ${error.message}`);
+      result.errors.push(`Customer batch: ${error.message}`);
     } else {
-      result.transactionsCreated = (result.transactionsCreated || 0) + batch.length;
-    }
-  }
-
-  // 3. INSERT PAYPAL TRANSACTIONS
-  const paypalTransactions: Record<string, unknown>[] = [];
-  for (const row of rows) {
-    if (row.paypalTxId && row.paypalAmount !== 0) {
-      paypalTransactions.push({
-        stripe_payment_intent_id: `paypal_${row.paypalTxId}`,
-        payment_key: row.paypalTxId,
-        external_transaction_id: row.paypalTxId,
-        amount: row.paypalAmount,
-        currency: 'usd', // PayPal amounts will be in original currency
-        status: row.paypalStatus?.toLowerCase() === 'completado' || row.paypalStatus?.toLowerCase() === 'completed' ? 'succeeded' : 'pending',
-        customer_email: row.email,
-        stripe_created_at: row.paypalDate ? new Date(row.paypalDate).toISOString() : null,
-        source: 'paypal'
-      });
-    }
-  }
-
-  for (let i = 0; i < paypalTransactions.length; i += BATCH_SIZE) {
-    const batch = paypalTransactions.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('transactions').upsert(batch, { onConflict: 'payment_key' });
-    if (error) {
-      result.errors.push(`PayPal tx batch: ${error.message}`);
-    } else {
-      result.transactionsCreated = (result.transactionsCreated || 0) + batch.length;
-    }
-  }
-
-  // 4. INSERT SUBSCRIPTIONS (if subscription table exists)
-  const subscriptionRecords: Record<string, unknown>[] = [];
-  for (const row of rows) {
-    if (row.subPlanName) {
-      subscriptionRecords.push({
-        stripe_subscription_id: `master_${row.email}_${row.subPlanName}`.replace(/[^a-zA-Z0-9_]/g, '_'),
-        customer_email: row.email,
-        plan_name: row.subPlanName,
-        status: row.subStatus?.toLowerCase() || 'active',
-        amount: row.subPrice,
-        current_period_end: row.subExpires ? new Date(row.subExpires).toISOString() : null,
-        created_at: row.subCreated ? new Date(row.subCreated).toISOString() : new Date().toISOString(),
-        provider: 'master_import'
-      });
-    }
-  }
-
-  for (let i = 0; i < subscriptionRecords.length; i += BATCH_SIZE) {
-    const batch = subscriptionRecords.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('subscriptions').upsert(batch, { onConflict: 'stripe_subscription_id' });
-    if (error) {
-      result.errors.push(`Subscription batch: ${error.message}`);
+      result.updated += batch.length;
     }
   }
 
   result.duration = Date.now() - startTime;
-  
-  logger.info('Master CSV processing complete', {
-    totalRows: result.totalRows,
-    clientsCreated: result.clientsCreated,
-    clientsUpdated: result.clientsUpdated,
-    transactionsCreated: result.transactionsCreated,
-    ghlContacts: result.ghlContacts,
-    stripePayments: result.stripePayments,
-    paypalPayments: result.paypalPayments,
-    subscriptions: result.subscriptions,
-    duration: result.duration
-  });
-
   return result;
 }
 
+// ============= MAIN HANDLER =============
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -1218,7 +910,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { csvText, csvType: requestedType, filename } = await req.json() as { csvText: string; csvType?: CSVType; filename?: string };
+    const body = await req.json();
+    const { csvText, csvType: requestedType, filename, useStaging = true } = body as { 
+      csvText: string; 
+      csvType?: CSVType; 
+      filename?: string;
+      useStaging?: boolean;
+    };
 
     if (!csvText || typeof csvText !== 'string') {
       return new Response(
@@ -1227,18 +925,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    logger.info(`[${requestId}] Starting CSV bulk processing`, { 
+    logger.info(`[${requestId}] CSV bulk processing`, { 
       csvLength: csvText.length, 
       requestedType, 
       filename: filename || 'unknown',
-      estimatedLines: csvText.split('\n').length 
+      estimatedLines: csvText.split('\n').length,
+      useStaging
     });
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Remove BOM and normalize line endings
+    // Clean CSV
     const cleanCsv = csvText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = cleanCsv.split('\n').filter(line => line.trim());
 
@@ -1249,23 +948,46 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Parse headers
     const headerLine = lines[0];
     const headers = parseCSVLine(headerLine).map(h => h.toLowerCase().replace(/"/g, '').trim());
-
-    logger.info('CSV headers parsed', { headerCount: headers.length, sampleHeaders: headers.slice(0, 10) });
-
-    // Detect or use requested type
     const csvType = requestedType && requestedType !== 'auto' ? requestedType : detectCSVType(headers);
 
-    logger.info('Processing as type', { csvType });
+    logger.info('Processing as type', { csvType, useStaging });
 
+    // ============= NEW 2-PHASE PROCESSING =============
+    if (useStaging) {
+      // PHASE 1: Stage data immediately (sync)
+      const stagingResult = await stageCSVData(lines, headers, csvType, filename || 'unknown', supabase);
+      
+      // PHASE 2: Start merge in background
+      EdgeRuntime.waitUntil(
+        processMergeInBackground(stagingResult.importId, csvType, supabase)
+      );
+      
+      const duration = Date.now() - startTime;
+      logger.info(`[${requestId}] Staging complete, merge started in background`, {
+        importId: stagingResult.importId,
+        staged: stagingResult.staged,
+        duration_ms: duration
+      });
+
+      return new Response(
+        JSON.stringify({ 
+          ok: true, 
+          result: {
+            ...stagingResult,
+            duration,
+            message: `${stagingResult.staged} contactos importados. La unificación se procesa en segundo plano.`
+          }
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // ============= LEGACY DIRECT PROCESSING =============
     let result: ProcessingResult;
 
     switch (csvType) {
-      case 'master':
-        result = await processMasterCSV(lines, headers, supabase);
-        break;
       case 'ghl':
         result = await processGHL(lines, headers, supabase);
         break;
@@ -1278,19 +1000,33 @@ Deno.serve(async (req) => {
       case 'paypal':
         result = await processPayPal(lines, headers, supabase);
         break;
+      case 'master':
+        // Master CSVs always use staging
+        const masterStagingResult = await stageCSVData(lines, headers, 'master', filename || 'unknown', supabase);
+        EdgeRuntime.waitUntil(
+          processMergeInBackground(masterStagingResult.importId, 'master', supabase)
+        );
+        
+        return new Response(
+          JSON.stringify({ 
+            ok: true, 
+            result: {
+              ...masterStagingResult,
+              duration: Date.now() - startTime,
+              message: `${masterStagingResult.staged} filas importadas. La unificación se procesa en segundo plano.`
+            }
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       default:
         return new Response(
-          JSON.stringify({ ok: false, error: `Unknown CSV type. Detected headers: ${headers.slice(0, 10).join(', ')}` }),
+          JSON.stringify({ ok: false, error: `Unknown CSV type. Headers: ${headers.slice(0, 10).join(', ')}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
     }
 
     const duration = Date.now() - startTime;
-    logger.info(`[${requestId}] Processing complete`, { 
-      ...result, 
-      duration_ms: duration,
-      duration_seconds: Math.round(duration / 1000)
-    });
+    logger.info(`[${requestId}] Processing complete`, { ...result, duration_ms: duration });
 
     return new Response(
       JSON.stringify({ ok: true, result }),
@@ -1300,16 +1036,13 @@ Deno.serve(async (req) => {
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('connection') || duration > 50000;
     
     logger.error(`[${requestId}] Fatal error after ${duration}ms`, error instanceof Error ? error : new Error(String(error)));
     
     return new Response(
       JSON.stringify({ 
         ok: false, 
-        error: isTimeout 
-          ? `Procesamiento interrumpido después de ${Math.round(duration/1000)}s. El archivo es muy grande. Intenta dividirlo en partes más pequeñas o procesa archivos menores a 50MB.`
-          : errorMessage
+        error: errorMessage
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
