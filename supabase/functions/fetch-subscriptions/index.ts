@@ -100,6 +100,7 @@ async function processPage(
       current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
       canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
       cancel_reason: sub.cancellation_details?.reason || null,
+      raw_data: sub as unknown as Record<string, unknown>,
       updated_at: new Date().toISOString(),
     };
   });
