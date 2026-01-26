@@ -1,160 +1,103 @@
 
-# Plan Definitivo: Procesamiento de CSV Sin Timeouts
+# Plan: Corregir Error de Autenticación "Auth session missing"
 
-## Diagnóstico Final
+## Diagnóstico
 
-### Por qué ninguna optimización funciona:
-1. **Edge Functions tienen límite DURO de 60 segundos** - No hay forma de extender esto en Lovable Cloud
-2. Con 146k filas, incluso con chunks de 1MB (~2000 filas), cada chunk requiere:
-   - Parsear CSV → 5-10s
-   - Insertar en staging → 10-20s
-   - El servidor mata la función antes de responder → **"shutdown"**
-3. Los logs muestran **6 shutdowns consecutivos** = el servidor mata la función antes de terminar
+El error ocurre porque `supabase.functions.invoke` no está pasando correctamente el token JWT al servidor, aunque localmente la sesión parece válida.
 
-### Soluciones Reales Disponibles:
+**Logs del servidor:**
+```
+User validation failed | error="Auth session missing!", code=400
+```
 
-| Opción | Pros | Contras |
-|--------|------|---------|
-| **A. Script Local (Node.js)** | Sin límites, ya existe | Requiere terminal, menos conveniente |
-| **B. Python Backend (Render)** | Ya tienes servidor, sin límites | Requiere endpoint nuevo |
-| **C. Procesamiento Ultra-Micro** | Funciona desde browser | Más lento, muchos requests |
+**Logs del cliente:**
+```
+[AdminAPI] Session valid, calling function...
+```
+
+El SDK de Supabase v2.x tiene un comportamiento inconsistente donde `functions.invoke` no siempre incluye el `Authorization` header automáticamente.
 
 ---
 
-## Solución Recomendada: Opción A + C Híbrida
+## Solución
 
-### Para archivos GIGANTES (>50k filas): Script Local
-Ya tienes `import-all-csvs.js` que funciona perfectamente. Solo necesitas ejecutarlo desde terminal.
-
-### Para archivos medianos (5k-50k filas): Micro-chunks desde browser
-Reducir chunks a **200KB** (~500 filas) para garantizar que SIEMPRE terminen en <30 segundos.
-
----
-
-## Implementación
-
-### 1. Optimizar Edge Function para micro-chunks
-
-Cambios en `process-csv-bulk`:
-- Eliminar toda lógica de merge del request síncrono
-- Solo hacer INSERT directo sin validación
-- Responder en <5 segundos por chunk
-
-```
-ANTES: 1MB chunk → 2000 filas → parsear + staging + merge → timeout
-AHORA: 200KB chunk → 500 filas → solo INSERT raw → <10 segundos
-```
-
-### 2. Actualizar CSVUploader para micro-chunks
+Modificar `invokeWithAdminKey` para pasar **explícitamente** el header `Authorization` con el access token de la sesión:
 
 ```typescript
-// De 1MB a 200KB
-const MAX_CHUNK_SIZE = 200 * 1024; // 200KB = ~500 filas
+// ANTES (no siempre pasa el header)
+const { data, error } = await supabase.functions.invoke(functionName, {
+  body,
+});
 
-// Máximo 5 chunks paralelos para no saturar
-const PARALLEL_CHUNKS = 5;
-```
-
-### 3. Simplificar staging al mínimo
-
-La Edge Function solo hace:
-1. Recibir chunk de texto CSV
-2. Parsear a JSON simple
-3. INSERT directo en `csv_imports_raw`
-4. Retornar `{ ok: true, rows: N }`
-
-NO hace:
-- Validación de emails
-- Normalización de teléfonos
-- Detección de duplicados
-- Merge con clientes existentes
-
-### 4. Crear proceso de Merge separado
-
-Nueva Edge Function `merge-staged-imports`:
-- Se ejecuta DESPUÉS de que todo el staging complete
-- Procesa en background con `EdgeRuntime.waitUntil`
-- Puede tomar varios minutos sin bloquear nada
-
----
-
-## Flujo Final
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              SUBIDA DE CSV GRANDE                       │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  [CSV 146k filas] ─────────────────────────────────────│
-│         │                                               │
-│         ▼                                               │
-│  [Frontend divide en ~300 chunks de 200KB]              │
-│         │                                               │
-│         ▼ (5 chunks paralelos)                          │
-│  ┌──────────────────────┐                              │
-│  │ process-csv-bulk     │                              │
-│  │ • Parsear JSON       │ ← 3-5 segundos por chunk     │
-│  │ • INSERT directo     │                              │
-│  └──────────────────────┘                              │
-│         │                                               │
-│         ▼ (después de todos los chunks)                │
-│  [146k filas en csv_imports_raw] ← VISIBLES EN UI      │
-│         │                                               │
-│         ▼                                               │
-│  ┌──────────────────────┐                              │
-│  │ merge-staged-imports │ ← Edge Function separada     │
-│  │ • Procesa staging    │                              │
-│  │ • Unifica clientes   │                              │
-│  │ • Background: mins   │                              │
-│  └──────────────────────┘                              │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+// DESPUÉS (siempre pasa el header)
+const { data, error } = await supabase.functions.invoke(functionName, {
+  body,
+  headers: {
+    Authorization: `Bearer ${session.access_token}`
+  }
+});
 ```
 
 ---
 
-## Archivos a Modificar
+## Archivo a Modificar
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/process-csv-bulk/index.ts` | Simplificar a solo INSERT directo, sin merge |
-| `src/components/dashboard/CSVUploader.tsx` | Reducir chunk a 200KB, 5 paralelos |
-| `supabase/functions/merge-staged-imports/index.ts` | **NUEVA** - Merge en background |
-| `src/components/dashboard/StagingContactsPanel.tsx` | Agregar botón "Iniciar Merge" |
+| `src/lib/adminApi.ts` | Añadir header `Authorization` explícito en `functions.invoke` |
 
 ---
 
-## Beneficios
+## Código Propuesto
 
-1. **Nunca timeout**: Cada chunk se procesa en <10s
-2. **Visibilidad inmediata**: Contactos aparecen mientras suben
-3. **Escalable**: Funciona con 1M+ filas
-4. **Sin dependencias externas**: Todo desde el browser
+```typescript
+export async function invokeWithAdminKey<
+  T = Record<string, unknown>,
+  B extends Record<string, unknown> = Record<string, unknown>
+>(
+  functionName: string,
+  body?: B
+): Promise<T | null> {
+  try {
+    console.log(`[AdminAPI] Invoking ${functionName}`, body ? 'with body' : 'without body');
+    
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError) {
+      console.error('[AdminAPI] Session error:', sessionError);
+      return { success: false, error: `Session error: ${sessionError.message}` } as T;
+    }
+    
+    if (!session) {
+      console.error('[AdminAPI] No active session');
+      return { success: false, error: 'No active session. Please log in again.' } as T;
+    }
 
----
+    // SOLUCIÓN: Pasar explícitamente el Authorization header
+    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}`);
+    
+    const { data, error } = await supabase.functions.invoke(functionName, {
+      body,
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      }
+    });
 
-## Alternativa: Script Local (Ya existe)
-
-Si quieres subir AHORA sin esperar, ya tienes el script:
-
-```bash
-# 1. Exportar la Service Role Key (desde Lovable Cloud → Settings → Environment Variables)
-export SUPABASE_SERVICE_ROLE_KEY="tu-key"
-
-# 2. Ejecutar el script
-node import-all-csvs.js
+    // ... resto del código igual
+  }
+}
 ```
 
-Este script NO tiene límites de tiempo y puede procesar millones de filas.
+---
+
+## Por Qué Esto Funciona
+
+1. **Garantía explícita**: No dependemos del comportamiento automático del SDK
+2. **Token fresco**: Usamos `session.access_token` directamente de la sesión validada
+3. **Mismo patrón que funciona**: Otras funciones como `sync-command-center` reciben el header correctamente
 
 ---
 
-## Resumen Ejecutivo
+## Resultado Esperado
 
-El problema NO es el código, es el **límite de 60 segundos** de Edge Functions. La solución es:
-
-1. **Dividir más pequeño**: 200KB chunks (~500 filas) garantizan respuesta en <10s
-2. **Separar staging de merge**: Guardar rápido, procesar después
-3. **Para archivos enormes**: Usar el script local que ya tienes
-
-Con estos cambios, podrás subir tus 146k contactos sin errores ni timeouts.
+Con este cambio, cada llamada a Edge Functions incluirá el JWT correctamente, eliminando el error "Auth session missing".
