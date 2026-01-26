@@ -65,28 +65,28 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
         startDate: subDays(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 5
+        maxPages: 1 // Ultra-safe chunking (1 page at a time)
       };
     case '7d':
       return {
         startDate: subDays(now, 7),
         endDate: now,
         fetchAll: true,
-        maxPages: 5
+        maxPages: 1
       };
     case 'month':
       return {
         startDate: subMonths(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 5
+        maxPages: 1
       };
     case 'full':
       return {
         startDate: subYears(now, 5),
         endDate: now,
         fetchAll: true,
-        maxPages: 5 // Process in small batches to avoid timeout
+        maxPages: 1
       };
   }
 }
