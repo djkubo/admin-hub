@@ -117,6 +117,12 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   };
 
   const handleSyncAll = async (range: SyncRange = 'today') => {
+    // Prevent multiple clicks
+    if (isSyncing) {
+      toast.warning('Ya hay una sincronización en progreso');
+      return;
+    }
+    
     setIsSyncing(true);
     setSyncStatus(null);
     setSyncProgress('');
@@ -210,11 +216,21 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       console.error('Sync error:', error);
       setSyncStatus('warning');
       setSyncProgress('');
+      
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido en sincronización';
-      toast.error('Error en sincronización', {
-        description: errorMessage,
-        duration: 6000,
-      });
+      
+      // Handle 409 sync_already_running error specifically
+      if (errorMessage.includes('sync_already_running') || errorMessage.includes('sync en progreso')) {
+        toast.warning('Sincronización en progreso', {
+          description: 'Ya hay una sincronización activa. Espera a que termine o revisa el panel de resultados.',
+          duration: 8000,
+        });
+      } else {
+        toast.error('Error en sincronización', {
+          description: errorMessage,
+          duration: 6000,
+        });
+      }
     } finally {
       setIsSyncing(false);
     }
