@@ -161,6 +161,18 @@ async function processSinglePage(
     // Increased from 10 to 20 to speed up processing
     const PARALLEL_SIZE = 20;
     for (let i = 0; i < contacts.length; i += PARALLEL_SIZE) {
+      // Check if sync was cancelled before processing each batch
+      const { data: batchCheck } = await supabase
+        .from('sync_runs')
+        .select('status')
+        .eq('id', syncRunId)
+        .single();
+      
+      if (batchCheck?.status === 'canceled' || batchCheck?.status === 'cancelled') {
+        logger.info('Sync cancelled during batch processing', { syncRunId, batchIndex: i });
+        break; // Stop processing batches
+      }
+      
       const batch = contacts.slice(i, i + PARALLEL_SIZE);
       const results = await Promise.all(
         batch.map(async (contact: Record<string, unknown>) => {
@@ -412,6 +424,21 @@ Deno.serve(async (req) => {
       await supabase.from('sync_runs').update({ status: 'running', checkpoint: { startAfterId, lastActivity: new Date().toISOString() } }).eq('id', syncRunId);
     }
 
+    // ============ CHECK IF CANCELLED BEFORE PROCESSING ============
+    const { data: syncCheck } = await supabase
+      .from('sync_runs')
+      .select('status')
+      .eq('id', syncRunId!)
+      .single();
+    
+    if (syncCheck?.status === 'canceled' || syncCheck?.status === 'cancelled') {
+      logger.info('Sync was cancelled, stopping', { syncRunId });
+      return new Response(
+        JSON.stringify({ ok: false, status: 'canceled', error: 'Sync was cancelled by user' }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // ============ PROCESS PAGE ============
     const pageStartTime = Date.now();
     logger.info(`Processing GHL page`, { startAfterId, syncRunId });
@@ -425,6 +452,26 @@ Deno.serve(async (req) => {
       startAfterId,
       startAfter
     );
+    
+    // ============ CHECK IF CANCELLED AFTER PROCESSING ============
+    const { data: syncCheckAfter } = await supabase
+      .from('sync_runs')
+      .select('status')
+      .eq('id', syncRunId!)
+      .single();
+    
+    if (syncCheckAfter?.status === 'canceled' || syncCheckAfter?.status === 'cancelled') {
+      logger.info('Sync was cancelled after page processing', { syncRunId });
+      await supabase.from('sync_runs').update({ 
+        status: 'cancelled', 
+        completed_at: new Date().toISOString(),
+        error_message: 'Cancelled by user during processing'
+      }).eq('id', syncRunId);
+      return new Response(
+        JSON.stringify({ ok: false, status: 'canceled', error: 'Sync was cancelled by user' }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
     
     const pageDuration = Date.now() - pageStartTime;
     logger.info(`GHL page processed`, { 
