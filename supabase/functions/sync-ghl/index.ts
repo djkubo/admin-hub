@@ -168,10 +168,10 @@ async function processSinglePage(
         batch.map(async (contact: Record<string, unknown>) => {
           try {
             // Skip contacts without email AND phone (can't merge without identifier)
-            const email = (contact.email as string) || null;
-            const phone = (contact.phone as string) || null;
+            const contactEmail = (contact.email as string) || null;
+            const contactPhone = (contact.phone as string) || null;
             
-            if (!email && !phone) {
+            if (!contactEmail && !contactPhone) {
               logger.debug('Skipping contact without email or phone', { contactId: contact.id });
               return { action: 'skipped', reason: 'no_email_no_phone' };
             }
@@ -188,8 +188,8 @@ async function processSinglePage(
             }
 
             // Extract contact data - using actual API structure
-            const email = (contact.email as string) || null;
-            const phone = (contact.phone as string) || null;
+            const email = contactEmail;
+            const phone = contactPhone;
             const firstName = (contact.firstName as string) || '';
             const lastName = (contact.lastName as string) || '';
             // Use contactName if available (it's the full name in lowercase), otherwise construct from firstName/lastName

@@ -298,13 +298,13 @@ Deno.serve(async (req: Request) => {
           break;
         }
         
-        const pageCount = respData?.synced_transactions ?? 0;
-        totalStripe += pageCount;
+        const pageTxCount = respData?.synced_transactions ?? 0;
+        totalStripe += pageTxCount;
         stripeSyncId = respData?.syncRunId ?? stripeSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
         
-        console.log(`✅ Stripe page ${pageCount}: ${pageCount} tx, total: ${totalStripe}, hasMore: ${hasMore}`);
+        console.log(`✅ Stripe page ${pageCount}: ${pageTxCount} tx, total: ${totalStripe}, hasMore: ${hasMore}`);
         await updateProgress("stripe-transactions", `${totalStripe} transacciones`);
       }
       

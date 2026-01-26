@@ -1949,6 +1949,23 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cleanup_old_data: { Args: never; Returns: Json }
+      cleanup_stuck_syncs: { Args: never; Returns: Json }
+      dashboard_metrics: {
+        Args: never
+        Returns: {
+          churn_count: number
+          converted_count: number
+          customer_count: number
+          lead_count: number
+          recovery_list: Json
+          sales_month_mxn: number
+          sales_month_usd: number
+          sales_today_mxn: number
+          sales_today_usd: number
+          trial_count: number
+        }[]
+      }
       data_quality_checks: {
         Args: never
         Returns: {
@@ -2067,6 +2084,13 @@ export type Database = {
       normalize_phone_e164: { Args: { phone: string }; Returns: string }
       promote_metrics_staging: { Args: never; Returns: boolean }
       rebuild_metrics_staging: { Args: never; Returns: Json }
+      reset_stuck_syncs: {
+        Args: { p_timeout_minutes?: number }
+        Returns: {
+          reset_count: number
+          reset_ids: string[]
+        }[]
+      }
       unify_identity: {
         Args: {
           p_email?: string
