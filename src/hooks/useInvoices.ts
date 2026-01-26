@@ -150,6 +150,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
           default_payment_method,
           last_finalization_error,
           lines,
+          raw_data,
           created_at,
           updated_at,
           client:clients!client_id (
