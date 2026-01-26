@@ -18,6 +18,20 @@ type CSVType = 'ghl' | 'stripe_payments' | 'stripe_customers' | 'paypal' | 'subs
 // deno-lint-ignore no-explicit-any
 type AnySupabaseClient = SupabaseClient<any, any, any>;
 
+// Parse JWT claims without external call - JWT is base64 encoded
+function parseJwtClaims(token: string): { sub?: string; email?: string; exp?: number } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    // Base64 decode the payload
+    const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
   const authHeader = req.headers.get('Authorization');
   
@@ -37,43 +51,46 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
     return { valid: false, error: 'Invalid token format' };
   }
 
+  // Parse JWT claims locally first to validate structure
+  const claims = parseJwtClaims(token);
+  if (!claims || !claims.sub) {
+    logger.warn('Failed to parse JWT claims');
+    return { valid: false, error: 'Invalid token structure' };
+  }
+
+  // Check if token is expired
+  if (claims.exp && claims.exp * 1000 < Date.now()) {
+    logger.warn('Token has expired', { exp: new Date(claims.exp * 1000).toISOString() });
+    return { valid: false, error: 'Token expired' };
+  }
+
+  logger.info('JWT claims parsed', { userId: claims.sub, email: claims.email });
+
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 
+  // Create client with the auth header for RLS
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
-  // Validate user with getUser
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
-  if (userError) {
-    logger.warn('User validation failed', { error: userError.message, code: userError.status });
-    return { valid: false, error: `Auth error: ${userError.message}` };
-  }
-  
-  if (!user) {
-    logger.warn('No user returned from getUser');
-    return { valid: false, error: 'Invalid or expired session' };
-  }
-
-  logger.info('User authenticated', { userId: user.id, email: user.email });
-
-  // Verify admin status
+  // Verify admin status using RPC (this validates the token server-side)
   // deno-lint-ignore no-explicit-any
   const { data: isAdmin, error: adminError } = await (supabase as any).rpc('is_admin');
   
   if (adminError) {
-    logger.warn('Admin check failed', { error: adminError.message });
-    return { valid: false, error: 'Admin verification failed' };
+    logger.warn('Admin check failed', { error: adminError.message, code: adminError.code });
+    // If admin check fails, it means the token is invalid
+    return { valid: false, error: `Admin verification failed: ${adminError.message}` };
   }
   
   if (!isAdmin) {
-    logger.warn('User is not admin', { userId: user.id });
+    logger.warn('User is not admin', { userId: claims.sub });
     return { valid: false, error: 'Not authorized as admin' };
   }
 
-  return { valid: true, userId: user.id };
+  logger.info('Admin verified successfully', { userId: claims.sub });
+  return { valid: true, userId: claims.sub };
 }
 
 function normalizeHeader(h: string): string {
