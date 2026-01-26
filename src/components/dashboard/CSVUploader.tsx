@@ -220,11 +220,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       const priority: Record<CSVFileType, number> = { 
         ghl: 0, 
         web: 1, 
-        stripe_customers: 2, 
-        stripe_payments: 3,
-        subscriptions: 4, 
-        stripe: 5, 
-        paypal: 6 
+        manychat: 2,
+        stripe_customers: 3, 
+        stripe_payments: 4,
+        subscriptions: 5, 
+        stripe: 6, 
+        paypal: 7 
       };
       return priority[a.type] - priority[b.type];
     });

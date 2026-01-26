@@ -281,7 +281,7 @@ Deno.serve(async (req) => {
         .in('email', batch);
 
       if (error) {
-        logger.error('Error loading existing clients', { error: error.message, batch: i / BATCH_SIZE + 1 });
+        logger.warn(`Error loading existing clients: ${error.message} (batch ${i / BATCH_SIZE + 1})`);
         result.errors.push(`Batch ${i / BATCH_SIZE + 1}: ${error.message}`);
       } else {
         data?.forEach(c => existingByEmail.set(c.email, c));
@@ -307,7 +307,7 @@ Deno.serve(async (req) => {
           .in('phone', batch);
 
         if (error) {
-          logger.error('Error loading existing clients by phone', { error: error.message });
+          logger.warn(`Error loading existing clients by phone: ${error.message}`);
           result.errors.push(`Phone batch ${i / BATCH_SIZE + 1}: ${error.message}`);
         } else {
           data?.forEach(c => {
@@ -444,7 +444,7 @@ Deno.serve(async (req) => {
         .upsert(batch, { onConflict: 'email' });
 
       if (error) {
-        logger.error('Upsert batch error', { batch: batchNum, error: error.message });
+        logger.warn(`Upsert batch error: batch ${batchNum}, ${error.message}`);
         result.errors.push(`Batch ${batchNum}: ${error.message}`);
       }
 
@@ -468,7 +468,7 @@ Deno.serve(async (req) => {
         .insert(batch);
 
       if (error) {
-        logger.error('Insert phone-only batch error', { batch: batchNum, error: error.message });
+        logger.warn(`Insert phone-only batch error: batch ${batchNum}, ${error.message}`);
         result.errors.push(`Phone-only batch ${batchNum}: ${error.message}`);
       }
 
@@ -493,7 +493,7 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    logger.error('Fatal error', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
     return new Response(
       JSON.stringify({ 
         ok: false, 

@@ -166,7 +166,7 @@ async function processSinglePage(
         .from('sync_runs')
         .select('status')
         .eq('id', syncRunId)
-        .single();
+        .single() as { data: { status: string } | null };
       
       if (batchCheck?.status === 'canceled' || batchCheck?.status === 'cancelled') {
         logger.info('Sync cancelled during batch processing', { syncRunId, batchIndex: i });
