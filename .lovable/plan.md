@@ -1,238 +1,119 @@
 
-# Plan: Fix - Auto-continuación para Sincronización de Facturas
+# Plan: Corrección de Mensajes de Error y Detección de Stale
 
-## Problema Detectado
+## Problema Identificado
 
-| Diagnóstico | Detalle |
-|-------------|---------|
-| Causa | Supabase Edge Runtime shutdown después de ~60s de background |
-| Evidencia | `LOG shutdown` a las 16:28:02 justo después de page 42 |
-| Resultado | Sync se quedó en `running` con 4200 facturas, cursor guardado |
-| Faltan | ~10,000+ facturas más (tenemos 4200 de ~15,000) |
+| Issue | Causa | Solución |
+|-------|-------|----------|
+| Error "[object Object]" | El frontend intenta mostrar un objeto como mensaje de error | Mejorar serialización de errores |
+| "Sync atascado por 30 minutos" | El campo `lastActivity` en checkpoint no se actualiza durante el background sync | Actualizar `lastActivity` en cada página procesada |
 
-## Solución: Sistema de Auto-Reanudación
+## Estado Actual del Sync
 
-La función debe:
-1. Limitar cada ejecución a ~20-25 páginas máximo (antes del shutdown de 60s)
-2. Cuando termina el lote, llamarse a sí misma con el cursor guardado
-3. Retomar desde el último checkpoint automáticamente
+✅ **EL SYNC ESTÁ FUNCIONANDO CORRECTAMENTE**
 
-## Arquitectura Propuesta
+| Métrica | Valor |
+|---------|-------|
+| Facturas procesadas | 30,000+ |
+| Restantes | ~675 (aprox 7 páginas más) |
+| Tiempo estimado para completar | ~1-2 minutos más |
+| Estado | `continuing` |
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Ejecución 1                              │
-├─────────────────────────────────────────────────────────────┤
-│  Páginas 1-25 → 2500 facturas                               │
-│  Guarda cursor en sync_runs                                 │
-│  Se auto-llama con { syncRunId, cursor }                   │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Ejecución 2                              │
-├─────────────────────────────────────────────────────────────┤
-│  Lee cursor de sync_runs                                    │
-│  Páginas 26-50 → 2500 facturas más                          │
-│  Se auto-llama...                                           │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-                      ...
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Ejecución N (Final)                      │
-├─────────────────────────────────────────────────────────────┤
-│  Páginas 126-150 → últimas facturas                         │
-│  hasMore = false                                            │
-│  Marca sync como completed ✅                               │
-└─────────────────────────────────────────────────────────────┘
-```
+**No hay bucle infinito.** Las facturas son reales y únicas (30,642 en total).
 
-## Cambios en fetch-invoices/index.ts
+## Cambios Propuestos
 
-### 1. Agregar constante de límite de páginas por ejecución
+### 1. Actualizar `lastActivity` en el checkpoint durante background sync
+
+**Archivo:** `supabase/functions/fetch-invoices/index.ts`
+
+El checkpoint actual solo tiene `cursor`, pero necesita también `lastActivity` para que el frontend no lo marque como "stale":
 
 ```typescript
-const PAGES_PER_BATCH = 25; // Procesar 25 páginas (~2500 facturas) por ejecución
+// En runFullInvoiceSync(), al actualizar sync_runs:
+await supabase.from('sync_runs').update({
+  status: hasMore ? 'continuing' : 'completed',
+  total_fetched: totalFetched,
+  total_inserted: totalInserted,
+  checkpoint: hasMore ? { 
+    cursor,
+    lastActivity: new Date().toISOString()  // ← AGREGAR
+  } : null,
+  completed_at: hasMore ? null : new Date().toISOString(),
+}).eq('id', syncRunId);
 ```
 
-### 2. Modificar `runFullInvoiceSync()` para auto-continuación
+### 2. Mejorar manejo de errores para evitar "[object Object]"
+
+**Archivo:** `src/components/dashboard/APISyncPanel.tsx`
+
+Agregar una función helper para serializar errores:
 
 ```typescript
-async function runFullInvoiceSync(
-  supabase: SupabaseClient,
-  stripeSecretKey: string,
-  syncRunId: string,
-  mode: string,
-  startDate: string | null,
-  endDate: string | null,
-  initialCursor: string | null  // ← NUEVO parámetro
-) {
-  let cursor = initialCursor;  // ← Usar cursor inicial si existe
-  let hasMore = true;
-  let pageCount = 0;
-  let totalFetched = 0;
-  let totalInserted = 0;
-  
-  // Leer progreso existente del sync run
-  const { data: currentRun } = await supabase
-    .from('sync_runs')
-    .select('total_fetched, total_inserted')
-    .eq('id', syncRunId)
-    .single();
-  
-  totalFetched = currentRun?.total_fetched || 0;
-  totalInserted = currentRun?.total_inserted || 0;
-  
-  while (hasMore && pageCount < PAGES_PER_BATCH) {  // ← Límite de páginas
-    pageCount++;
-    // ... proceso de página igual ...
-    
-    totalFetched += invoices.length;
-    totalInserted += upserted;
-    cursor = result.nextCursor;
-    hasMore = result.hasMore && cursor !== null;
-    
-    // Actualizar checkpoint siempre
-    await supabase.from('sync_runs').update({
-      status: hasMore ? 'continuing' : 'completed',
-      total_fetched: totalFetched,
-      total_inserted: totalInserted,
-      checkpoint: hasMore ? { cursor } : null,
-      completed_at: hasMore ? null : new Date().toISOString(),
-    }).eq('id', syncRunId);
+const formatError = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    // Handle edge function error responses
+    const obj = error as Record<string, unknown>;
+    if (obj.message) return String(obj.message);
+    if (obj.error) return String(obj.error);
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Error desconocido';
+    }
   }
-  
-  // AUTO-CONTINUACIÓN: Si hay más páginas, llamar a otra instancia
-  if (hasMore && cursor) {
-    console.log(`🔄 [Background] Batch limit reached. Scheduling continuation...`);
-    
-    // Llamar a la misma función para continuar
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-    
-    // Usar fetch directo con service role key para auto-invocación
-    await fetch(`${supabaseUrl}/functions/v1/fetch-invoices`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!}`
-      },
-      body: JSON.stringify({
-        mode,
-        fetchAll: true,
-        syncRunId,
-        cursor,
-        startDate,
-        endDate,
-        _continuation: true  // Flag para bypass checks
-      })
-    });
-    
-    console.log(`🚀 [Background] Continuation scheduled for cursor ${cursor.slice(0,10)}...`);
-  }
-}
+  return 'Error desconocido';
+};
 ```
 
-### 3. Modificar handler principal para aceptar continuaciones
-
+Luego usarla en todos los catch blocks:
 ```typescript
-// En el handler, después de parsear body:
-const isContinuation = body._continuation === true;
-
-// Modificar el check de "sync already running" para permitir continuaciones
-if (existingSync && !syncRunId && !isContinuation) {
-  // ... bloquear duplicados ...
-}
-
-// Si es continuación, usar el syncRunId y cursor del body
-if (isContinuation && body.syncRunId && body.cursor) {
-  console.log(`🔄 Continuation request for sync ${body.syncRunId}`);
-  
-  EdgeRuntime.waitUntil(
-    runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, body.syncRunId, mode, startDate, endDate, body.cursor)
-  );
-  
-  return new Response(
-    JSON.stringify({ success: true, status: 'continuing', syncRunId: body.syncRunId }),
-    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
+} catch (error) {
+  const errorMessage = formatError(error);  // ← Usar nueva función
+  setInvoicesResult({ success: false, error: errorMessage });
+  toast.error(`Error sincronizando facturas: ${errorMessage}`);
 }
 ```
 
-## Acciones Inmediatas
+### 3. Ajustar umbral de "stale" o usar `total_fetched` como indicador
 
-### 1. Cancelar el sync atascado y reiniciar
+**Archivo:** `src/components/dashboard/SyncStatusBanner.tsx`
 
-```sql
-UPDATE sync_runs 
-SET status = 'cancelled', 
-    completed_at = NOW(),
-    error_message = 'Cancelled for restart with auto-continuation'
-WHERE id = 'f292c5ce-915a-4be3-98d9-c2fe27aa9d7b';
+Opción A: Usar `total_fetched` para detectar actividad real:
+```typescript
+// En lugar de solo lastActivity, también revisar si total_fetched cambió
+const lastFetched = checkpoint?.lastFetched as number || 0;
+const currentFetched = sync.total_fetched || 0;
+
+// Si el total ha cambiado recientemente, no está stale
+if (currentFetched > lastFetched) {
+  activeSyncs.push(sync);
+}
 ```
+
+Opción B: Aumentar umbral a 60 minutos para syncs largos (facturas).
 
 ## Archivos a Modificar
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/fetch-invoices/index.ts` | Agregar `PAGES_PER_BATCH`, auto-continuación, aceptar `_continuation` |
+| `supabase/functions/fetch-invoices/index.ts` | Agregar `lastActivity` al checkpoint |
+| `src/components/dashboard/APISyncPanel.tsx` | Función `formatError()` para errores |
+| `src/components/dashboard/SyncStatusBanner.tsx` | Ajustar detección de stale |
 
-## Detalles Técnicos
+## Impacto
 
-### Modificaciones específicas
+- ✅ El sync actual terminará normalmente en ~1-2 minutos
+- ✅ Futuros syncs no mostrarán falsos positivos de "atascado"
+- ✅ Errores se mostrarán correctamente sin "[object Object]"
 
-**Línea 4 - Nueva constante:**
-```typescript
-const PAGES_PER_BATCH = 25; // ~25 páginas * ~2s = ~50s (dentro del límite de 60s)
-```
+## Nota Importante
 
-**Líneas 461-553 - Función `runFullInvoiceSync` actualizada:**
-- Agregar parámetro `initialCursor: string | null`
-- Leer `total_fetched` y `total_inserted` existentes del sync run antes de sumar
-- Cambiar condición del while: `pageCount < PAGES_PER_BATCH` en lugar de `pageCount < 500`
-- Agregar bloque de auto-continuación al final
+El sync de facturas es lento porque:
+1. Stripe devuelve datos densos por factura
+2. Cada factura requiere resolución de cliente (lookup por ID + email)
+3. El upsert es más costoso que un insert simple
 
-**Líneas 592-604 - Parseo de body actualizado:**
-```typescript
-let isContinuation = false;
-
-try {
-  const body = await req.json();
-  // ... parseo existente ...
-  isContinuation = body._continuation === true;
-} catch {}
-```
-
-**Líneas 607-650 - Check de sync duplicado actualizado:**
-```typescript
-// Permitir continuaciones incluso si hay sync running
-if (existingSync && !syncRunId && !isContinuation) {
-  // ... bloquear ...
-}
-
-// Nuevo bloque para manejar continuaciones
-if (isContinuation && syncRunId && cursor) {
-  EdgeRuntime.waitUntil(
-    runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate, cursor)
-  );
-  
-  return new Response(
-    JSON.stringify({ success: true, status: 'continuing', syncRunId }),
-    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
-}
-```
-
-## Resultado Esperado
-
-| Métrica | Antes | Después |
-|---------|-------|---------|
-| Páginas por ejecución | Ilimitadas (crash) | 25 máximo |
-| Auto-reanudación | ❌ | ✅ |
-| Tiempo total 15k facturas | ∞ (atascado) | ~6-8 minutos (6 batches) |
-| Resistente a shutdown | ❌ | ✅ |
-
-**La sincronización ahora procesará las ~15,000 facturas en 5-6 lotes automáticos sin atascarse.**
+Una optimización futura podría ser cachear el mapeo `stripe_customer_id → client_id` en memoria durante el batch.
