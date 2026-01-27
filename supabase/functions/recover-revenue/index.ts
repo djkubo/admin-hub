@@ -337,7 +337,7 @@ Deno.serve(async (req: Request) => {
       if (activeRun && !force_new) {
         // Check if it's stale (> 10 minutes old without progress)
         const startedAt = new Date(activeRun.started_at).getTime();
-        const isStale = Date.now() - startedAt > 10 * 60 * 1000;
+        const isStale = Date.now() - startedAt > 5 * 60 * 1000; // 5 min timeout (más agresivo)
         
         if (isStale) {
           console.log(`⚠️ Found stale active run ${activeRun.id}, marking as failed`);
@@ -420,6 +420,61 @@ Deno.serve(async (req: Request) => {
     const invoicesToProcess = allInvoices.filter((inv: Stripe.Invoice) => !processedInRun.has(inv.id));
     console.log(`📄 Fetched ${allInvoices.length} invoices, ${invoicesToProcess.length} new to process`);
 
+    // Si no hay facturas en absoluto para este rango, cerrar inmediatamente
+    if (allInvoices.length === 0) {
+      console.log(`📭 No invoices found in range ${hours_lookback}h. Marking as completed.`);
+      
+      // Get existing metadata
+      const { data: currentRunData } = await supabaseService
+        .from("sync_runs")
+        .select("metadata, checkpoint")
+        .eq("id", syncRunId)
+        .single();
+      
+      const existingMeta = (currentRunData?.metadata as Record<string, unknown>) || {};
+      
+      await supabaseService
+        .from("sync_runs")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          metadata: { ...existingMeta, no_invoices_found: true, completed_reason: "no_invoices_in_range" },
+          checkpoint: { 
+            recovered_amount: 0, 
+            failed_amount: 0, 
+            skipped_amount: 0, 
+            processed: 0,
+            succeeded_count: 0,
+            failed_count: 0,
+            skipped_count: 0,
+          },
+        })
+        .eq("id", syncRunId);
+
+      const duration = Date.now() - startTime;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          status: "completed",
+          syncRunId,
+          processed: 0,
+          hasMore: false,
+          duration_ms: duration,
+          recovered_amount: 0,
+          failed_amount: 0,
+          skipped_amount: 0,
+          succeeded_count: 0,
+          failed_count: 0,
+          skipped_count: 0,
+          succeeded: [],
+          failed: [],
+          skipped: [],
+          message: `No hay facturas abiertas en las últimas ${hours_lookback / 24} días`,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Process invoices
     const result: ProcessResult = {
       succeeded: [],
@@ -437,8 +492,8 @@ Deno.serve(async (req: Request) => {
       lastProcessedId = invoice.id;
     }
 
-    // Determine if there's more to process
-    const hasMore = stripeHasMore || invoicesToProcess.length === 0 && allInvoices.length > 0;
+    // Determine if there's more to process (FIXED: paréntesis explícitos para precedencia correcta)
+    const hasMore = stripeHasMore || (invoicesToProcess.length === 0 && allInvoices.length > 0);
     const nextCursor = lastProcessedId || (allInvoices.length > 0 ? allInvoices[allInvoices.length - 1].id : undefined);
 
     // Update sync run with progress
