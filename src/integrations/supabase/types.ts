@@ -2372,6 +2372,18 @@ export type Database = {
         }
         Returns: Json
       }
+      unify_identity_v2: {
+        Args: {
+          p_email?: string
+          p_full_name?: string
+          p_ghl_contact_id?: string
+          p_manychat_subscriber_id?: string
+          p_phone?: string
+          p_source: string
+          p_tracking_data?: Json
+        }
+        Returns: Json
+      }
     }
     Enums: {
       app_role: "admin" | "user"
