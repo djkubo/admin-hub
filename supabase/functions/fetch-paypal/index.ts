@@ -207,6 +207,37 @@ function formatPayPalDate(date: Date): string {
   return iso.replace(/\.\d{3}Z$/, 'Z');
 }
 
+// ============= AUTO-CONTINUATION =============
+
+function triggerContinuation(
+  syncRunId: string,
+  nextPage: number,
+  startDate: string,
+  endDate: string
+): void {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+  // Fire-and-forget: self-invoke for next page
+  fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${serviceKey}`
+    },
+    body: JSON.stringify({
+      fetchAll: true,
+      syncRunId,
+      page: nextPage,
+      startDate,
+      endDate,
+      _continuation: true
+    })
+  }).catch(err => logger.error('Auto-continuation failed', err));
+
+  logger.info(`Triggered auto-continuation for page ${nextPage}`, { syncRunId });
+}
+
 // ============= MAIN HANDLER =============
 
 Deno.serve(async (req) => {
@@ -217,15 +248,6 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    // SECURITY: Verify JWT + admin role
-    const authCheck = await verifyAdmin(req);
-    if (!authCheck.valid) {
-      return new Response(
-        JSON.stringify({ success: false, status: 'failed', error: "Forbidden", message: authCheck.error }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
 
@@ -248,6 +270,7 @@ Deno.serve(async (req) => {
     let syncRunId: string | null = null;
     let cleanupStale = false;
     let forceCancel = false;
+    let isContinuation = false;
 
     // Calculate safe date boundaries BEFORE processing request
     // PayPal API STRICTLY rejects future dates - must use past timestamp
@@ -263,6 +286,7 @@ Deno.serve(async (req) => {
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
       forceCancel = body.forceCancel === true;
+      isContinuation = body._continuation === true;
       page = body.page || 1;
       syncRunId = body.syncRunId || null;
 
@@ -292,7 +316,19 @@ Deno.serve(async (req) => {
       endDate = formatPayPalDate(safeEndDate);
     }
 
-    console.log(`📅 PayPal date range: ${startDate} → ${endDate}`);
+    console.log(`📅 PayPal date range: ${startDate} → ${endDate} (continuation: ${isContinuation}, page: ${page})`);
+
+    // SECURITY: Verify JWT + admin role ONLY for non-continuation requests
+    // Continuations use service role key and are self-invoked
+    if (!isContinuation) {
+      const authCheck = await verifyAdmin(req);
+      if (!authCheck.valid) {
+        return new Response(
+          JSON.stringify({ success: false, status: 'failed', error: "Forbidden", message: authCheck.error }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
 
     // ============ FORCE CANCEL ALL SYNCS ============
     if (forceCancel) {
@@ -343,7 +379,8 @@ Deno.serve(async (req) => {
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
-    if (!syncRunId) {
+    // Skip this check for continuations - they're allowed to run alongside the same syncRunId
+    if (!syncRunId && !isContinuation) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
 
       await supabase
@@ -564,6 +601,9 @@ Deno.serve(async (req) => {
         })
         .eq('id', syncRunId);
 
+      // AUTO-CONTINUATION: Trigger next page immediately
+      triggerContinuation(syncRunId!, page + 1, startDate, endDate);
+
       return new Response(
         JSON.stringify({
           success: true,
@@ -604,14 +644,14 @@ Deno.serve(async (req) => {
       })
       .eq('id', syncRunId);
 
-    logger.info(`PAYPAL SYNC COMPLETE: ${transactionsSaved} transactions in ${Date.now() - startTime}ms`);
+    logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({
         success: true,
         status: 'completed',
         syncRunId,
-        synced_transactions: transactionsSaved,
+        synced_transactions: finalFetched,
         synced_clients: clientsSaved,
         paid_count: paidCount,
         failed_count: failedCount,
