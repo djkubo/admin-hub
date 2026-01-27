@@ -319,11 +319,31 @@ Deno.serve(async (req) => {
       textLength: csvText.length 
     });
 
-    // Parse CSV
-    const lines = csvText.split('\n').filter((l: string) => l.trim());
+    // Parse CSV - handle different line endings and empty lines
+    const rawLines = csvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const lines = rawLines.filter((l: string) => l.trim().length > 0);
+    
+    logger.info('CSV lines parsed', { rawLineCount: rawLines.length, filteredLineCount: lines.length, firstLinePreview: lines[0]?.substring(0, 100) });
+    
     if (lines.length < 2) {
+      // Check if it might be semicolon-delimited
+      const firstLine = lines[0] || '';
+      const semicolonCount = (firstLine.match(/;/g) || []).length;
+      const commaCount = (firstLine.match(/,/g) || []).length;
+      
+      logger.warn('CSV validation failed', { 
+        lineCount: lines.length, 
+        semicolonCount, 
+        commaCount,
+        firstLineLength: firstLine.length,
+        csvTextLength: csvText.length
+      });
+      
       return new Response(
-        JSON.stringify({ ok: false, error: 'CSV must have header and at least one data row' }),
+        JSON.stringify({ 
+          ok: false, 
+          error: `CSV debe tener encabezado y al menos una fila de datos. Recibido: ${lines.length} líneas. ¿El archivo usa punto y coma (;) como delimitador?` 
+        }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
