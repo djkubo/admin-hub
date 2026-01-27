@@ -64,24 +64,22 @@ async function processSinglePageStageOnly(
   try {
     const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
 
+    // GHL API v2 uses searchAfter array for pagination, NOT startAfterId in body
     const bodyParams: Record<string, unknown> = {
       locationId: ghlLocationId,
       pageLimit: CONTACTS_PER_PAGE
     };
 
-    if (startAfterId) {
-      bodyParams.startAfterId = startAfterId;
-      logger.info('Using startAfterId for pagination', { startAfterId });
-    } else if (startAfter) {
-      bodyParams.startAfter = startAfter;
-      logger.info('Using startAfter (timestamp) for pagination', { startAfter });
+    // searchAfter expects [timestamp, id] array format
+    if (startAfter && startAfterId) {
+      bodyParams.searchAfter = [startAfter, startAfterId];
+      logger.info('Using searchAfter array for pagination', { startAfter, startAfterId });
     }
 
-    const { checks, ...cleanBodyParams } = bodyParams as Record<string, unknown> & { checks?: unknown };
-    const finalBody = JSON.stringify(cleanBodyParams);
+    const finalBody = JSON.stringify(bodyParams);
     
     logger.info('Fetching GHL contacts (STAGE ONLY MODE)', { 
-      startAfterId, 
+      hasSearchAfter: !!(startAfter && startAfterId),
       limit: CONTACTS_PER_PAGE 
     });
 
@@ -228,26 +226,23 @@ async function processSinglePage(
   try {
     const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
 
+    // GHL API v2 uses searchAfter array for pagination
     const bodyParams: Record<string, unknown> = {
       locationId: ghlLocationId,
       pageLimit: CONTACTS_PER_PAGE
     };
 
-    if (startAfterId) {
-      bodyParams.startAfterId = startAfterId;
-      logger.info('Using startAfterId for pagination', { startAfterId });
-    } else if (startAfter) {
-      bodyParams.startAfter = startAfter;
-      logger.info('Using startAfter (timestamp) for pagination', { startAfter });
+    // searchAfter expects [timestamp, id] array format
+    if (startAfter && startAfterId) {
+      bodyParams.searchAfter = [startAfter, startAfterId];
+      logger.info('Using searchAfter array for pagination', { startAfter, startAfterId });
     }
 
-    const { checks, ...cleanBodyParams } = bodyParams as Record<string, unknown> & { checks?: unknown };
-    const finalBody = JSON.stringify(cleanBodyParams);
+    const finalBody = JSON.stringify(bodyParams);
     
     logger.info('Fetching GHL contacts (V2 Search)', { 
-      startAfterId, 
+      hasSearchAfter: !!(startAfter && startAfterId),
       limit: CONTACTS_PER_PAGE,
-      bodyKeys: Object.keys(cleanBodyParams),
       bodyPreview: finalBody.substring(0, 200)
     });
 
