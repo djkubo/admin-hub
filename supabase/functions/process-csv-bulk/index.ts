@@ -345,26 +345,42 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Generate or use existing import ID
+    // The frontend sends import_id for all chunks after the first one
     let importId: string;
+    const providedImportId = body.importId;
     
-    if (isChunk && chunkIndex > 0) {
-      // For subsequent chunks, find existing import run
-      const { data: existingRun } = await supabase
+    if (providedImportId) {
+      // Use the import_id from frontend (for chunks after the first)
+      importId = providedImportId;
+      logger.info('Using provided importId', { importId, chunkIndex });
+    } else if (isChunk && chunkIndex > 0) {
+      // Fallback: For subsequent chunks without importId, find existing import run
+      const baseFilename = filename?.replace(/_chunk_\d+$/, '') || '';
+      const { data: existingRun, error: findError } = await supabase
         .from('csv_import_runs')
         .select('id')
-        .eq('filename', filename?.replace(/_chunk_\d+$/, ''))
-        .eq('status', 'staging')
+        .eq('filename', baseFilename)
+        .in('status', ['staging', 'staged'])
         .order('started_at', { ascending: false })
         .limit(1)
         .single();
       
-      importId = existingRun?.id || crypto.randomUUID();
+      if (findError || !existingRun) {
+        logger.error('Could not find existing import run for chunk', new Error(`baseFilename=${baseFilename}, chunkIndex=${chunkIndex}, findError=${findError?.message}`));
+        return new Response(
+          JSON.stringify({ ok: false, error: `No se encontró el import para el chunk ${chunkIndex}. Intenta subir el archivo nuevamente.` }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      importId = existingRun.id;
+      logger.info('Found existing importId', { importId, chunkIndex });
     } else {
-      // Create new import run
+      // First chunk or non-chunked: Create new import run
       importId = crypto.randomUUID();
       const baseFilename = filename?.replace(/_chunk_\d+$/, '') || `import_${Date.now()}`;
       
-      await supabase.from('csv_import_runs').insert({
+      const { error: insertError } = await supabase.from('csv_import_runs').insert({
         id: importId,
         filename: baseFilename,
         source_type: csvType,
@@ -376,6 +392,16 @@ Deno.serve(async (req) => {
         status: 'staging',
         started_at: new Date().toISOString()
       });
+
+      if (insertError) {
+        logger.error('Failed to create import run', new Error(insertError.message));
+        return new Response(
+          JSON.stringify({ ok: false, error: `Error creando import: ${insertError.message}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      logger.info('Created new import run', { importId, baseFilename });
     }
 
     // Stage data - ULTRA FAST

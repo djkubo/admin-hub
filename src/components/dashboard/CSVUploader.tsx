@@ -331,6 +331,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     let rowsProcessed = 0;
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 3;
+    let importId: string | undefined; // Track import ID from first chunk
     
     // Process each chunk sequentially
     for (let i = 0; i < chunks.length; i++) {
@@ -344,7 +345,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         totalRows
       });
       
-      console.log(`[Chunking] Processing chunk ${i + 1}/${chunks.length} (${chunkRows} rows)`);
+      console.log(`[Chunking] Processing chunk ${i + 1}/${chunks.length} (${chunkRows} rows)${importId ? ` [importId: ${importId}]` : ''}`);
       
       try {
         // Add timeout for each chunk (90 seconds max)
@@ -352,16 +353,24 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           setTimeout(() => reject(new Error('Timeout: El servidor tardó demasiado en responder')), 90000);
         });
         
-        const fetchPromise = invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
+        // Build request payload - include importId for chunks after the first
+        const payload: Record<string, unknown> = { 
+          csvText: chunk, 
+          csvType, 
+          filename: `${filename}_chunk_${i + 1}`,
+          isChunk: true,
+          chunkIndex: i,
+          totalChunks: chunks.length
+        };
+        
+        // CRITICAL: Send importId for all chunks after the first one
+        if (importId && i > 0) {
+          payload.importId = importId;
+        }
+        
+        const fetchPromise = invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string; importId?: string }>(
           'process-csv-bulk',
-          { 
-            csvText: chunk, 
-            csvType, 
-            filename: `${filename}_chunk_${i + 1}`,
-            isChunk: true,
-            chunkIndex: i,
-            totalChunks: chunks.length
-          }
+          payload
         );
         
         const response = await Promise.race([fetchPromise, timeoutPromise]);
@@ -384,6 +393,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         
         // Reset consecutive failures on success
         consecutiveFailures = 0;
+        
+        // CRITICAL: Save importId from first chunk response for subsequent chunks
+        if (!importId && response.importId) {
+          importId = response.importId;
+          console.log(`[Chunking] Got importId from first chunk: ${importId}`);
+        }
         
         const chunkResult = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
         
