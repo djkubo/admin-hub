@@ -553,7 +553,7 @@ Deno.serve(async (req) => {
 
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
-      const cleanupThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min threshold
+      const cleanupThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString(); // 3 min threshold
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
         .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - cleanup' })
@@ -604,8 +604,8 @@ Deno.serve(async (req) => {
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
-    // Auto-cleanup stale syncs (10 min threshold - aggressive cleanup to prevent blocking)
-    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    // Auto-cleanup stale syncs (3 min threshold - aggressive cleanup to prevent blocking)
+    const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
     const staleAutoCleanup = await supabase
       .from('sync_runs')
       .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - auto-cleanup 10min' })

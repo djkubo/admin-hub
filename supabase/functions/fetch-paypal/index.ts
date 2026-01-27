@@ -3,7 +3,7 @@ import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/re
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 
 const logger = createLogger('fetch-paypal', LogLevel.INFO);
-const STALE_TIMEOUT_MINUTES = 30; // Mark syncs as stale after 30 minutes
+const STALE_TIMEOUT_MINUTES = 3; // Mark syncs as stale after 3 minutes (aggressive cleanup)
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -247,6 +247,7 @@ Deno.serve(async (req) => {
     let page = 1;
     let syncRunId: string | null = null;
     let cleanupStale = false;
+    let forceCancel = false;
 
     // Calculate safe date boundaries BEFORE processing request
     // PayPal API STRICTLY rejects future dates - must use past timestamp
@@ -261,6 +262,7 @@ Deno.serve(async (req) => {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
+      forceCancel = body.forceCancel === true;
       page = body.page || 1;
       syncRunId = body.syncRunId || null;
 
@@ -292,6 +294,32 @@ Deno.serve(async (req) => {
 
     console.log(`📅 PayPal date range: ${startDate} → ${endDate}`);
 
+    // ============ FORCE CANCEL ALL SYNCS ============
+    if (forceCancel) {
+      const { data: cancelledSyncs, error: cancelError } = await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(), 
+          error_message: 'Cancelado forzosamente por usuario' 
+        })
+        .eq('source', 'paypal')
+        .in('status', ['running', 'continuing'])
+        .select('id');
+
+      logger.info('Force cancelled syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'cancelled', 
+          cancelled: cancelledSyncs?.length || 0,
+          message: `Se cancelaron ${cancelledSyncs?.length || 0} sincronizaciones` 
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
@@ -301,7 +329,7 @@ Deno.serve(async (req) => {
         .update({
           status: 'failed',
           completed_at: new Date().toISOString(),
-          error_message: 'Timeout - sin actividad por 30 minutos'
+          error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
         })
         .eq('source', 'paypal')
         .in('status', ['running', 'continuing'])
@@ -323,7 +351,7 @@ Deno.serve(async (req) => {
         .update({
           status: 'failed',
           completed_at: new Date().toISOString(),
-          error_message: 'Timeout - sin actividad por 30 minutos'
+          error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
         })
         .eq('source', 'paypal')
         .in('status', ['running', 'continuing'])

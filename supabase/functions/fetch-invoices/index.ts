@@ -392,14 +392,14 @@ Deno.serve(async (req) => {
 
     // Check for existing running sync (prevent duplicates)
     if (!syncRunId) {
-      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
       
       const { data: existingSync } = await supabase
         .from('sync_runs')
         .select('id, started_at, total_fetched, checkpoint')
         .eq('source', 'stripe_invoices')
         .in('status', ['running', 'continuing'])
-        .gte('started_at', tenMinutesAgo)
+        .gte('started_at', threeMinutesAgo)
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
