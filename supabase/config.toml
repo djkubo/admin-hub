@@ -123,5 +123,8 @@ verify_jwt = false
 [functions.twilio-templates]
 verify_jwt = false
 
+[functions.unify-all-sources]
+verify_jwt = false
+
 [functions.unify-identity]
 verify_jwt = false

@@ -42,7 +42,165 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
   return { valid: true, userId: user.id };
 }
 
-// ============ PROCESS SINGLE PAGE ============
+// ============ PROCESS SINGLE PAGE (STAGE ONLY MODE) ============
+// This mode only saves raw data to ghl_contacts_raw without merging
+async function processSinglePageStageOnly(
+  supabase: ReturnType<typeof createClient>,
+  ghlApiKey: string,
+  ghlLocationId: string,
+  syncRunId: string,
+  startAfterId: string | null,
+  startAfter: number | null
+): Promise<{
+  contactsFetched: number;
+  staged: number;
+  hasMore: boolean;
+  nextStartAfterId: string | null;
+  nextStartAfter: number | null;
+  error: string | null;
+}> {
+  let staged = 0;
+
+  try {
+    const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
+
+    const bodyParams: Record<string, unknown> = {
+      locationId: ghlLocationId,
+      pageLimit: CONTACTS_PER_PAGE
+    };
+
+    if (startAfterId) {
+      bodyParams.startAfterId = startAfterId;
+      logger.info('Using startAfterId for pagination', { startAfterId });
+    } else if (startAfter) {
+      bodyParams.startAfter = startAfter;
+      logger.info('Using startAfter (timestamp) for pagination', { startAfter });
+    }
+
+    const { checks, ...cleanBodyParams } = bodyParams as Record<string, unknown> & { checks?: unknown };
+    const finalBody = JSON.stringify(cleanBodyParams);
+    
+    logger.info('Fetching GHL contacts (STAGE ONLY MODE)', { 
+      startAfterId, 
+      limit: CONTACTS_PER_PAGE 
+    });
+
+    const ghlResponse = await retryWithBackoff(
+      () => rateLimiter.execute(() =>
+        fetch(ghlUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${ghlApiKey}`,
+            'Version': '2021-07-28',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: finalBody
+        })
+      ),
+      {
+        ...RETRY_CONFIGS.STANDARD,
+        retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
+      }
+    );
+
+    if (!ghlResponse.ok) {
+      const errorText = await ghlResponse.text();
+      logger.error(`GHL API error: ${ghlResponse.status}`, new Error(errorText), { startAfterId });
+      return {
+        contactsFetched: 0,
+        staged: 0,
+        hasMore: false,
+        nextStartAfterId: null,
+        nextStartAfter: null,
+        error: `GHL API error: ${ghlResponse.status} - ${errorText.substring(0, 300)}`
+      };
+    }
+
+    const ghlData = await ghlResponse.json();
+    const contacts = ghlData.contacts || [];
+
+    logger.info('Fetched GHL contacts', { count: contacts.length, startAfterId });
+
+    if (contacts.length === 0) {
+      return {
+        contactsFetched: 0,
+        staged: 0,
+        hasMore: false,
+        nextStartAfterId: null,
+        nextStartAfter: null,
+        error: null
+      };
+    }
+
+    // STAGE ONLY: Save raw contacts in batches without merging
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+      const batch = contacts.slice(i, i + BATCH_SIZE);
+      
+      const rawRecords = batch.map((contact: Record<string, unknown>) => ({
+        external_id: contact.id as string,
+        payload: contact,
+        sync_run_id: syncRunId,
+        fetched_at: new Date().toISOString(),
+        processed_at: null // Will be set during unification
+      }));
+
+      const { error: upsertError } = await supabase
+        .from('ghl_contacts_raw')
+        .upsert(rawRecords, { onConflict: 'external_id' });
+
+      if (upsertError) {
+        logger.error('Error upserting raw contacts batch', upsertError);
+      } else {
+        staged += batch.length;
+      }
+    }
+
+    // Determine pagination
+    const hasMore = contacts.length >= CONTACTS_PER_PAGE;
+    const lastContact = contacts[contacts.length - 1];
+    const searchAfter = lastContact.searchAfter as [number, string] | undefined;
+    
+    let nextStartAfterId: string | null = null;
+    let nextStartAfter: number | null = null;
+    
+    if (searchAfter && Array.isArray(searchAfter) && searchAfter.length >= 2) {
+      nextStartAfter = searchAfter[0] as number;
+      nextStartAfterId = searchAfter[1] as string;
+    } else {
+      nextStartAfterId = lastContact.id as string;
+      nextStartAfter = lastContact.dateAdded ? new Date(lastContact.dateAdded as string).getTime() : null;
+    }
+    
+    logger.info('Stage-only pagination info', { 
+      hasMore, 
+      staged,
+      nextStartAfterId
+    });
+
+    return {
+      contactsFetched: contacts.length,
+      staged,
+      hasMore,
+      nextStartAfterId,
+      nextStartAfter,
+      error: null
+    };
+
+  } catch (error) {
+    return {
+      contactsFetched: 0,
+      staged: 0,
+      hasMore: false,
+      nextStartAfterId: startAfterId,
+      nextStartAfter: null,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+// ============ PROCESS SINGLE PAGE (WITH MERGE - LEGACY) ============
 async function processSinglePage(
   supabase: ReturnType<typeof createClient>,
   ghlApiKey: string,
@@ -70,16 +228,11 @@ async function processSinglePage(
   try {
     const ghlUrl = 'https://services.leadconnectorhq.com/contacts/search';
 
-    // Construct pagination params strictly according to V2 docs
-    // NOTE: 'checks' parameter is NOT valid in API v2.0 - DO NOT INCLUDE
     const bodyParams: Record<string, unknown> = {
       locationId: ghlLocationId,
       pageLimit: CONTACTS_PER_PAGE
     };
 
-    // Pagination logic for GHL API v2.0
-    // The API uses startAfterId (contact ID) for pagination
-    // We can also use startAfter (timestamp) as alternative
     if (startAfterId) {
       bodyParams.startAfterId = startAfterId;
       logger.info('Using startAfterId for pagination', { startAfterId });
@@ -88,13 +241,9 @@ async function processSinglePage(
       logger.info('Using startAfter (timestamp) for pagination', { startAfter });
     }
 
-    // Ensure bodyParams does NOT contain 'checks' - explicitly remove if present
-    const { checks, ...cleanBodyParams } = bodyParams as any;
-    if (checks !== undefined) {
-      logger.warn('WARNING: checks parameter was present and removed!', { originalBody: bodyParams });
-    }
-    
+    const { checks, ...cleanBodyParams } = bodyParams as Record<string, unknown> & { checks?: unknown };
     const finalBody = JSON.stringify(cleanBodyParams);
+    
     logger.info('Fetching GHL contacts (V2 Search)', { 
       startAfterId, 
       limit: CONTACTS_PER_PAGE,
@@ -102,7 +251,6 @@ async function processSinglePage(
       bodyPreview: finalBody.substring(0, 200)
     });
 
-    // Wrap API call with retry + rate limiting
     const ghlResponse = await retryWithBackoff(
       () => rateLimiter.execute(() =>
         fetch(ghlUrl, {
@@ -157,11 +305,10 @@ async function processSinglePage(
       };
     }
 
-    // Process contacts - batch of 20 in parallel for better throughput
-    // Increased from 10 to 20 to speed up processing
+    // Process contacts in parallel
     const PARALLEL_SIZE = 20;
     for (let i = 0; i < contacts.length; i += PARALLEL_SIZE) {
-      // Check if sync was cancelled before processing each batch
+      // Check if sync was cancelled
       const { data: batchCheck } = await supabase
         .from('sync_runs')
         .select('status')
@@ -170,14 +317,13 @@ async function processSinglePage(
       
       if (batchCheck?.status === 'canceled' || batchCheck?.status === 'cancelled') {
         logger.info('Sync cancelled during batch processing', { syncRunId, batchIndex: i });
-        break; // Stop processing batches
+        break;
       }
       
       const batch = contacts.slice(i, i + PARALLEL_SIZE);
       const results = await Promise.all(
         batch.map(async (contact: Record<string, unknown>) => {
           try {
-            // Skip contacts without email AND phone (can't merge without identifier)
             const contactEmail = (contact.email as string) || null;
             const contactPhone = (contact.phone as string) || null;
             
@@ -186,9 +332,9 @@ async function processSinglePage(
               return { action: 'skipped', reason: 'no_email_no_phone' };
             }
 
-            // Save raw contact for audit trail
+            // Save raw contact
             if (!dryRun) {
-              await (supabase.from('ghl_contacts_raw') as any)
+              await (supabase.from('ghl_contacts_raw') as ReturnType<typeof supabase.from>)
                 .upsert({
                   external_id: contact.id as string,
                   payload: contact,
@@ -197,12 +343,10 @@ async function processSinglePage(
                 }, { onConflict: 'external_id' });
             }
 
-            // Extract contact data - using actual API structure
             const email = contactEmail;
             const phone = contactPhone;
             const firstName = (contact.firstName as string) || '';
             const lastName = (contact.lastName as string) || '';
-            // Use contactName if available (it's the full name in lowercase), otherwise construct from firstName/lastName
             const fullName = (contact.contactName as string) || 
                            [firstName, lastName].filter(Boolean).join(' ') || 
                            null;
@@ -212,14 +356,11 @@ async function processSinglePage(
             const dateAdded = contact.dateAdded ? new Date(contact.dateAdded as string).toISOString() : null;
             const dateUpdated = contact.dateUpdated ? new Date(contact.dateUpdated as string).toISOString() : null;
             
-            // Extract attribution data if available
             const attributionSource = contact.attributionSource as Record<string, unknown> | undefined;
             const lastAttributionSource = contact.lastAttributionSource as Record<string, unknown> | undefined;
 
-            // DND settings - check if contact has opted out
             const dndSettings = contact.dndSettings as Record<string, { status?: string }> | undefined;
             const inboundDndSettings = contact.inboundDndSettings as Record<string, { status?: string }> | undefined;
-            // Opt-in logic: if dnd is false, they're opted in; if dndSettings has status 'active', they're opted out
             const waOptIn = !contact.dnd && (dndSettings?.whatsApp?.status !== 'active' && inboundDndSettings?.whatsApp?.status !== 'active');
             const smsOptIn = !contact.dnd && (dndSettings?.sms?.status !== 'active' && inboundDndSettings?.sms?.status !== 'active');
             const emailOptIn = !contact.dnd && (dndSettings?.email?.status !== 'active' && inboundDndSettings?.email?.status !== 'active');
@@ -228,17 +369,14 @@ async function processSinglePage(
               return { action: 'skipped' };
             }
 
-            // Prepare extra data with all relevant fields
             const extraData = {
               ...contact,
-              // Add computed fields for easier access
               source: source,
               type: type,
               dateAdded: dateAdded,
               dateUpdated: dateUpdated,
               attributionSource: attributionSource,
               lastAttributionSource: lastAttributionSource,
-              // Include custom fields if present
               customFieldsArray: Array.isArray(contact.customFields) ? contact.customFields : []
             };
 
@@ -279,25 +417,17 @@ async function processSinglePage(
       }
     }
 
-    // Determine if there are more pages
-    // If we got exactly CONTACTS_PER_PAGE contacts, likely there are more
     const hasMore = contacts.length >= CONTACTS_PER_PAGE;
-    
-    // Get pagination cursor from the last contact
-    // GHL API v2.0 uses searchAfter array [timestamp, id] for pagination
     const lastContact = contacts[contacts.length - 1];
     const searchAfter = lastContact.searchAfter as [number, string] | undefined;
     
-    // Extract next cursor values
     let nextStartAfterId: string | null = null;
     let nextStartAfter: number | null = null;
     
     if (searchAfter && Array.isArray(searchAfter) && searchAfter.length >= 2) {
-      // searchAfter format: [timestamp, id]
       nextStartAfter = searchAfter[0] as number;
       nextStartAfterId = searchAfter[1] as string;
     } else {
-      // Fallback: use contact id and dateAdded
       nextStartAfterId = lastContact.id as string;
       nextStartAfter = lastContact.dateAdded ? new Date(lastContact.dateAdded as string).getTime() : null;
     }
@@ -371,6 +501,7 @@ Deno.serve(async (req) => {
 
     // Parse request
     let dryRun = false;
+    let stageOnly = false; // NEW: Stage-only mode
     let startAfterId: string | null = null;
     let startAfter: number | null = null;
     let syncRunId: string | null = null;
@@ -380,6 +511,7 @@ Deno.serve(async (req) => {
     try {
       const body = await req.json();
       dryRun = body.dry_run ?? false;
+      stageOnly = body.stageOnly ?? false; // NEW
       cleanupStale = body.cleanupStale === true;
       forceCancel = body.forceCancel === true;
       startAfterId = body.startAfterId || null;
@@ -446,7 +578,13 @@ Deno.serve(async (req) => {
     if (!syncRunId) {
       const { data: syncRun } = await supabase
         .from('sync_runs')
-        .insert({ source: 'ghl', status: 'running', dry_run: dryRun, checkpoint: { startAfterId: null } })
+        .insert({ 
+          source: 'ghl', 
+          status: 'running', 
+          dry_run: dryRun, 
+          checkpoint: { startAfterId: null },
+          metadata: { stageOnly } // Track mode
+        })
         .select('id').single();
       syncRunId = syncRun?.id;
     } else {
@@ -470,10 +608,91 @@ Deno.serve(async (req) => {
 
     // ============ PROCESS PAGE ============
     const pageStartTime = Date.now();
-    logger.info(`Processing GHL page`, { startAfterId, syncRunId });
+    logger.info(`Processing GHL page`, { startAfterId, syncRunId, stageOnly });
 
+    if (stageOnly) {
+      // NEW: Stage-only mode - just download, no merge
+      const pageResult = await processSinglePageStageOnly(
+        supabase as ReturnType<typeof createClient>,
+        ghlApiKey,
+        ghlLocationId,
+        syncRunId!,
+        startAfterId,
+        startAfter
+      );
+      
+      const pageDuration = Date.now() - pageStartTime;
+      logger.info(`GHL page staged`, { 
+        duration_ms: pageDuration,
+        contactsFetched: pageResult.contactsFetched,
+        staged: pageResult.staged
+      });
+
+      if (pageResult.error) {
+        await supabase.from('sync_runs').update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error }).eq('id', syncRunId);
+        return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
+      }
+
+      if (pageResult.hasMore) {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'continuing',
+            total_fetched: pageResult.contactsFetched,
+            total_inserted: pageResult.staged,
+            checkpoint: {
+              startAfterId: pageResult.nextStartAfterId,
+              startAfter: pageResult.nextStartAfter,
+              lastActivity: new Date().toISOString()
+            }
+          })
+          .eq('id', syncRunId);
+
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            status: 'continuing',
+            syncRunId,
+            processed: pageResult.contactsFetched,
+            staged: pageResult.staged,
+            hasMore: true,
+            nextStartAfterId: pageResult.nextStartAfterId,
+            nextStartAfter: pageResult.nextStartAfter,
+            stageOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Staging complete
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          total_fetched: pageResult.contactsFetched,
+          total_inserted: pageResult.staged,
+        })
+        .eq('id', syncRunId);
+
+      return new Response(
+        JSON.stringify({ 
+          ok: true, 
+          status: 'completed', 
+          syncRunId, 
+          processed: pageResult.contactsFetched, 
+          staged: pageResult.staged,
+          hasMore: false,
+          stageOnly: true,
+          message: 'Staging complete. Run unify-all-sources to merge into clients.'
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // LEGACY: Full merge mode
     const pageResult = await processSinglePage(
-      supabase as any,
+      supabase as ReturnType<typeof createClient>,
       ghlApiKey,
       ghlLocationId,
       syncRunId!,
@@ -482,7 +701,7 @@ Deno.serve(async (req) => {
       startAfter
     );
     
-    // ============ CHECK IF CANCELLED AFTER PROCESSING ============
+    // Check if cancelled after processing
     const { data: syncCheckAfter } = await supabase
       .from('sync_runs')
       .select('status')
@@ -518,9 +737,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
     }
 
-    // ============ CHECK IF MORE PAGES ============
     if (pageResult.hasMore) {
-      // Return continuing status with next cursor
       await supabase
         .from('sync_runs')
         .update({
@@ -552,7 +769,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ============ SYNC COMPLETE ============
+    // Sync complete
     await supabase
       .from('sync_runs')
       .update({
@@ -574,9 +791,6 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
-    
-    // Note: syncRunId and supabase are scoped inside try block
-    // Fatal errors at this level mean we couldn't initialize properly
     
     return new Response(
       JSON.stringify({ ok: false, error: errorMessage }),

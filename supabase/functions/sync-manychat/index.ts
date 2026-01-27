@@ -42,6 +42,295 @@ interface SyncRequest {
   dry_run?: boolean;
   cursor?: number;
   syncRunId?: string;
+  stageOnly?: boolean;
+  forceCancel?: boolean;
+}
+
+interface ClientRecord {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  manychat_subscriber_id: string | null;
+}
+
+// ============ STAGE ONLY: Just download and save raw data ============
+async function processPageStageOnly(
+  supabase: any,
+  manychatApiKey: string,
+  syncRunId: string,
+  cursor: number
+): Promise<{
+  searched: number;
+  fetched: number;
+  staged: number;
+  hasMore: boolean;
+  nextCursor: number;
+  error: string | null;
+}> {
+  let searched = 0;
+  let fetched = 0;
+  let staged = 0;
+
+  const { data: existingClients, error: clientsError } = await supabase
+    .from('clients')
+    .select('id, email, phone')
+    .not('email', 'is', null)
+    .is('manychat_subscriber_id', null)
+    .range(cursor, cursor + 99)
+    .limit(100) as { data: ClientRecord[] | null; error: Error | null };
+
+  if (clientsError) {
+    logger.error('Error fetching clients', clientsError);
+    return { searched: 0, fetched: 0, staged: 0, hasMore: false, nextCursor: cursor, error: clientsError.message };
+  }
+
+  const emailsToSearch = existingClients?.filter(c => c.email).map(c => ({ id: c.id, email: c.email! })) || [];
+  const hasMore = emailsToSearch.length >= 100;
+  searched = emailsToSearch.length;
+
+  logger.info('Stage-only: Searching ManyChat for clients', { count: emailsToSearch.length, cursor });
+
+  const PARALLEL_BATCH_SIZE = 5;
+  for (let i = 0; i < emailsToSearch.length; i += PARALLEL_BATCH_SIZE) {
+    const emailBatch = emailsToSearch.slice(i, i + PARALLEL_BATCH_SIZE);
+    
+    await Promise.all(
+      emailBatch.map(async ({ email }) => {
+        try {
+          const encodedEmail = encodeURIComponent(email);
+
+          const searchResponse = await retryWithBackoff(
+            () => rateLimiter.execute(() =>
+              fetch(
+                `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+                {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `Bearer ${manychatApiKey}`,
+                    'Accept': 'application/json'
+                  }
+                }
+              )
+            ),
+            {
+              ...RETRY_CONFIGS.FAST,
+              retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
+            }
+          );
+
+          if (!searchResponse.ok) {
+            return;
+          }
+
+          const searchData = await searchResponse.json();
+
+          if (searchData.status !== 'success' || !searchData.data) {
+            return;
+          }
+
+          const subscriber = searchData.data;
+          fetched++;
+          
+          logger.debug('Found ManyChat subscriber', { subscriberId: subscriber.id, email });
+
+          const { error: upsertError } = await (supabase as any)
+            .from('manychat_contacts_raw')
+            .upsert({
+              subscriber_id: subscriber.id,
+              payload: subscriber,
+              sync_run_id: syncRunId,
+              fetched_at: new Date().toISOString(),
+              processed_at: null
+            }, { onConflict: 'subscriber_id' });
+
+          if (!upsertError) {
+            staged++;
+          }
+
+        } catch (subError) {
+          logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
+        }
+      })
+    );
+    
+    if (i + PARALLEL_BATCH_SIZE < emailsToSearch.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  return {
+    searched,
+    fetched,
+    staged,
+    hasMore,
+    nextCursor: cursor + 100,
+    error: null
+  };
+}
+
+// ============ LEGACY: Full merge mode ============
+async function processPageWithMerge(
+  supabase: any,
+  manychatApiKey: string,
+  syncRunId: string,
+  cursor: number,
+  dryRun: boolean
+): Promise<{
+  searched: number;
+  fetched: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  conflicts: number;
+  hasMore: boolean;
+  nextCursor: number;
+  error: string | null;
+}> {
+  let searched = 0;
+  let fetched = 0;
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  let conflicts = 0;
+
+  const { data: existingClients, error: clientsError } = await supabase
+    .from('clients')
+    .select('email, phone, manychat_subscriber_id')
+    .not('email', 'is', null)
+    .is('manychat_subscriber_id', null)
+    .range(cursor, cursor + 99)
+    .limit(100) as { data: ClientRecord[] | null; error: Error | null };
+
+  if (clientsError) {
+    logger.error('Error fetching clients', clientsError);
+    return { searched: 0, fetched: 0, inserted: 0, updated: 0, skipped: 0, conflicts: 0, hasMore: false, nextCursor: cursor, error: clientsError.message };
+  }
+
+  const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
+  const hasMore = emailsToSearch.length >= 100;
+  searched = emailsToSearch.length;
+
+  logger.info('Found clients to search in ManyChat', { count: emailsToSearch.length });
+
+  const PARALLEL_BATCH_SIZE = 5;
+  for (let i = 0; i < emailsToSearch.length; i += PARALLEL_BATCH_SIZE) {
+    const emailBatch = emailsToSearch.slice(i, i + PARALLEL_BATCH_SIZE);
+    
+    await Promise.all(
+      emailBatch.map(async (email) => {
+        try {
+          const encodedEmail = encodeURIComponent(email);
+
+          const searchResponse = await retryWithBackoff(
+            () => rateLimiter.execute(() =>
+              fetch(
+                `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
+                {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `Bearer ${manychatApiKey}`,
+                    'Accept': 'application/json'
+                  }
+                }
+              )
+            ),
+            {
+              ...RETRY_CONFIGS.FAST,
+              retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
+            }
+          );
+
+          if (!searchResponse.ok) {
+            const status = searchResponse.status;
+            if (status === 404 || status === 400) {
+              skipped++;
+              return;
+            }
+            logger.warn('Search error for email', { email, status });
+            skipped++;
+            return;
+          }
+
+          const searchData = await searchResponse.json();
+
+          if (searchData.status !== 'success' || !searchData.data) {
+            skipped++;
+            return;
+          }
+
+          const subscriber = searchData.data;
+          fetched++;
+          logger.info('Found subscriber', { subscriberId: subscriber.id, email });
+
+          if (!dryRun) {
+            await (supabase as any)
+              .from('manychat_contacts_raw')
+              .upsert({
+                subscriber_id: subscriber.id,
+                payload: subscriber,
+                sync_run_id: syncRunId,
+                fetched_at: new Date().toISOString()
+              }, { onConflict: 'subscriber_id' });
+          }
+
+          const subEmail = subscriber.email || email;
+          const phone = subscriber.phone || subscriber.whatsapp_phone || null;
+          const fullName = [subscriber.first_name, subscriber.last_name].filter(Boolean).join(' ') || subscriber.name || null;
+          const tags = (subscriber.tags || []).map((t: { name?: string } | string) => typeof t === 'string' ? t : t.name || '');
+          const waOptIn = subscriber.optin_whatsapp === true;
+          const smsOptIn = subscriber.optin_sms === true;
+          const emailOptIn = subscriber.optin_email !== false;
+
+          const { data: mergeResult, error: mergeError } = await (supabase as any).rpc('merge_contact', {
+            p_source: 'manychat',
+            p_external_id: subscriber.id,
+            p_email: subEmail,
+            p_phone: phone,
+            p_full_name: fullName,
+            p_tags: tags,
+            p_wa_opt_in: waOptIn,
+            p_sms_opt_in: smsOptIn,
+            p_email_opt_in: emailOptIn,
+            p_extra_data: subscriber,
+            p_dry_run: dryRun,
+            p_sync_run_id: syncRunId
+          });
+
+          if (mergeError) {
+            logger.error('Merge error for subscriber', mergeError, { subscriberId: subscriber.id });
+            skipped++;
+            return;
+          }
+
+          const action = (mergeResult as { action?: string })?.action || 'none';
+          if (action === 'inserted') inserted++;
+          else if (action === 'updated') updated++;
+          else if (action === 'conflict') conflicts++;
+          else skipped++;
+
+        } catch (subError) {
+          logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
+          skipped++;
+        }
+      })
+    );
+    
+    if (i + PARALLEL_BATCH_SIZE < emailsToSearch.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  return {
+    searched,
+    fetched,
+    inserted,
+    updated,
+    skipped,
+    conflicts,
+    hasMore,
+    nextCursor: cursor + 100,
+    error: null
+  };
 }
 
 Deno.serve(async (req) => {
@@ -52,7 +341,6 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    // SECURITY: Verify JWT + is_admin()
     const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
       return new Response(
@@ -80,8 +368,9 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const body: SyncRequest & { forceCancel?: boolean } = await req.json().catch(() => ({}));
+    const body: SyncRequest = await req.json().catch(() => ({}));
     const dryRun = body.dry_run ?? false;
+    const stageOnly = body.stageOnly ?? false;
     const cursor = body.cursor ?? 0;
     const forceCancel = body.forceCancel === true;
     let syncRunId = body.syncRunId;
@@ -99,21 +388,21 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .select('id');
 
-      logger.info('Force cancelled ManyChat syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
+      logger.info('Force cancelled ManyChat syncs', { count: (cancelledSyncs as { id: string }[] | null)?.length || 0, error: cancelError });
 
       return new Response(
         JSON.stringify({ 
           ok: true,
           success: true, 
           status: 'cancelled', 
-          cancelled: cancelledSyncs?.length || 0,
-          message: `Se cancelaron ${cancelledSyncs?.length || 0} sincronizaciones de ManyChat` 
+          cancelled: (cancelledSyncs as { id: string }[] | null)?.length || 0,
+          message: `Se cancelaron ${(cancelledSyncs as { id: string }[] | null)?.length || 0} sincronizaciones de ManyChat` 
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    logger.info('Starting ManyChat sync', { dryRun, cursor });
+    logger.info('Starting ManyChat sync', { dryRun, stageOnly, cursor });
 
     // Create or update sync run
     if (!syncRunId) {
@@ -123,196 +412,106 @@ Deno.serve(async (req) => {
           source: 'manychat',
           status: 'running',
           dry_run: dryRun,
-          metadata: { method: 'subscriber_search_get' }
+          metadata: { method: 'subscriber_search_get', stageOnly }
         })
         .select()
         .single();
 
       if (syncError) {
-        console.error('[sync-manychat] Failed to create sync run:', syncError);
+        logger.error('Failed to create sync run:', syncError);
         throw syncError;
       }
 
-      syncRunId = syncRun.id;
+      syncRunId = (syncRun as { id: string }).id;
     }
 
-    let totalFetched = 0;
-    let totalInserted = 0;
-    let totalUpdated = 0;
-    let totalSkipped = 0;
-    let totalConflicts = 0;
+    if (stageOnly) {
+      const result = await processPageStageOnly(supabase, manychatApiKey, syncRunId!, cursor);
 
-    // Fetch clients that need ManyChat linking
-    const { data: existingClients, error: clientsError } = await supabase
-      .from('clients')
-      .select('email, phone, manychat_subscriber_id')
-      .not('email', 'is', null)
-      .is('manychat_subscriber_id', null)
-      .range(cursor, cursor + 99)
-      .limit(100);
-
-    if (clientsError) {
-      logger.error('Error fetching clients', clientsError);
-    }
-
-    const emailsToSearch = existingClients?.filter(c => c.email).map(c => c.email!) || [];
-    const hasMore = emailsToSearch.length >= 100;
-
-    logger.info('Found clients to search in ManyChat', { count: emailsToSearch.length });
-
-    // Process emails in parallel batches for better performance
-    const PARALLEL_BATCH_SIZE = 5; // Process 5 emails in parallel
-    for (let i = 0; i < emailsToSearch.length; i += PARALLEL_BATCH_SIZE) {
-      const emailBatch = emailsToSearch.slice(i, i + PARALLEL_BATCH_SIZE);
-      
-      // Process batch in parallel
-      await Promise.all(
-        emailBatch.map(async (email) => {
-          try {
-            const encodedEmail = encodeURIComponent(email);
-
-            // Wrap API call with retry + rate limiting
-            const searchResponse = await retryWithBackoff(
-              () => rateLimiter.execute(() =>
-                fetch(
-                  `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodedEmail}`,
-                  {
-                    method: 'GET',
-                    headers: {
-                      'Authorization': `Bearer ${manychatApiKey}`,
-                      'Accept': 'application/json'
-                    }
-                  }
-                )
-              ),
-              {
-                ...RETRY_CONFIGS.FAST,
-                retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.MANYCHAT, ...RETRYABLE_ERRORS.HTTP]
-              }
-            );
-
-            if (!searchResponse.ok) {
-              const status = searchResponse.status;
-              if (status === 404 || status === 400) {
-                totalSkipped++;
-                return; // Skip this email
-              }
-              logger.warn('Search error for email', { email, status });
-              totalSkipped++;
-              return; // Skip this email
-            }
-
-            const searchData = await searchResponse.json();
-
-            if (searchData.status !== 'success' || !searchData.data) {
-              totalSkipped++;
-              return; // Skip this email
-            }
-
-            const subscriber = searchData.data;
-            totalFetched++; // Increment fetched count when we find a subscriber
-            logger.info('Found subscriber', { subscriberId: subscriber.id, email });
-
-            if (!dryRun) {
-              await supabase
-                .from('manychat_contacts_raw')
-                .upsert({
-                  subscriber_id: subscriber.id,
-                  payload: subscriber,
-                  sync_run_id: syncRunId,
-                  fetched_at: new Date().toISOString()
-                }, { onConflict: 'subscriber_id' });
-            }
-
-            const subEmail = subscriber.email || email;
-            const phone = subscriber.phone || subscriber.whatsapp_phone || null;
-            const fullName = [subscriber.first_name, subscriber.last_name].filter(Boolean).join(' ') || subscriber.name || null;
-            const tags = (subscriber.tags || []).map((t: any) => t.name || t);
-            const waOptIn = subscriber.optin_whatsapp === true;
-            const smsOptIn = subscriber.optin_sms === true;
-            const emailOptIn = subscriber.optin_email !== false;
-
-            const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
-              p_source: 'manychat',
-              p_external_id: subscriber.id,
-              p_email: subEmail,
-              p_phone: phone,
-              p_full_name: fullName,
-              p_tags: tags,
-              p_wa_opt_in: waOptIn,
-              p_sms_opt_in: smsOptIn,
-              p_email_opt_in: emailOptIn,
-              p_extra_data: subscriber,
-              p_dry_run: dryRun,
-              p_sync_run_id: syncRunId
-            });
-
-            if (mergeError) {
-              logger.error('Merge error for subscriber', mergeError, { subscriberId: subscriber.id });
-              totalSkipped++;
-              return; // Skip this email
-            }
-
-            const action = mergeResult?.action || 'none';
-            if (action === 'inserted') totalInserted++;
-            else if (action === 'updated') totalUpdated++;
-            else if (action === 'conflict') totalConflicts++;
-            else totalSkipped++;
-
-          } catch (subError) {
-            logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
-            totalSkipped++;
+      const status = result.hasMore ? 'continuing' : 'completed';
+      await supabase
+        .from('sync_runs')
+        .update({
+          status,
+          completed_at: result.hasMore ? null : new Date().toISOString(),
+          total_fetched: result.fetched,
+          total_inserted: result.staged,
+          metadata: {
+            method: 'subscriber_search_get',
+            stageOnly: true,
+            emails_searched: result.searched
           }
         })
+        .eq('id', syncRunId);
+
+      logger.info('ManyChat stage-only status', { status, staged: result.staged });
+
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          status,
+          syncRunId,
+          processed: result.fetched,
+          staged: result.staged,
+          hasMore: result.hasMore,
+          nextCursor: result.hasMore ? result.nextCursor.toString() : null,
+          stageOnly: true,
+          duration_ms: Date.now() - startTime,
+          stats: {
+            emails_searched: result.searched,
+            total_fetched: result.fetched,
+            total_staged: result.staged
+          },
+          message: result.staged === 0
+            ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients.'
+            : `Staged ${result.staged} subscribers. Run unify-all-sources to merge into clients.`
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
-      
-      // Small delay between batches to respect rate limits
-      if (i + PARALLEL_BATCH_SIZE < emailsToSearch.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
     }
 
-    // Update sync run
-    const status = hasMore ? 'continuing' : 'completed';
+    const result = await processPageWithMerge(supabase, manychatApiKey, syncRunId!, cursor, dryRun);
+
+    const status = result.hasMore ? 'continuing' : 'completed';
     await supabase
       .from('sync_runs')
       .update({
         status,
-        completed_at: hasMore ? null : new Date().toISOString(),
-        total_fetched: totalFetched,
-        total_inserted: totalInserted,
-        total_updated: totalUpdated,
-        total_skipped: totalSkipped,
-        total_conflicts: totalConflicts,
+        completed_at: result.hasMore ? null : new Date().toISOString(),
+        total_fetched: result.fetched,
+        total_inserted: result.inserted,
+        total_updated: result.updated,
+        total_skipped: result.skipped,
+        total_conflicts: result.conflicts,
         metadata: {
           method: 'subscriber_search_get',
-          emails_searched: emailsToSearch.length
+          emails_searched: result.searched
         }
       })
       .eq('id', syncRunId);
 
-    logger.info('ManyChat sync status', { status, totalFetched, totalInserted, totalUpdated });
+    logger.info('ManyChat sync status', { status, fetched: result.fetched, inserted: result.inserted, updated: result.updated });
 
     return new Response(
       JSON.stringify({
         ok: true,
         status,
         syncRunId,
-        processed: totalFetched,
-        hasMore,
-        nextCursor: hasMore ? (cursor + 100).toString() : null,
+        processed: result.fetched,
+        hasMore: result.hasMore,
+        nextCursor: result.hasMore ? result.nextCursor.toString() : null,
         duration_ms: Date.now() - startTime,
         stats: {
-          emails_searched: emailsToSearch.length,
-          total_fetched: totalFetched,
-          total_inserted: totalInserted,
-          total_updated: totalUpdated,
-          total_skipped: totalSkipped,
-          total_conflicts: totalConflicts
+          emails_searched: result.searched,
+          total_fetched: result.fetched,
+          total_inserted: result.inserted,
+          total_updated: result.updated,
+          total_skipped: result.skipped,
+          total_conflicts: result.conflicts
         },
-        note: totalFetched === 0
+        note: result.fetched === 0
           ? 'No matches found. Make sure your ManyChat subscribers have the same emails as your clients.'
-          : `Found ${totalFetched} subscribers matching your client emails.`
+          : `Found ${result.fetched} subscribers matching your client emails.`
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
@@ -320,9 +519,6 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
-    
-    // Note: syncRunId and supabase are scoped inside try block
-    // Fatal errors at this level mean we couldn't initialize properly
     
     return new Response(
       JSON.stringify({
