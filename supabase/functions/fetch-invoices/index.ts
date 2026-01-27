@@ -191,153 +191,77 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
   return { planName, planInterval, productName };
 }
 
-// Resolve client via unify_identity RPC and enrich client data
-async function resolveClientViaUnify(
-  supabase: SupabaseClient,
-  stripeCustomerId: string | null,
-  email: string | null,
-  phone: string | null,
-  fullName: string | null
-): Promise<{ clientId: string | null; shouldEnrich: boolean }> {
-  if (!stripeCustomerId && !email && !phone) {
-    return { clientId: null, shouldEnrich: false };
-  }
+// ============= BATCH CLIENT RESOLUTION =============
 
-  try {
-    const { data, error } = await supabase.rpc('unify_identity', {
-      p_source: 'stripe',
-      p_stripe_customer_id: stripeCustomerId,
-      p_email: email?.toLowerCase() || null,
-      p_phone: phone,
-      p_full_name: fullName,
-    });
-
-    if (error) {
-      console.warn('unify_identity error:', error.message);
-      return { clientId: null, shouldEnrich: false };
-    }
-
-    if (data?.success && data?.client_id) {
-      // Check if this was a new client or an update that might need enrichment
-      const action = data?.action || 'unknown';
-      const shouldEnrich = action === 'created' || action === 'matched' || action === 'merged';
-      return { clientId: data.client_id, shouldEnrich };
-    }
-  } catch (e) {
-    console.warn('unify_identity failed:', e);
-  }
-
-  return { clientId: null, shouldEnrich: false };
+interface ClientLookupResult {
+  stripeCustomerId: string;
+  clientId: string | null;
 }
 
-// Enrich client data if name or phone are missing
-async function enrichClientIfNeeded(
+/**
+ * Batch resolve client IDs for multiple Stripe customer IDs
+ * This is MUCH faster than individual queries - 1 query instead of 100
+ */
+async function batchResolveClients(
   supabase: SupabaseClient,
-  clientId: string,
-  customerName: string | null,
-  customerPhone: string | null,
-  stripeCustomerId: string | null
-): Promise<void> {
-  if (!clientId) return;
-  
-  try {
-    // Fetch current client data
-    const { data: client, error: fetchError } = await supabase
-      .from('clients')
-      .select('full_name, phone_e164, stripe_customer_id')
-      .eq('id', clientId)
-      .single();
-    
-    if (fetchError || !client) return;
+  stripeCustomerIds: string[]
+): Promise<Map<string, string>> {
+  const uniqueIds = [...new Set(stripeCustomerIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return new Map();
 
-    // Build update object only with missing fields
-    const updates: Record<string, unknown> = {};
-    
-    // Enrich full_name if missing and we have it from Stripe
-    if (!client.full_name && customerName) {
-      updates.full_name = customerName;
-    }
-    
-    // Enrich phone_e164 if missing and we have it from Stripe
-    if (!client.phone_e164 && customerPhone) {
-      // Normalize phone to E.164 format
-      let normalizedPhone = customerPhone.replace(/[^\d+]/g, '');
-      if (normalizedPhone && !normalizedPhone.startsWith('+')) {
-        normalizedPhone = '+' + normalizedPhone;
-      }
-      if (normalizedPhone.length >= 10) {
-        updates.phone_e164 = normalizedPhone;
-        updates.phone = customerPhone; // Keep original format too
-      }
-    }
-    
-    // Ensure stripe_customer_id is set
-    if (!client.stripe_customer_id && stripeCustomerId) {
-      updates.stripe_customer_id = stripeCustomerId;
-    }
-    
-    // Only update if there's something to update
-    if (Object.keys(updates).length > 0) {
-      updates.last_sync = new Date().toISOString();
-      
-      const { error: updateError } = await supabase
-        .from('clients')
-        .update(updates)
-        .eq('id', clientId);
-      
-      if (updateError) {
-        console.warn(`Failed to enrich client ${clientId}:`, updateError.message);
-      } else {
-        console.log(`✨ Enriched client ${clientId}:`, Object.keys(updates).join(', '));
-      }
-    }
-  } catch (e) {
-    console.warn('enrichClientIfNeeded failed:', e);
+  const clientMap = new Map<string, string>();
+
+  // Single query to get all client mappings by stripe_customer_id
+  const { data: clients, error } = await supabase
+    .from('clients')
+    .select('id, stripe_customer_id')
+    .in('stripe_customer_id', uniqueIds);
+
+  if (error) {
+    console.warn('Batch client lookup error:', error.message);
+    return clientMap;
   }
+
+  for (const client of clients || []) {
+    if (client.stripe_customer_id) {
+      clientMap.set(client.stripe_customer_id, client.id);
+    }
+  }
+
+  console.log(`🔗 Resolved ${clientMap.size}/${uniqueIds.length} clients via stripe_customer_id`);
+  return clientMap;
 }
 
-async function resolveClientFallback(
+/**
+ * Secondary batch lookup by email for invoices without stripe_customer_id match
+ */
+async function batchResolveClientsByEmail(
   supabase: SupabaseClient,
-  stripeCustomerId: string | null,
-  email: string | null,
-  phone: string | null
-): Promise<string | null> {
-  if (!stripeCustomerId && !email && !phone) return null;
+  emails: string[]
+): Promise<Map<string, string>> {
+  const uniqueEmails = [...new Set(emails.filter(Boolean).map(e => e.toLowerCase()))];
+  if (uniqueEmails.length === 0) return new Map();
 
-  // Priority 1: stripe_customer_id
-  if (stripeCustomerId) {
-    const { data } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('stripe_customer_id', stripeCustomerId)
-      .limit(1)
-      .maybeSingle();
-    if (data?.id) return data.id;
+  const clientMap = new Map<string, string>();
+
+  const { data: clients, error } = await supabase
+    .from('clients')
+    .select('id, email')
+    .in('email', uniqueEmails);
+
+  if (error) {
+    console.warn('Batch email lookup error:', error.message);
+    return clientMap;
   }
 
-  // Priority 2: email
-  if (email) {
-    const { data } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('email', email.toLowerCase())
-      .limit(1)
-      .maybeSingle();
-    if (data?.id) return data.id;
+  for (const client of clients || []) {
+    if (client.email) {
+      clientMap.set(client.email.toLowerCase(), client.id);
+    }
   }
 
-  // Priority 3: phone
-  if (phone) {
-    const { data } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('phone_e164', phone)
-      .limit(1)
-      .maybeSingle();
-    if (data?.id) return data.id;
-  }
-
-  return null;
+  console.log(`📧 Resolved ${clientMap.size}/${uniqueEmails.length} clients via email`);
+  return clientMap;
 }
 
 // ============= MAIN HANDLER =============
@@ -388,9 +312,9 @@ Deno.serve(async (req) => {
       // Default to recent mode
     }
 
-    console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
+    console.log(`🧾 fetch-invoices: mode=${mode}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
 
-    // Check for existing running sync (prevent duplicates) - only block if VERY recent
+    // SKIP duplicate check if we already have a syncRunId (continuing pagination)
     if (!syncRunId) {
       const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
       
@@ -398,7 +322,7 @@ Deno.serve(async (req) => {
         .from('sync_runs')
         .select('id, started_at, total_fetched, checkpoint')
         .eq('source', 'stripe_invoices')
-        .eq('status', 'running') // Only check 'running', not 'continuing'
+        .eq('status', 'running')
         .gte('started_at', oneMinuteAgo)
         .order('started_at', { ascending: false })
         .limit(1)
@@ -411,7 +335,7 @@ Deno.serve(async (req) => {
             success: false,
             error: 'sync_already_running',
             existingSyncId: existingSync.id,
-            syncRunId: existingSync.id, // Return existing ID so frontend can continue
+            syncRunId: existingSync.id,
             message: 'A sync is already in progress. Please wait.',
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -436,6 +360,8 @@ Deno.serve(async (req) => {
         .insert({
           source: 'stripe_invoices',
           status: 'running',
+          total_fetched: 0,
+          total_inserted: 0,
           metadata: { mode, startDate, endDate }
         })
         .select('id')
@@ -444,44 +370,35 @@ Deno.serve(async (req) => {
       
       console.log('🆕 Created new sync run:', syncRunId);
     } else {
-      // Update existing sync run status
-      await supabase
-        .from('sync_runs')
-        .update({ status: 'continuing' })
-        .eq('id', syncRunId);
-      
-      console.log('📎 Continuing existing sync run:', syncRunId);
+      // Just log that we're continuing - no need to update status here
+      console.log('📎 Continuing sync run:', syncRunId);
     }
 
-    // Build Stripe API URL - fetch ALL statuses
+    // Build Stripe API URL
     const params = new URLSearchParams();
     params.set('limit', '100');
     params.set('expand[]', 'data.subscription');
     params.append('expand[]', 'data.lines.data.price');
     params.append('expand[]', 'data.customer');
 
-    // Date filters for range mode
     if (mode === 'range' && startDate) {
       params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
     }
     if (mode === 'range' && endDate) {
       params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
     }
-
-    // Recent mode: last 90 days
     if (mode === 'recent') {
       const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
       params.set('created[gte]', String(ninetyDaysAgo));
     }
-
-    // Full mode: no date filter, get everything
-
-    // Cursor for pagination
     if (cursor) {
       params.set('starting_after', cursor);
     }
 
     const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
+    
+    console.log('🌐 Fetching from Stripe...');
+    const fetchStart = Date.now();
     
     const response = await fetch(stripeUrl, {
       headers: {
@@ -500,68 +417,68 @@ Deno.serve(async (req) => {
     const hasMore = stripeData.has_more || false;
     const nextCursor = hasMore && invoices.length > 0 ? invoices[invoices.length - 1].id : null;
 
-    console.log(`📄 Fetched ${invoices.length} invoices, hasMore: ${hasMore}`);
+    console.log(`📄 Fetched ${invoices.length} invoices in ${Date.now() - fetchStart}ms, hasMore: ${hasMore}`);
 
+    // ============= BATCH PROCESSING (FAST) =============
+    const processStart = Date.now();
+    
     // Stats counters
     const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
-    let upsertedCount = 0;
-    let errorCount = 0;
 
+    // Step 1: Collect all stripe_customer_ids and emails for batch lookup
+    const stripeCustomerIds: string[] = [];
+    const emails: string[] = [];
+    
     for (const invoice of invoices) {
-      // Count by status
+      const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
+      const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
+      const customerEmail = invoice.customer_email || customer?.email || null;
+      
+      if (stripeCustomerId) stripeCustomerIds.push(stripeCustomerId);
+      if (customerEmail) emails.push(customerEmail);
+      
+      // Count stats
       if (invoice.status === 'draft') stats.draft++;
       else if (invoice.status === 'open') stats.open++;
       else if (invoice.status === 'paid') stats.paid++;
       else if (invoice.status === 'void') stats.void++;
       else if (invoice.status === 'uncollectible') stats.uncollectible++;
+    }
 
-      // Extract enriched plan info
-      const { planName, planInterval, productName } = extractPlanInfo(invoice);
-      
-      // Get customer info
+    // Step 2: Batch resolve clients (2 queries total instead of 200+)
+    const clientsByStripeId = await batchResolveClients(supabase, stripeCustomerIds);
+    const clientsByEmail = await batchResolveClientsByEmail(supabase, emails);
+
+    // Step 3: Map all invoices to records (in memory, no queries)
+    const invoiceRecords = invoices.map(invoice => {
       const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
       const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
       const customerEmail = invoice.customer_email || customer?.email || null;
       const customerName = invoice.customer_name || customer?.name || null;
       const customerPhone = customer?.phone || null;
 
-      // Resolve client_id via unify_identity (preferred) or fallback
-      const unifyResult = await resolveClientViaUnify(
-        supabase, 
-        stripeCustomerId, 
-        customerEmail, 
-        customerPhone,
-        customerName
-      );
-      
-      let clientId = unifyResult.clientId;
-      
-      // Fallback if unify_identity didn't work
-      if (!clientId) {
-        clientId = await resolveClientFallback(supabase, stripeCustomerId, customerEmail, customerPhone);
-      }
-      
-      // Enrich client data if we have new info from Stripe
-      if (clientId && (unifyResult.shouldEnrich || !unifyResult.clientId)) {
-        await enrichClientIfNeeded(supabase, clientId, customerName, customerPhone, stripeCustomerId);
+      // Resolve client_id: first by stripe_customer_id, then by email
+      let clientId: string | null = null;
+      if (stripeCustomerId && clientsByStripeId.has(stripeCustomerId)) {
+        clientId = clientsByStripeId.get(stripeCustomerId)!;
+      } else if (customerEmail && clientsByEmail.has(customerEmail.toLowerCase())) {
+        clientId = clientsByEmail.get(customerEmail.toLowerCase())!;
       }
 
-      // Get subscription ID
+      const { planName, planInterval, productName } = extractPlanInfo(invoice);
+      
       const subscriptionId = invoice.subscription 
         ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
         : null;
 
-      // Get payment intent ID
       const paymentIntentId = invoice.payment_intent
         ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
         : null;
 
-      // Get default payment method ID  
       const defaultPaymentMethod = invoice.default_payment_method
         ? (typeof invoice.default_payment_method === 'object' ? invoice.default_payment_method.id : invoice.default_payment_method)
         : null;
 
-      // Extract line items
       const lineItems = invoice.lines?.data?.map(line => ({
         id: line.id,
         amount: line.amount,
@@ -577,7 +494,6 @@ Deno.serve(async (req) => {
           : null,
       })) || null;
 
-      // Extract status transitions
       const paidAt = invoice.status_transitions?.paid_at
         ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
         : (invoice.status === 'paid' ? new Date().toISOString() : null);
@@ -586,7 +502,7 @@ Deno.serve(async (req) => {
         ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
         : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
 
-      const invoiceRecord = {
+      return {
         stripe_invoice_id: invoice.id,
         invoice_number: invoice.number,
         customer_email: customerEmail?.toLowerCase() || null,
@@ -636,25 +552,33 @@ Deno.serve(async (req) => {
         raw_data: invoice as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       };
+    });
 
-      const { error } = await supabase
-        .from("invoices")
-        .upsert(invoiceRecord, { 
-          onConflict: "stripe_invoice_id",
-          ignoreDuplicates: false 
-        });
+    // Step 4: Single BATCH UPSERT (1 query instead of 100)
+    console.log(`💾 Batch upserting ${invoiceRecords.length} invoices...`);
+    const upsertStart = Date.now();
+    
+    const { error: upsertError, count } = await supabase
+      .from("invoices")
+      .upsert(invoiceRecords, { 
+        onConflict: "stripe_invoice_id",
+        ignoreDuplicates: false,
+        count: 'exact'
+      });
 
-      if (error) {
-        console.error(`❌ Error upserting invoice ${invoice.id}:`, error.message);
-        errorCount++;
-      } else {
-        upsertedCount++;
-      }
+    const upsertedCount = upsertError ? 0 : (count || invoiceRecords.length);
+    
+    if (upsertError) {
+      console.error(`❌ Batch upsert error:`, upsertError.message);
+    } else {
+      console.log(`✅ Batch upsert complete: ${upsertedCount} records in ${Date.now() - upsertStart}ms`);
     }
 
-    // Update sync run with INCREMENTAL counters
+    console.log(`⏱️ Total processing: ${Date.now() - processStart}ms`);
+
+    // Step 5: Update sync run with INCREMENTAL counters
     if (syncRunId) {
-      // First, read current counters to add to them (not overwrite)
+      // First, read current counters
       const { data: currentRun } = await supabase
         .from('sync_runs')
         .select('total_fetched, total_inserted')
@@ -678,11 +602,10 @@ Deno.serve(async (req) => {
         })
         .eq('id', syncRunId);
       
-      console.log(`📈 Updated sync run ${syncRunId}: fetched: ${currentFetched} + ${invoices.length} = ${newTotalFetched}, inserted: ${currentInserted} + ${upsertedCount} = ${newTotalInserted}`);
+      console.log(`📈 Sync progress: ${currentFetched}+${invoices.length}=${newTotalFetched} fetched, ${currentInserted}+${upsertedCount}=${newTotalInserted} inserted`);
     }
 
-    console.log(`✅ Sync page complete: ${upsertedCount} upserted, ${errorCount} errors`);
-    console.log(`📊 Stats: ${JSON.stringify(stats)}`);
+    console.log(`✅ Page complete | Stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void}`);
 
     const result: FetchInvoicesResponse = {
       success: true,
@@ -701,9 +624,6 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
-    
-    // Note: syncRunId and supabase are scoped inside try block
-    // Fatal errors at this level mean we couldn't initialize properly
     
     return new Response(
       JSON.stringify({ success: false, error: errorMessage }),
