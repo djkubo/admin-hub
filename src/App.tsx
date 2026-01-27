@@ -10,6 +10,8 @@ import { QueryErrorHandler } from "@/components/QueryErrorHandler";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Install from "./pages/Install";
+import UpdateCard from "./pages/UpdateCard";
+import UpdateCardSuccess from "./pages/UpdateCardSuccess";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient({
@@ -100,6 +102,8 @@ const App = () => (
               } 
             />
             <Route path="/install" element={<Install />} />
+            <Route path="/update-card" element={<UpdateCard />} />
+            <Route path="/update-card/success" element={<UpdateCardSuccess />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

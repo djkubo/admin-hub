@@ -1313,6 +1313,53 @@ export type Database = {
         }
         Relationships: []
       }
+      payment_update_links: {
+        Row: {
+          client_id: string | null
+          created_at: string | null
+          customer_email: string | null
+          customer_name: string | null
+          expires_at: string
+          id: string
+          invoice_id: string | null
+          stripe_customer_id: string
+          token: string
+          used_at: string | null
+        }
+        Insert: {
+          client_id?: string | null
+          created_at?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
+          expires_at: string
+          id?: string
+          invoice_id?: string | null
+          stripe_customer_id: string
+          token: string
+          used_at?: string | null
+        }
+        Update: {
+          client_id?: string | null
+          created_at?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
+          expires_at?: string
+          id?: string
+          invoice_id?: string | null
+          stripe_customer_id?: string
+          token?: string
+          used_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payment_update_links_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       payouts: {
         Row: {
           amount: number
@@ -1525,6 +1572,95 @@ export type Database = {
           status?: string
         }
         Relationships: []
+      }
+      recovery_queue: {
+        Row: {
+          amount_due: number
+          attempt_count: number | null
+          client_id: string | null
+          created_at: string | null
+          currency: string | null
+          customer_email: string | null
+          customer_name: string | null
+          customer_phone: string | null
+          failure_message: string | null
+          failure_reason: string | null
+          id: string
+          invoice_id: string
+          last_attempt_at: string | null
+          last_error: string | null
+          max_attempts: number | null
+          notification_channel: string | null
+          notification_sent_at: string | null
+          portal_link_token: string | null
+          recovered_amount: number | null
+          recovered_at: string | null
+          retry_at: string
+          status: string | null
+          stripe_customer_id: string
+          updated_at: string | null
+        }
+        Insert: {
+          amount_due: number
+          attempt_count?: number | null
+          client_id?: string | null
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          failure_message?: string | null
+          failure_reason?: string | null
+          id?: string
+          invoice_id: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          max_attempts?: number | null
+          notification_channel?: string | null
+          notification_sent_at?: string | null
+          portal_link_token?: string | null
+          recovered_amount?: number | null
+          recovered_at?: string | null
+          retry_at: string
+          status?: string | null
+          stripe_customer_id: string
+          updated_at?: string | null
+        }
+        Update: {
+          amount_due?: number
+          attempt_count?: number | null
+          client_id?: string | null
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          failure_message?: string | null
+          failure_reason?: string | null
+          id?: string
+          invoice_id?: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          max_attempts?: number | null
+          notification_channel?: string | null
+          notification_sent_at?: string | null
+          portal_link_token?: string | null
+          recovered_amount?: number | null
+          recovered_at?: string | null
+          retry_at?: string
+          status?: string | null
+          stripe_customer_id?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "recovery_queue_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       segments: {
         Row: {
