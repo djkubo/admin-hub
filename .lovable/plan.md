@@ -1,103 +1,215 @@
 
-# Plan: Corregir Error de Autenticación "Auth session missing"
+# Plan: Sistema de Sincronización Robusto "Stage First, Merge Later"
 
-## Diagnóstico
-
-El error ocurre porque `supabase.functions.invoke` no está pasando correctamente el token JWT al servidor, aunque localmente la sesión parece válida.
-
-**Logs del servidor:**
-```
-User validation failed | error="Auth session missing!", code=400
-```
-
-**Logs del cliente:**
-```
-[AdminAPI] Session valid, calling function...
-```
-
-El SDK de Supabase v2.x tiene un comportamiento inconsistente donde `functions.invoke` no siempre incluye el `Authorization` header automáticamente.
+## Objetivo
+Crear un sistema donde **primero se descargue toda la data posible de todas las APIs** (GHL, ManyChat, Stripe, PayPal) guardándola en tablas "raw", y **después** (cuando el usuario decida) se haga el merge unificado a la tabla `clients`.
 
 ---
 
-## Solución
+## Arquitectura Propuesta
 
-Modificar `invokeWithAdminKey` para pasar **explícitamente** el header `Authorization` con el access token de la sesión:
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                    SYNC COMMAND CENTER                           │
+│                  (Panel unificado en el Dashboard)               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│   CONTACTS    │    │   PAYMENTS    │    │   INVOICES    │
+│   (CRM Data)  │    │  (Revenue)    │    │   (Billing)   │
+└───────────────┘    └───────────────┘    └───────────────┘
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  FASE 1:      │    │  FASE 1:      │    │  FASE 1:      │
+│  STAGING      │    │  STAGING      │    │  STAGING      │
+│ (Raw Tables)  │    │ (transactions)│    │ (invoices)    │
+└───────────────┘    └───────────────┘    └───────────────┘
+        │                     │                     │
+        └─────────────────────┼─────────────────────┘
+                              ▼
+                    ┌───────────────────┐
+                    │     FASE 2:       │
+                    │  UNIFY & MERGE    │
+                    │  (Background Job) │
+                    └───────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │   TABLA CLIENTS   │
+                    │ (Single Source of │
+                    │      Truth)       │
+                    └───────────────────┘
+```
+
+---
+
+## Lo Que Ya Funciona (Estado Actual)
+
+| Fuente | Edge Function | Estado | Tablas Raw |
+|--------|--------------|--------|-----------|
+| **Stripe Payments** | `fetch-stripe` | ✅ Funciona | → `transactions` (directo) |
+| **Stripe Invoices** | `fetch-invoices` | ✅ Funciona | → `invoices` (directo) |
+| **Stripe Subscriptions** | `fetch-subscriptions` | ✅ Funciona | → `subscriptions` (directo) |
+| **Stripe Customers** | `fetch-customers` | ✅ Funciona | → `clients` (directo) |
+| **PayPal Transactions** | `fetch-paypal` | ✅ Funciona | → `transactions` (directo) |
+| **GoHighLevel** | `sync-ghl` | ⚠️ Parcial | → `ghl_contacts_raw` ✅ |
+| **ManyChat** | `sync-manychat` | ⚠️ Lento | → `manychat_contacts_raw` ✅ |
+| **CSV Import** | `process-csv-bulk` | ✅ Funciona | → `csv_imports_raw` ✅ |
+
+---
+
+## Cambios Requeridos
+
+### 1. Mejorar `sync-ghl` para Descarga Masiva Completa
+
+**Problema actual:** Procesa 50 páginas máximo por invocación, puede perderse contactos.
+
+**Solución:**
+- Cambiar a paginación completa con checkpoints
+- Guardar TODO en `ghl_contacts_raw` sin hacer merge inmediato
+- Soportar reanudación automática si se interrumpe
 
 ```typescript
-// ANTES (no siempre pasa el header)
-const { data, error } = await supabase.functions.invoke(functionName, {
-  body,
-});
-
-// DESPUÉS (siempre pasa el header)
-const { data, error } = await supabase.functions.invoke(functionName, {
-  body,
-  headers: {
-    Authorization: `Bearer ${session.access_token}`
-  }
-});
+// Nuevo flujo sync-ghl
+1. Descargar página de contactos de GHL API
+2. Guardar TODA la respuesta en ghl_contacts_raw (payload JSONB)
+3. Actualizar checkpoint en sync_runs
+4. Responder hasMore: true → frontend hace siguiente página
+5. Repetir hasta hasMore: false
+// NO hacer merge aquí - eso es fase 2
 ```
 
----
+### 2. Optimizar `sync-manychat` 
 
-## Archivo a Modificar
+**Problema actual:** Busca email por email (1 request por contacto = muy lento).
 
-| Archivo | Cambio |
-|---------|--------|
-| `src/lib/adminApi.ts` | Añadir header `Authorization` explícito en `functions.invoke` |
+**Solución:**
+- Cambiar estrategia: exportar lista de subscribers de ManyChat
+- O: Usar endpoint de tags para obtener listas masivas
+- Guardar en `manychat_contacts_raw` sin merge inmediato
 
----
+### 3. Crear Panel de Control Unificado
 
-## Código Propuesto
+**Nueva página `SyncOrchestrator.tsx`:**
 
-```typescript
-export async function invokeWithAdminKey<
-  T = Record<string, unknown>,
-  B extends Record<string, unknown> = Record<string, unknown>
->(
-  functionName: string,
-  body?: B
-): Promise<T | null> {
-  try {
-    console.log(`[AdminAPI] Invoking ${functionName}`, body ? 'with body' : 'without body');
-    
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    
-    if (sessionError) {
-      console.error('[AdminAPI] Session error:', sessionError);
-      return { success: false, error: `Session error: ${sessionError.message}` } as T;
-    }
-    
-    if (!session) {
-      console.error('[AdminAPI] No active session');
-      return { success: false, error: 'No active session. Please log in again.' } as T;
-    }
-
-    // SOLUCIÓN: Pasar explícitamente el Authorization header
-    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}`);
-    
-    const { data, error } = await supabase.functions.invoke(functionName, {
-      body,
-      headers: {
-        Authorization: `Bearer ${session.access_token}`
-      }
-    });
-
-    // ... resto del código igual
-  }
-}
+```text
+┌─────────────────────────────────────────────────────────┐
+│ 🔄 Centro de Sincronización                              │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│ FASE 1: DESCARGAR DATA                                  │
+│ ┌─────────┬─────────┬─────────┬─────────┐              │
+│ │ Stripe  │ PayPal  │   GHL   │ManyChat │              │
+│ │  ✅ 8k  │  ✅ 2k  │ 🔄 150k │   ⏸️    │              │
+│ └─────────┴─────────┴─────────┴─────────┘              │
+│                                                          │
+│ [Sync Stripe] [Sync PayPal] [Sync GHL] [Sync ManyChat]  │
+│                                                          │
+│ ──────────────────────────────────────────────────────  │
+│                                                          │
+│ FASE 2: UNIFICAR IDENTIDADES                            │
+│ ┌─────────────────────────────────────────────┐        │
+│ │ Raw Data Pendiente:                          │        │
+│ │   • ghl_contacts_raw: 217,324 registros     │        │
+│ │   • manychat_contacts_raw: 45,000 registros │        │
+│ │   • csv_imports_raw: 532,000 registros      │        │
+│ └─────────────────────────────────────────────┘        │
+│                                                          │
+│ [Unificar Todo] ← Ejecuta merge en background           │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
+### 4. Crear Edge Function `unify-all-sources`
+
+Nueva función que:
+1. Lee de TODAS las tablas raw
+2. Aplica prioridades de merge (Email → Phone → IDs externos)
+3. Usa `unify_identity` RPC para cada contacto
+4. Ejecuta en background con `EdgeRuntime.waitUntil`
+5. Reporta progreso en `sync_runs`
+
+### 5. Mejorar `sync-command-center`
+
+Modificar para que:
+1. **Solo descargue data** (no haga merge)
+2. Reporte cuántos registros hay pendientes de unificar
+3. Tenga opción "Unificar Todo" separada
+
 ---
 
-## Por Qué Esto Funciona
+## Archivos a Crear/Modificar
 
-1. **Garantía explícita**: No dependemos del comportamiento automático del SDK
-2. **Token fresco**: Usamos `session.access_token` directamente de la sesión validada
-3. **Mismo patrón que funciona**: Otras funciones como `sync-command-center` reciben el header correctamente
+| Archivo | Acción | Descripción |
+|---------|--------|-------------|
+| `supabase/functions/sync-ghl/index.ts` | Modificar | Paginación completa, sin merge inmediato |
+| `supabase/functions/sync-manychat/index.ts` | Modificar | Estrategia de descarga masiva |
+| `supabase/functions/unify-all-sources/index.ts` | **Crear** | Merge unificado de todas las fuentes |
+| `src/components/dashboard/SyncOrchestrator.tsx` | **Crear** | Panel de control unificado |
+| `supabase/functions/sync-command-center/index.ts` | Modificar | Separar descarga de unificación |
 
 ---
 
-## Resultado Esperado
+## Flujo de Usuario Final
 
-Con este cambio, cada llamada a Edge Functions incluirá el JWT correctamente, eliminando el error "Auth session missing".
+1. **Usuario abre "Centro de Sincronización"**
+2. **Hace clic en "Sync All"** → Descarga toda la data de APIs
+   - Stripe: Transacciones, Facturas, Suscripciones, Clientes
+   - PayPal: Transacciones, Suscripciones
+   - GHL: Todos los contactos → `ghl_contacts_raw`
+   - ManyChat: Todos los subscribers → `manychat_contacts_raw`
+3. **Ve el progreso en tiempo real** vía `sync_runs`
+4. **Cuando termina, ve contadores de "pendientes de unificar"**
+5. **Hace clic en "Unificar Todo"** → Merge en background
+6. **Todos los contactos aparecen en `clients` correctamente vinculados**
+
+---
+
+## Detalles Técnicos
+
+### Prioridades de Merge (Identity Resolution)
+```text
+1. stripe_customer_id → Identificador más confiable para pagos
+2. email → Identificador universal
+3. phone_e164 → Respaldo si no hay email
+4. ghl_contact_id → Para contactos solo de GHL
+5. manychat_subscriber_id → Para contactos solo de ManyChat
+```
+
+### Manejo de Conflictos
+- Si email de GHL ≠ email de ManyChat para mismo teléfono → Guardar en `merge_conflicts`
+- UI para resolución manual de conflictos
+
+### Rate Limiting por API
+| API | Límite | Delay entre páginas |
+|-----|--------|---------------------|
+| Stripe | 100 req/s | 100ms |
+| PayPal | 30 req/s | 200ms |
+| GHL | 10 req/s | 150ms |
+| ManyChat | 10 req/s | 200ms |
+
+---
+
+## Estimación de Trabajo
+
+| Tarea | Complejidad | Tiempo Estimado |
+|-------|-------------|-----------------|
+| Modificar sync-ghl | Media | 45 min |
+| Modificar sync-manychat | Alta | 60 min |
+| Crear unify-all-sources | Alta | 90 min |
+| Crear SyncOrchestrator UI | Media | 60 min |
+| Modificar sync-command-center | Baja | 30 min |
+| **Total** | | **~5 horas** |
+
+---
+
+## Beneficios del Nuevo Sistema
+
+1. **Sin pérdida de data**: Todo se guarda primero, merge después
+2. **Reanudable**: Si se interrumpe, continúa desde checkpoint
+3. **Visible**: Panel muestra exactamente qué hay pendiente
+4. **Robusto**: Merge en background no bloquea la UI
+5. **Escalable**: Soporta 500k+ registros sin problemas
