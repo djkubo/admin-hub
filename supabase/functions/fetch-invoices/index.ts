@@ -3,6 +3,9 @@ import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-
 // Declare EdgeRuntime for background processing
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
+// Auto-continuation: max pages per execution to avoid 60s timeout
+const PAGES_PER_BATCH = 25;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -23,7 +26,8 @@ interface FetchInvoicesRequest {
   endDate?: string;
   cursor?: string;
   syncRunId?: string;
-  fetchAll?: boolean; // NEW: Process all pages in background
+  fetchAll?: boolean;
+  _continuation?: boolean; // Internal flag for auto-continuation
 }
 
 interface FetchInvoicesResponse {
@@ -33,7 +37,7 @@ interface FetchInvoicesResponse {
   hasMore: boolean;
   nextCursor: string | null;
   syncRunId: string | null;
-  status?: 'running' | 'completed' | 'error';
+  status?: 'running' | 'continuing' | 'completed' | 'error';
   error?: string;
   stats?: {
     draft: number;
@@ -456,7 +460,49 @@ async function batchUpsertInvoices(
   return count || invoiceRecords.length;
 }
 
-// ============= BACKGROUND FULL SYNC =============
+// ============= AUTO-CONTINUATION HELPER =============
+
+async function scheduleContinuation(
+  syncRunId: string,
+  mode: string,
+  startDate: string | null,
+  endDate: string | null,
+  cursor: string
+) {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  
+  console.log(`🔄 [Background] Scheduling continuation for cursor ${cursor.slice(0, 10)}...`);
+  
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/fetch-invoices`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${serviceRoleKey}`
+      },
+      body: JSON.stringify({
+        mode,
+        fetchAll: true,
+        syncRunId,
+        cursor,
+        startDate,
+        endDate,
+        _continuation: true
+      })
+    });
+    
+    if (!response.ok) {
+      console.error(`❌ Continuation request failed: ${response.status}`);
+    } else {
+      console.log(`✅ Continuation scheduled successfully`);
+    }
+  } catch (error) {
+    console.error(`❌ Continuation scheduling error:`, error);
+  }
+}
+
+// ============= BACKGROUND FULL SYNC WITH AUTO-CONTINUATION =============
 
 async function runFullInvoiceSync(
   supabase: SupabaseClient,
@@ -464,11 +510,12 @@ async function runFullInvoiceSync(
   syncRunId: string,
   mode: string,
   startDate: string | null,
-  endDate: string | null
+  endDate: string | null,
+  initialCursor: string | null = null
 ) {
-  console.log(`🚀 [Background] Starting full invoice sync: mode=${mode}, syncRunId=${syncRunId}`);
+  console.log(`🚀 [Background] Starting batch: mode=${mode}, syncRunId=${syncRunId}, cursor=${initialCursor ? initialCursor.slice(0, 10) + '...' : 'start'}`);
   
-  let cursor: string | null = null;
+  let cursor: string | null = initialCursor;
   let hasMore = true;
   let pageCount = 0;
   let totalFetched = 0;
@@ -476,7 +523,29 @@ async function runFullInvoiceSync(
   const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
   
   try {
-    while (hasMore && pageCount < 500) {
+    // Read existing progress from sync run (for continuation)
+    const { data: currentRun } = await supabase
+      .from('sync_runs')
+      .select('total_fetched, total_inserted, metadata')
+      .eq('id', syncRunId)
+      .single();
+    
+    totalFetched = currentRun?.total_fetched || 0;
+    totalInserted = currentRun?.total_inserted || 0;
+    
+    // Restore stats from metadata if continuing
+    const existingStats = currentRun?.metadata?.stats;
+    if (existingStats) {
+      stats.draft = existingStats.draft || 0;
+      stats.open = existingStats.open || 0;
+      stats.paid = existingStats.paid || 0;
+      stats.void = existingStats.void || 0;
+      stats.uncollectible = existingStats.uncollectible || 0;
+    }
+    
+    console.log(`📊 [Background] Resuming from: ${totalFetched} fetched, ${totalInserted} inserted`);
+    
+    while (hasMore && pageCount < PAGES_PER_BATCH) {
       pageCount++;
       const pageStart = Date.now();
       
@@ -521,12 +590,12 @@ async function runFullInvoiceSync(
       
       // Update progress in sync_runs
       await supabase.from('sync_runs').update({
-        status: hasMore ? 'running' : 'completed',
+        status: hasMore ? 'continuing' : 'completed',
         total_fetched: totalFetched,
         total_inserted: totalInserted,
         checkpoint: hasMore ? { cursor } : null,
         completed_at: hasMore ? null : new Date().toISOString(),
-        metadata: { mode, startDate, endDate, stats, pageCount }
+        metadata: { mode, startDate, endDate, stats, pageCount: (currentRun?.metadata?.pageCount || 0) + pageCount }
       }).eq('id', syncRunId);
       
       console.log(`📈 [Background] Progress: ${totalFetched} fetched, ${totalInserted} inserted`);
@@ -535,8 +604,18 @@ async function runFullInvoiceSync(
       if (hasMore) await delay(100);
     }
     
-    console.log(`✅ [Background] Sync complete: ${totalFetched} fetched, ${totalInserted} inserted in ${pageCount} pages`);
-    console.log(`📊 [Background] Stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void} uncollectible=${stats.uncollectible}`);
+    // ============= AUTO-CONTINUATION =============
+    if (hasMore && cursor) {
+      console.log(`🔄 [Background] Batch limit (${PAGES_PER_BATCH} pages) reached. Scheduling continuation...`);
+      
+      // Schedule next batch via self-invocation
+      await scheduleContinuation(syncRunId, mode, startDate, endDate, cursor);
+      
+      console.log(`✅ [Background] Batch complete. Next batch will continue from cursor ${cursor.slice(0, 10)}...`);
+    } else {
+      console.log(`✅ [Background] Sync FULLY complete: ${totalFetched} fetched, ${totalInserted} inserted`);
+      console.log(`📊 [Background] Final stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void} uncollectible=${stats.uncollectible}`);
+    }
     
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -560,18 +639,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify JWT + admin role
-    const authCheck = await verifyAdmin(req);
-    if (!authCheck.valid) {
-      console.error("❌ Auth failed:", authCheck.error);
-      return new Response(
-        JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log("✅ Admin verified");
-
     const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
     if (!STRIPE_SECRET_KEY) {
       throw new Error("STRIPE_SECRET_KEY not configured");
@@ -588,6 +655,7 @@ Deno.serve(async (req) => {
     let cursor: string | null = null;
     let syncRunId: string | null = null;
     let fetchAll = false;
+    let isContinuation = false;
 
     try {
       const body: FetchInvoicesRequest = await req.json();
@@ -595,6 +663,7 @@ Deno.serve(async (req) => {
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
       fetchAll = body.fetchAll === true;
+      isContinuation = body._continuation === true;
       
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
@@ -602,23 +671,59 @@ Deno.serve(async (req) => {
       // Default to recent mode
     }
 
-    console.log(`🧾 fetch-invoices: mode=${mode}, fetchAll=${fetchAll}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
+    console.log(`🧾 fetch-invoices: mode=${mode}, fetchAll=${fetchAll}, continuation=${isContinuation}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
+
+    // ============= HANDLE CONTINUATION REQUESTS =============
+    if (isContinuation && syncRunId && cursor) {
+      console.log(`🔄 Processing continuation for sync ${syncRunId}`);
+      
+      EdgeRuntime.waitUntil(
+        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate, cursor)
+      );
+      
+      return new Response(
+        JSON.stringify({
+          success: true,
+          status: 'continuing',
+          syncRunId,
+          synced: 0,
+          upserted: 0,
+          hasMore: true,
+          nextCursor: null,
+          message: 'Continuation batch started'
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ============= SECURITY: Verify JWT + admin role (skip for internal continuations) =============
+    if (!isContinuation) {
+      const authCheck = await verifyAdmin(req);
+      if (!authCheck.valid) {
+        console.error("❌ Auth failed:", authCheck.error);
+        return new Response(
+          JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      console.log("✅ Admin verified");
+    }
 
     // Check for existing running sync (avoid duplicates)
-    const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
+    const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
     
     const { data: existingSync } = await supabase
       .from('sync_runs')
       .select('id, started_at, total_fetched, checkpoint')
       .eq('source', 'stripe_invoices')
       .in('status', ['running', 'continuing'])
-      .gte('started_at', oneMinuteAgo)
+      .gte('started_at', threeMinutesAgo)
       .order('started_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     
     if (existingSync && !syncRunId) {
-      console.log('⚠️ Sync already running (last 60s):', existingSync.id);
+      console.log('⚠️ Sync already running (last 3min):', existingSync.id);
       return new Response(
         JSON.stringify({
           success: true,
@@ -644,7 +749,7 @@ Deno.serve(async (req) => {
       })
       .eq('source', 'stripe_invoices')
       .in('status', ['running', 'continuing'])
-      .lt('started_at', oneMinuteAgo);
+      .lt('started_at', threeMinutesAgo);
     
     // Create new sync run
     const { data: syncRun } = await supabase
@@ -667,7 +772,7 @@ Deno.serve(async (req) => {
       console.log('🚀 Starting background processing with EdgeRuntime.waitUntil()');
       
       EdgeRuntime.waitUntil(
-        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate)
+        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate, null)
       );
       
       // Return immediately with running status
