@@ -390,32 +390,45 @@ Deno.serve(async (req) => {
 
     console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
 
-    // Check for existing running sync (prevent duplicates)
+    // Check for existing running sync (prevent duplicates) - only block if VERY recent
     if (!syncRunId) {
-      const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
       
       const { data: existingSync } = await supabase
         .from('sync_runs')
         .select('id, started_at, total_fetched, checkpoint')
         .eq('source', 'stripe_invoices')
-        .in('status', ['running', 'continuing'])
-        .gte('started_at', threeMinutesAgo)
+        .eq('status', 'running') // Only check 'running', not 'continuing'
+        .gte('started_at', oneMinuteAgo)
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
       
       if (existingSync) {
-        console.log('⚠️ Sync already running:', existingSync.id);
+        console.log('⚠️ Sync already running (last 60s):', existingSync.id);
         return new Response(
           JSON.stringify({
             success: false,
             error: 'sync_already_running',
             existingSyncId: existingSync.id,
+            syncRunId: existingSync.id, // Return existing ID so frontend can continue
             message: 'A sync is already in progress. Please wait.',
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+      
+      // Cancel any old stuck syncs before creating new one
+      await supabase
+        .from('sync_runs')
+        .update({ 
+          status: 'cancelled', 
+          completed_at: new Date().toISOString(),
+          error_message: 'Cancelled by new sync request' 
+        })
+        .eq('source', 'stripe_invoices')
+        .in('status', ['running', 'continuing'])
+        .lt('started_at', oneMinuteAgo);
       
       // Create new sync run
       const { data: syncRun } = await supabase
@@ -428,6 +441,16 @@ Deno.serve(async (req) => {
         .select('id')
         .single();
       syncRunId = syncRun?.id || null;
+      
+      console.log('🆕 Created new sync run:', syncRunId);
+    } else {
+      // Update existing sync run status
+      await supabase
+        .from('sync_runs')
+        .update({ status: 'continuing' })
+        .eq('id', syncRunId);
+      
+      console.log('📎 Continuing existing sync run:', syncRunId);
     }
 
     // Build Stripe API URL - fetch ALL statuses
