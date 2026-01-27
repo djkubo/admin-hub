@@ -397,6 +397,7 @@ export function APISyncPanel() {
     try {
       let hasMore = true;
       let cursor: string | null = null;
+      let syncRunId: string | null = null; // Track sync run ID across pages
       let totalSynced = 0;
       let totalUpserted = 0;
       let page = 0;
@@ -412,14 +413,22 @@ export function APISyncPanel() {
           upserted: number;
           hasMore: boolean;
           nextCursor: string | null;
+          syncRunId: string | null;
           stats?: typeof stats;
+          error?: string;
         }>('fetch-invoices', {
           mode,
           cursor,
+          syncRunId, // Pass syncRunId to continue existing sync
         });
 
         if (!data.success) {
-          throw new Error('Fetch invoices failed');
+          throw new Error(data.error || 'Fetch invoices failed');
+        }
+
+        // Save syncRunId from first page
+        if (data.syncRunId && !syncRunId) {
+          syncRunId = data.syncRunId;
         }
 
         totalSynced += data.synced || 0;
@@ -436,8 +445,18 @@ export function APISyncPanel() {
         hasMore = data.hasMore && !!data.nextCursor;
         cursor = data.nextCursor;
         
-        // Safety: limit to 50 pages (5000 invoices per sync)
-        if (page >= 50) {
+        // Progress toast every 5 pages
+        if (page % 5 === 0) {
+          toast.info(`Facturas: Página ${page} - ${totalUpserted} sincronizadas...`, { id: 'invoices-progress' });
+        }
+
+        // Small delay between pages to avoid rate limits
+        if (hasMore) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+        
+        // Safety: limit to 100 pages (10,000 invoices per sync)
+        if (page >= 100) {
           console.log('Reached page limit, stopping');
           break;
         }
@@ -450,7 +469,7 @@ export function APISyncPanel() {
         message: `${totalUpserted} facturas sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas, ${stats.draft} borradores)`
       });
       
-      toast.success(`Facturas: ${totalUpserted} sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas)`);
+      toast.success(`Facturas: ${totalUpserted} sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas)`, { id: 'invoices-progress' });
       
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
