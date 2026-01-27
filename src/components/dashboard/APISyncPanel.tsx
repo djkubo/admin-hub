@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { supabase } from '@/integrations/supabase/client';
+import { SyncResultsPanel } from './SyncResultsPanel';
 import type { 
   SyncResult,
   FetchStripeBody,
@@ -47,9 +48,11 @@ export function APISyncPanel() {
   const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
   const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
   const [invoicesResult, setInvoicesResult] = useState<SyncResult | null>(null);
-  const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number } | null>(null);
-  const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number } | null>(null);
+  const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number; status?: string } | null>(null);
+  const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number; page?: number; totalPages?: number } | null>(null);
   const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
+  const [ghlProgress, setGhlProgress] = useState<{ current: number; total: number } | null>(null);
+  const [manychatProgress, setManychatProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts - now with per-service progress
   const syncInChunks = async (
@@ -145,6 +148,9 @@ export function APISyncPanel() {
   // Polling refs to allow cleanup
   const stripePollingRef = useRef<number | null>(null);
   const invoicesPollingRef = useRef<number | null>(null);
+  const paypalPollingRef = useRef<number | null>(null);
+  const ghlPollingRef = useRef<number | null>(null);
+  const manychatPollingRef = useRef<number | null>(null);
 
   // Poll sync_runs for progress updates (Stripe)
   const pollSyncProgress = useCallback(async (syncRunId: string, source: 'stripe') => {
@@ -256,6 +262,157 @@ export function APISyncPanel() {
     poll();
   }, [queryClient]);
 
+  // Poll sync_runs for PayPal progress updates
+  const pollPayPalProgress = useCallback(async (syncRunId: string) => {
+    if (paypalPollingRef.current) {
+      clearTimeout(paypalPollingRef.current);
+    }
+
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sync_runs')
+          .select('status, total_fetched, total_inserted, checkpoint')
+          .eq('id', syncRunId)
+          .single();
+        
+        if (error || !data) {
+          console.error('PayPal polling error:', error);
+          return;
+        }
+        
+        const checkpoint = data.checkpoint as { page?: number; totalPages?: number } | null;
+        
+        if (data.status === 'running' || data.status === 'continuing') {
+          setPaypalProgress({ 
+            current: data.total_fetched || 0, 
+            total: 0,
+            page: checkpoint?.page,
+            totalPages: checkpoint?.totalPages
+          });
+          paypalPollingRef.current = window.setTimeout(poll, 3000);
+        } else if (data.status === 'completed') {
+          setPaypalProgress(null);
+          setPaypalResult({ 
+            success: true, 
+            synced_transactions: data.total_inserted ?? 0,
+            message: 'Sincronización completada'
+          });
+          toast.success(`PayPal: ${(data.total_inserted ?? 0).toLocaleString()} transacciones sincronizadas`, {
+            id: 'paypal-sync'
+          });
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          setPaypalSyncing(false);
+        } else if (data.status === 'failed' || data.status === 'cancelled') {
+          setPaypalProgress(null);
+          setPaypalResult({ success: false, error: 'Sync failed or cancelled' });
+          toast.error('PayPal: Sincronización falló', { id: 'paypal-sync' });
+          setPaypalSyncing(false);
+        }
+      } catch (err) {
+        console.error('PayPal poll error:', err);
+      }
+    };
+    
+    poll();
+  }, [queryClient]);
+
+  // Poll sync_runs for GHL progress updates
+  const pollGHLProgress = useCallback(async (syncRunId: string) => {
+    if (ghlPollingRef.current) {
+      clearTimeout(ghlPollingRef.current);
+    }
+
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sync_runs')
+          .select('status, total_fetched, total_inserted, checkpoint')
+          .eq('id', syncRunId)
+          .single();
+        
+        if (error || !data) {
+          console.error('GHL polling error:', error);
+          return;
+        }
+        
+        if (data.status === 'running' || data.status === 'continuing') {
+          setGhlProgress({ 
+            current: data.total_fetched || 0, 
+            total: 0
+          });
+          ghlPollingRef.current = window.setTimeout(poll, 3000);
+        } else if (data.status === 'completed') {
+          setGhlProgress(null);
+          setGhlResult({ 
+            success: true, 
+            total_fetched: data.total_inserted ?? 0,
+            message: `${data.total_inserted} contactos descargados`
+          });
+          toast.success(`GoHighLevel: ${(data.total_inserted ?? 0).toLocaleString()} contactos sincronizados`, {
+            id: 'ghl-sync'
+          });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          setGhlSyncing(false);
+        } else if (data.status === 'failed' || data.status === 'cancelled') {
+          setGhlProgress(null);
+          setGhlResult({ success: false, error: 'Sync failed or cancelled' });
+          toast.error('GoHighLevel: Sincronización falló', { id: 'ghl-sync' });
+          setGhlSyncing(false);
+        }
+      } catch (err) {
+        console.error('GHL poll error:', err);
+      }
+    };
+    
+    poll();
+  }, [queryClient]);
+
+  // Poll sync_runs for ManyChat progress updates
+  const pollManyChatProgress = useCallback(async (syncRunId: string) => {
+    if (manychatPollingRef.current) {
+      clearTimeout(manychatPollingRef.current);
+    }
+
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sync_runs')
+          .select('status, total_fetched, total_inserted')
+          .eq('id', syncRunId)
+          .single();
+        
+        if (error || !data) return;
+        
+        if (data.status === 'running' || data.status === 'continuing') {
+          setManychatProgress({ current: data.total_fetched || 0, total: 0 });
+          manychatPollingRef.current = window.setTimeout(poll, 3000);
+        } else if (data.status === 'completed') {
+          setManychatProgress(null);
+          setManychatResult({ 
+            success: true, 
+            total_fetched: data.total_fetched ?? 0,
+            total_inserted: data.total_inserted ?? 0
+          });
+          toast.success(`ManyChat: ${(data.total_inserted ?? 0).toLocaleString()} contactos sincronizados`, {
+            id: 'manychat-sync'
+          });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          setManychatSyncing(false);
+        } else {
+          setManychatProgress(null);
+          setManychatResult({ success: false, error: 'Sync failed' });
+          setManychatSyncing(false);
+        }
+      } catch (err) {
+        console.error('ManyChat poll error:', err);
+      }
+    };
+    
+    poll();
+  }, [queryClient]);
+
   const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
     setStripeSyncing(true);
     setStripeResult(null);
@@ -324,51 +481,50 @@ export function APISyncPanel() {
   const syncPayPal = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
     setPaypalSyncing(true);
     setPaypalResult(null);
+    setPaypalProgress(null);
     
     try {
-      if (mode === 'last24h') {
-        const now = new Date();
-        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        
-        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-          'fetch-paypal', 
-          { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
-
-        setPaypalResult(data);
-        
-        if (data.success) {
-          toast.success(`PayPal (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+      let startDate: Date;
+      const endDate = new Date();
+      
+      // Calculate date range based on mode
+      switch (mode) {
+        case 'last24h':
+          startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case 'last31d':
+          startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
+          break;
+        case 'all6months':
+          startDate = new Date(endDate.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
+          break;
+        case 'allHistory':
+        default:
+          // PayPal API only allows ~3 years max
+          startDate = new Date(endDate.getTime() - 2.5 * 365 * 24 * 60 * 60 * 1000);
+          break;
+      }
+      
+      // ONE single call - backend handles all pagination with auto-continuation
+      const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+        'fetch-paypal', 
+        { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString()
         }
-      } else if (mode === 'last31d') {
-        const now = new Date();
-        const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
-        
-        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-          'fetch-paypal', 
-          { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+      );
 
+      // Check if it's running in background with auto-continuation
+      if ((data.status === 'running' || data.status === 'continuing') && data.syncRunId) {
+        toast.info('PayPal: Sincronización iniciada en background...', { id: 'paypal-sync' });
+        pollPayPalProgress(data.syncRunId);
+        // Don't setPaypalSyncing(false) - polling will handle it
+        return;
+      } else if (data.success) {
         setPaypalResult(data);
-        
-        if (data.success) {
-          toast.success(`PayPal (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
-      } else if (mode === 'all6months') {
-        const results = await syncInChunks('paypal', 0.5, setPaypalResult, setPaypalProgress);
-        toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
-      } else if (mode === 'allHistory') {
-        // PayPal API only allows 3 years max - use 2.5 to be safe
-        const results = await syncInChunks('paypal', 2.5, setPaypalResult, setPaypalProgress);
-        toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
+        const modeLabel = mode === 'last24h' ? '24h' : mode === 'last31d' ? '31 días' : mode === 'all6months' ? '6 meses' : 'historial completo';
+        toast.success(`PayPal (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
       
       // Refresh all data
@@ -381,8 +537,11 @@ export function APISyncPanel() {
       setPaypalResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando PayPal: ${errorMessage}`);
     } finally {
-      setPaypalSyncing(false);
-      setPaypalProgress(null);
+      // Only set syncing to false if not polling
+      if (!paypalPollingRef.current) {
+        setPaypalSyncing(false);
+        setPaypalProgress(null);
+      }
     }
   };
 
@@ -645,17 +804,73 @@ export function APISyncPanel() {
 
         {/* PayPal Progress indicator */}
         {paypalProgress && (
-          <div className="p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-yellow-400">
+          <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-blue-400">
               <Loader2 className="h-4 w-4 animate-spin" />
-              <span>PayPal: Mes {paypalProgress.current}/{paypalProgress.total}</span>
+              <span>PayPal: {paypalProgress.current.toLocaleString()} transacciones sincronizadas</span>
+              {paypalProgress.page && paypalProgress.totalPages && (
+                <span className="text-xs text-gray-500">
+                  (página {paypalProgress.page}/{paypalProgress.totalPages})
+                </span>
+              )}
             </div>
             <Progress 
-              value={(paypalProgress.current / paypalProgress.total) * 100} 
-              className="h-2"
+              value={100} 
+              className="h-2 animate-pulse"
             />
             <p className="text-xs text-gray-400">
-              Procesando... {paypalProgress.current} de {paypalProgress.total} períodos
+              Procesando en background... Actualizando cada 3s
+            </p>
+          </div>
+        )}
+
+        {/* GHL Progress indicator */}
+        {ghlProgress && (
+          <div className="p-3 bg-cyan-500/10 rounded-lg border border-cyan-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-cyan-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>GoHighLevel: {ghlProgress.current.toLocaleString()} contactos descargados</span>
+            </div>
+            <Progress 
+              value={100} 
+              className="h-2 animate-pulse"
+            />
+            <p className="text-xs text-gray-400">
+              Descargando a staging... Actualizando cada 3s
+            </p>
+          </div>
+        )}
+
+        {/* ManyChat Progress indicator */}
+        {manychatProgress && (
+          <div className="p-3 bg-pink-500/10 rounded-lg border border-pink-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-pink-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>ManyChat: {manychatProgress.current.toLocaleString()} contactos sincronizados</span>
+            </div>
+            <Progress 
+              value={100} 
+              className="h-2 animate-pulse"
+            />
+            <p className="text-xs text-gray-400">
+              Procesando... Actualizando cada 3s
+            </p>
+          </div>
+        )}
+
+        {/* Invoices Progress indicator */}
+        {invoicesProgress && (
+          <div className="p-3 bg-amber-500/10 rounded-lg border border-amber-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-amber-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Facturas: {invoicesProgress.current.toLocaleString()} sincronizadas</span>
+            </div>
+            <Progress 
+              value={100} 
+              className="h-2 animate-pulse"
+            />
+            <p className="text-xs text-gray-400">
+              Procesando en background... Actualizando cada 3s
             </p>
           </div>
         )}
@@ -830,12 +1045,6 @@ export function APISyncPanel() {
             )}
           </div>
           
-          {invoicesProgress && (
-            <div className="flex items-center gap-2 text-xs text-cyan-400">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              <span>Página {invoicesProgress.current}...</span>
-            </div>
-          )}
           
           <div className="grid grid-cols-2 gap-2">
             <Button
@@ -989,6 +1198,9 @@ export function APISyncPanel() {
         <p className="text-xs text-gray-500 text-center">
           💡 Backend procesa todo el historial automáticamente con paginación interna
         </p>
+        
+        {/* Realtime Sync Results Panel */}
+        <SyncResultsPanel />
       </CardContent>
     </Card>
   );
