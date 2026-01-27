@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Upload, RefreshCw, CheckCircle, AlertCircle, Loader2, History, FileText, Database } from 'lucide-react';
+import { Upload, RefreshCw, CheckCircle, AlertCircle, Loader2, History, FileText, Database, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CSVUploader } from './CSVUploader';
 import { APISyncPanel } from './APISyncPanel';
 import { SmartRecoveryCard } from './SmartRecoveryCard';
+import { SyncOrchestrator } from './SyncOrchestrator';
 import { useQueryClient } from '@tanstack/react-query';
 
 export function ImportSyncPage() {
@@ -50,6 +51,10 @@ export function ImportSyncPage() {
               <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               Recovery
             </TabsTrigger>
+            <TabsTrigger value="unify" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
+              <Users className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              Unificar
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -63,6 +68,10 @@ export function ImportSyncPage() {
 
         <TabsContent value="recovery">
           <SmartRecoveryCard />
+        </TabsContent>
+
+        <TabsContent value="unify">
+          <SyncOrchestrator />
         </TabsContent>
       </Tabs>
     </div>
