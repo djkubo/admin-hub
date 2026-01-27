@@ -3,7 +3,8 @@ import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/re
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 
 const logger = createLogger('fetch-paypal', LogLevel.INFO);
-const STALE_TIMEOUT_MINUTES = 3; // Mark syncs as stale after 3 minutes (aggressive cleanup)
+const STALE_TIMEOUT_MINUTES = 3;
+const MAX_DAYS_PER_CHUNK = 31; // PayPal API maximum range
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,13 +31,8 @@ interface PayPalTransaction {
     transaction_id: string;
     transaction_status: string;
     transaction_event_code: string;
-    transaction_amount: {
-      value: string;
-      currency_code: string;
-    };
-    fee_amount?: {
-      value: string;
-    };
+    transaction_amount: { value: string; currency_code: string; };
+    fee_amount?: { value: string; };
     transaction_subject?: string;
     transaction_note?: string;
     transaction_initiation_date: string;
@@ -44,16 +40,9 @@ interface PayPalTransaction {
   payer_info: {
     email_address?: string;
     account_id?: string;
-    payer_name?: {
-      given_name?: string;
-      surname?: string;
-    };
+    payer_name?: { given_name?: string; surname?: string; };
   };
-  cart_info?: {
-    item_details?: Array<{
-      item_name?: string;
-    }>;
-  };
+  cart_info?: { item_details?: Array<{ item_name?: string; }>; };
 }
 
 interface TransactionRecord {
@@ -78,6 +67,13 @@ interface ClientRecord {
   last_sync: string;
 }
 
+interface DateChunk {
+  start: Date;
+  end: Date;
+  index: number;
+  total: number;
+}
+
 // ============= SECURITY =============
 
 async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
@@ -94,13 +90,11 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
   });
 
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -113,7 +107,6 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 async function getPayPalAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const credentials = btoa(`${clientId}:${clientSecret}`);
 
-  // Retry token fetch
   const response = await retryWithBackoff(
     () => fetch("https://api-m.paypal.com/v1/oauth2/token", {
       method: "POST",
@@ -123,10 +116,7 @@ async function getPayPalAccessToken(clientId: string, clientSecret: string): Pro
       },
       body: "grant_type=client_credentials",
     }),
-    {
-      ...RETRY_CONFIGS.FAST,
-      retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP]
-    }
+    { ...RETRY_CONFIGS.FAST, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
   );
 
   if (!response.ok) {
@@ -139,7 +129,6 @@ async function getPayPalAccessToken(clientId: string, clientSecret: string): Pro
 }
 
 function mapPayPalStatus(status: string, eventCode: string): string {
-  // ... (keep same logic)
   const statusLower = status.toLowerCase();
   const eventLower = eventCode.toLowerCase();
 
@@ -154,6 +143,40 @@ function mapPayPalStatus(status: string, eventCode: string): string {
     return 'pending';
   }
   return 'pending';
+}
+
+function formatPayPalDate(date: Date): string {
+  const iso = date.toISOString();
+  return iso.replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Split a date range into chunks of MAX_DAYS_PER_CHUNK days
+ * PayPal API only allows 31-day ranges maximum
+ */
+function splitIntoChunks(startDate: Date, endDate: Date): DateChunk[] {
+  const chunks: DateChunk[] = [];
+  let currentStart = new Date(startDate);
+  const finalEnd = new Date(endDate);
+  
+  while (currentStart < finalEnd) {
+    const chunkEnd = new Date(currentStart.getTime() + MAX_DAYS_PER_CHUNK * 24 * 60 * 60 * 1000);
+    const actualEnd = chunkEnd > finalEnd ? finalEnd : chunkEnd;
+    
+    chunks.push({
+      start: new Date(currentStart),
+      end: actualEnd,
+      index: chunks.length,
+      total: 0 // Will be updated after all chunks are created
+    });
+    
+    currentStart = new Date(actualEnd.getTime() + 1000); // +1 second to avoid overlap
+  }
+  
+  // Update total count
+  chunks.forEach(c => c.total = chunks.length);
+  
+  return chunks;
 }
 
 async function fetchPayPalPage(
@@ -178,10 +201,7 @@ async function fetchPayPalPage(
         "Content-Type": "application/json",
       },
     }),
-    {
-      ...RETRY_CONFIGS.STANDARD,
-      retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP]
-    }
+    { ...RETRY_CONFIGS.STANDARD, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
   );
 
   if (!response.ok) {
@@ -200,46 +220,43 @@ async function fetchPayPalPage(
   };
 }
 
-function formatPayPalDate(date: Date): string {
-  // PayPal requires ISO 8601 format: YYYY-MM-DDTHH:mm:ssZ (no milliseconds)
-  const iso = date.toISOString();
-  // Remove milliseconds, keep Z
-  return iso.replace(/\.\d{3}Z$/, 'Z');
-}
+// ============= AUTO-CONTINUATION =============
 
-// ============= AUTO-CONTINUATION WITH ATOMIC LOCK =============
-
-async function triggerContinuationWithLock(
+async function triggerNextChunkOrPage(
   supabase: SupabaseClient,
   syncRunId: string,
   nextPage: number,
-  startDate: string,
-  endDate: string,
-  currentPage: number,
+  chunkStart: string,
+  chunkEnd: string,
+  chunkIndex: number,
+  totalChunks: number,
+  originalStartDate: string,
+  originalEndDate: string,
   totalPages: number
 ): Promise<boolean> {
-  // ATOMIC LOCK: Update checkpoint only if page hasn't changed
-  // This prevents duplicate continuations from racing
   const { data: updated, error } = await supabase
     .from('sync_runs')
     .update({
       checkpoint: {
-        page: nextPage, // Mark that we're moving to next page
-        lastActivity: new Date().toISOString(),
-        totalPages
+        page: nextPage,
+        chunkIndex,
+        chunkStart,
+        chunkEnd,
+        totalChunks,
+        totalPages,
+        lastActivity: new Date().toISOString()
       }
     })
     .eq('id', syncRunId)
-    .eq('status', 'continuing') // Only if still in continuing status
+    .eq('status', 'continuing')
     .select('id')
     .single();
 
   if (error || !updated) {
-    logger.warn(`Continuation lock failed - another instance may have taken over`, { syncRunId, nextPage, error: error?.message });
+    logger.warn(`Continuation lock failed`, { syncRunId, nextPage, chunkIndex, error: error?.message });
     return false;
   }
 
-  // Lock acquired - safe to trigger continuation
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
@@ -253,13 +270,17 @@ async function triggerContinuationWithLock(
       fetchAll: true,
       syncRunId,
       page: nextPage,
-      startDate,
-      endDate,
+      chunkIndex,
+      chunkStart,
+      chunkEnd,
+      totalChunks,
+      originalStartDate,
+      originalEndDate,
       _continuation: true
     })
   }).catch(err => logger.error('Auto-continuation fetch failed', err));
 
-  logger.info(`✅ Triggered auto-continuation for page ${nextPage}/${totalPages}`, { syncRunId });
+  logger.info(`✅ Triggered continuation: chunk ${chunkIndex + 1}/${totalChunks}, page ${nextPage}/${totalPages}`, { syncRunId });
   return true;
 }
 
@@ -288,20 +309,22 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Parse request
-    let startDate: string;
-    let endDate: string;
+    let originalStartDate: string;
+    let originalEndDate: string;
+    let chunkStart: string;
+    let chunkEnd: string;
     let fetchAll = false;
     let page = 1;
+    let chunkIndex = 0;
+    let totalChunks = 1;
     let syncRunId: string | null = null;
     let cleanupStale = false;
     let forceCancel = false;
     let isContinuation = false;
 
-    // Calculate safe date boundaries BEFORE processing request
-    // PayPal API STRICTLY rejects future dates - must use past timestamp
+    // Calculate safe date boundaries
     const nowMs = Date.now();
-    // Use 10 minutes buffer to account for clock skew and API processing time
-    const safeEndMs = nowMs - 10 * 60 * 1000;
+    const safeEndMs = nowMs - 10 * 60 * 1000; // 10 minute buffer
     const safeEndDate = new Date(safeEndMs);
     const threeYearsAgoMs = nowMs - (3 * 365 - 7) * 24 * 60 * 60 * 1000;
     const threeYearsAgo = new Date(threeYearsAgoMs);
@@ -313,38 +336,68 @@ Deno.serve(async (req) => {
       forceCancel = body.forceCancel === true;
       isContinuation = body._continuation === true;
       page = body.page || 1;
+      chunkIndex = body.chunkIndex || 0;
+      totalChunks = body.totalChunks || 1;
       syncRunId = body.syncRunId || null;
 
-      if (body.startDate) {
-        let requestedStart = new Date(body.startDate);
-        if (requestedStart < threeYearsAgo) {
-          requestedStart = threeYearsAgo;
-        }
-        startDate = formatPayPalDate(requestedStart);
+      // For continuations, use the chunk dates passed
+      if (isContinuation && body.chunkStart && body.chunkEnd) {
+        chunkStart = body.chunkStart;
+        chunkEnd = body.chunkEnd;
+        originalStartDate = body.originalStartDate || body.chunkStart;
+        originalEndDate = body.originalEndDate || body.chunkEnd;
       } else {
-        // Default: 31 days ago
-        startDate = formatPayPalDate(new Date(nowMs - 31 * 24 * 60 * 60 * 1000));
-      }
+        // Initial request - calculate the range
+        let requestedStart: Date;
+        let requestedEnd: Date;
 
-      // CRITICAL: Always cap end_date to safe past timestamp
-      // Never trust client-provided endDate - always enforce server-side cap
-      if (body.endDate) {
-        const requestedEnd = new Date(body.endDate);
-        // Always use the earlier of: requested date OR safe end date
-        endDate = formatPayPalDate(requestedEnd < safeEndDate ? requestedEnd : safeEndDate);
-      } else {
-        endDate = formatPayPalDate(safeEndDate);
+        if (body.startDate) {
+          requestedStart = new Date(body.startDate);
+          if (requestedStart < threeYearsAgo) {
+            requestedStart = threeYearsAgo;
+          }
+        } else {
+          requestedStart = new Date(nowMs - 31 * 24 * 60 * 60 * 1000);
+        }
+
+        if (body.endDate) {
+          const bodyEnd = new Date(body.endDate);
+          requestedEnd = bodyEnd < safeEndDate ? bodyEnd : safeEndDate;
+        } else {
+          requestedEnd = safeEndDate;
+        }
+
+        originalStartDate = formatPayPalDate(requestedStart);
+        originalEndDate = formatPayPalDate(requestedEnd);
+
+        // Split into chunks if range > 31 days
+        const rangeDays = (requestedEnd.getTime() - requestedStart.getTime()) / (24 * 60 * 60 * 1000);
+        
+        if (rangeDays > MAX_DAYS_PER_CHUNK) {
+          const chunks = splitIntoChunks(requestedStart, requestedEnd);
+          totalChunks = chunks.length;
+          chunkIndex = 0;
+          chunkStart = formatPayPalDate(chunks[0].start);
+          chunkEnd = formatPayPalDate(chunks[0].end);
+          logger.info(`📊 Large range detected: ${Math.round(rangeDays)} days → split into ${totalChunks} chunks of ${MAX_DAYS_PER_CHUNK} days`);
+        } else {
+          chunkStart = originalStartDate;
+          chunkEnd = originalEndDate;
+          totalChunks = 1;
+        }
       }
     } catch {
       // Default range if no body: last 31 days
-      startDate = formatPayPalDate(new Date(nowMs - 31 * 24 * 60 * 60 * 1000));
-      endDate = formatPayPalDate(safeEndDate);
+      const defaultStart = new Date(nowMs - 31 * 24 * 60 * 60 * 1000);
+      originalStartDate = formatPayPalDate(defaultStart);
+      originalEndDate = formatPayPalDate(safeEndDate);
+      chunkStart = originalStartDate;
+      chunkEnd = originalEndDate;
     }
 
-    console.log(`📅 PayPal date range: ${startDate} → ${endDate} (continuation: ${isContinuation}, page: ${page})`);
+    console.log(`📅 PayPal: chunk ${chunkIndex + 1}/${totalChunks}, page ${page}, range: ${chunkStart} → ${chunkEnd}`);
 
     // SECURITY: Verify JWT + admin role ONLY for non-continuation requests
-    // Continuations use service role key and are self-invoked
     if (!isContinuation) {
       const authCheck = await verifyAdmin(req);
       if (!authCheck.valid) {
@@ -357,7 +410,7 @@ Deno.serve(async (req) => {
 
     // ============ FORCE CANCEL ALL SYNCS ============
     if (forceCancel) {
-      const { data: cancelledSyncs, error: cancelError } = await supabase
+      const { data: cancelledSyncs } = await supabase
         .from('sync_runs')
         .update({ 
           status: 'cancelled', 
@@ -367,8 +420,6 @@ Deno.serve(async (req) => {
         .eq('source', 'paypal')
         .in('status', ['running', 'continuing'])
         .select('id');
-
-      logger.info('Force cancelled syncs', { count: cancelledSyncs?.length || 0, error: cancelError });
 
       return new Response(
         JSON.stringify({ 
@@ -398,13 +449,12 @@ Deno.serve(async (req) => {
         .select('id');
 
       return new Response(
-        JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
+        JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0 }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
-    // Skip this check for continuations - they're allowed to run alongside the same syncRunId
     if (!syncRunId && !isContinuation) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
 
@@ -447,7 +497,13 @@ Deno.serve(async (req) => {
         .insert({
           source: 'paypal',
           status: 'running',
-          metadata: { fetchAll, startDate, endDate }
+          metadata: { 
+            fetchAll, 
+            originalStartDate, 
+            originalEndDate,
+            totalChunks,
+            currentChunk: chunkIndex + 1
+          }
         })
         .select('id')
         .single();
@@ -459,13 +515,26 @@ Deno.serve(async (req) => {
         );
       }
       syncRunId = syncRun?.id;
-      logger.info(`NEW PAYPAL SYNC RUN: ${syncRunId}`);
+      logger.info(`NEW PAYPAL SYNC RUN: ${syncRunId} (${totalChunks} chunks)`);
     } else {
+      // Update progress
       await supabase
         .from('sync_runs')
         .update({
           status: 'running',
-          checkpoint: { page, lastActivity: new Date().toISOString() }
+          metadata: { 
+            fetchAll, 
+            originalStartDate, 
+            originalEndDate,
+            totalChunks,
+            currentChunk: chunkIndex + 1
+          },
+          checkpoint: { 
+            page, 
+            chunkIndex,
+            totalChunks,
+            lastActivity: new Date().toISOString() 
+          }
         })
         .eq('id', syncRunId);
     }
@@ -479,11 +548,7 @@ Deno.serve(async (req) => {
       logger.error('PayPal auth failed', error instanceof Error ? error : new Error(String(error)));
       await supabase
         .from('sync_runs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
-          error_message: errorMsg
-        })
+        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
         .eq('id', syncRunId);
 
       return new Response(
@@ -492,20 +557,16 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch transactions
+    // Fetch transactions for current chunk
     let result: PayPalPageResult;
     try {
-      result = await fetchPayPalPage(accessToken, startDate, endDate, page);
+      result = await fetchPayPalPage(accessToken, chunkStart, chunkEnd, page);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Fetch failed';
       logger.error('PayPal fetch failed', error instanceof Error ? error : new Error(String(error)));
       await supabase
         .from('sync_runs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
-          error_message: errorMsg
-        })
+        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
         .eq('id', syncRunId);
 
       return new Response(
@@ -514,7 +575,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    logger.info(`PayPal page ${page}/${result.totalPages}: ${result.transactions.length} transactions`);
+    logger.info(`PayPal chunk ${chunkIndex + 1}/${totalChunks}, page ${page}/${result.totalPages}: ${result.transactions.length} transactions`);
 
     // Process transactions
     let paidCount = 0;
@@ -598,56 +659,78 @@ Deno.serve(async (req) => {
       clientsSaved = data?.length || 0;
     }
 
-    // Check if more pages
-    const hasMore = fetchAll && page < result.totalPages;
+    // Check if more pages in current chunk
+    const hasMorePagesInChunk = page < result.totalPages;
+    // Check if more chunks after this one
+    const hasMoreChunks = chunkIndex < totalChunks - 1;
+    const hasMore = fetchAll && (hasMorePagesInChunk || hasMoreChunks);
 
     if (hasMore) {
-      // INCREMENTAL COUNTERS: Read current values before updating
+      // INCREMENTAL COUNTERS
       const { data: currentRun } = await supabase
         .from('sync_runs')
         .select('total_fetched, total_inserted, checkpoint')
         .eq('id', syncRunId)
         .single();
-      
-      // DUPLICATE CHECK: If checkpoint page is ahead of us, another instance processed this
-      const checkpointPage = (currentRun?.checkpoint as { page?: number })?.page || 0;
-      if (checkpointPage > page) {
-        logger.warn(`Skipping duplicate page ${page} - checkpoint already at ${checkpointPage}`, { syncRunId });
-        return new Response(
-          JSON.stringify({
-            success: true,
-            status: 'skipped_duplicate',
-            syncRunId,
-            message: `Page ${page} already processed by another instance`,
-            currentPage: page,
-            checkpointPage,
-            duration_ms: Date.now() - startTime
-          }),
-          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      
+
       const accumulatedFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
       const accumulatedInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
-      
-      // Update counters first
+
       await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
           total_fetched: accumulatedFetched,
-          total_inserted: accumulatedInserted
+          total_inserted: accumulatedInserted,
+          metadata: { 
+            fetchAll, 
+            originalStartDate, 
+            originalEndDate,
+            totalChunks,
+            currentChunk: chunkIndex + 1,
+            currentPage: page,
+            totalPagesInChunk: result.totalPages
+          }
         })
         .eq('id', syncRunId);
 
-      // AUTO-CONTINUATION: Use atomic lock to prevent duplicates
-      await triggerContinuationWithLock(
+      // Determine next step: next page in same chunk, or first page of next chunk
+      let nextPage: number;
+      let nextChunkIndex: number;
+      let nextChunkStart: string;
+      let nextChunkEnd: string;
+
+      if (hasMorePagesInChunk) {
+        // More pages in current chunk
+        nextPage = page + 1;
+        nextChunkIndex = chunkIndex;
+        nextChunkStart = chunkStart;
+        nextChunkEnd = chunkEnd;
+      } else {
+        // Move to next chunk
+        nextPage = 1;
+        nextChunkIndex = chunkIndex + 1;
+        
+        // Recalculate chunk dates
+        const startDate = new Date(originalStartDate);
+        const endDate = new Date(originalEndDate);
+        const chunks = splitIntoChunks(startDate, endDate);
+        nextChunkStart = formatPayPalDate(chunks[nextChunkIndex].start);
+        nextChunkEnd = formatPayPalDate(chunks[nextChunkIndex].end);
+        
+        logger.info(`📦 Moving to next chunk: ${nextChunkIndex + 1}/${totalChunks} (${nextChunkStart} → ${nextChunkEnd})`);
+      }
+
+      await triggerNextChunkOrPage(
         supabase,
         syncRunId!,
-        page + 1,
-        startDate,
-        endDate,
-        page,
+        nextPage,
+        nextChunkStart,
+        nextChunkEnd,
+        nextChunkIndex,
+        totalChunks,
+        originalStartDate,
+        originalEndDate,
         result.totalPages
       );
 
@@ -661,25 +744,26 @@ Deno.serve(async (req) => {
           paid_count: paidCount,
           failed_count: failedCount,
           hasMore: true,
+          currentChunk: chunkIndex + 1,
+          totalChunks,
           currentPage: page,
           totalPages: result.totalPages,
-          nextPage: page + 1,
           duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Complete - use incremental counters
+    // Complete
     const { data: finalRun } = await supabase
       .from('sync_runs')
       .select('total_fetched, total_inserted')
       .eq('id', syncRunId)
       .single();
-    
+
     const finalFetched = (finalRun?.total_fetched || 0) + transactionsSaved;
     const finalInserted = (finalRun?.total_inserted || 0) + transactionsSaved;
-    
+
     await supabase
       .from('sync_runs')
       .update({
@@ -691,7 +775,7 @@ Deno.serve(async (req) => {
       })
       .eq('id', syncRunId);
 
-    logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions in ${Date.now() - startTime}ms`);
+    logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions across ${totalChunks} chunks in ${Date.now() - startTime}ms`);
 
     return new Response(
       JSON.stringify({
@@ -702,6 +786,7 @@ Deno.serve(async (req) => {
         synced_clients: clientsSaved,
         paid_count: paidCount,
         failed_count: failedCount,
+        totalChunks,
         hasMore: false,
         duration_ms: Date.now() - startTime
       }),
@@ -711,10 +796,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
-    
-    // Note: syncRunId and supabase are scoped inside try block
-    // Fatal errors at this level mean we couldn't initialize properly
-    
+
     return new Response(
       JSON.stringify({ success: false, status: 'failed', error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
