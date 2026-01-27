@@ -6,6 +6,9 @@ verify_jwt = false
 [functions.analyze-business]
 verify_jwt = false
 
+[functions.bulk-unify-contacts]
+verify_jwt = false
+
 [functions.cancel-sync]
 verify_jwt = false
 
@@ -61,6 +64,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.ghl-templates]
+verify_jwt = false
+
+[functions.ghl-webhook]
 verify_jwt = false
 
 [functions.merge-staged-imports]
