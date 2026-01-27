@@ -1,166 +1,127 @@
 
-# Plan: Arreglar Smart Recovery y Stripe Sync
+# Plan: Corregir Incompatibilidad RPC unify_identity
 
-## Problemas Detectados
+## 🚨 Problema Principal Detectado
 
-### 1. Smart Recovery 7 días ATASCADO
-- **Sync ID**: `13525ae0-d83b-4751-bdc2-6bd6bd3554fc`
-- **Status**: `running` desde hace 6+ minutos
-- **Procesados**: 0 facturas
-- **Causa**: El bucle no encuentra facturas pero queda en estado "running"
-
-### 2. Bug de Precedencia de Operadores (CRÍTICO)
-**Línea 441 de recover-revenue/index.ts:**
-```javascript
-// BUGGY - mal precedencia
-const hasMore = stripeHasMore || invoicesToProcess.length === 0 && allInvoices.length > 0;
+Tu script Python envía estos parámetros:
+```python
+payload = {
+    "p_source": platform,
+    "p_ghl_contact_id": contact_id if platform == "ghl" else None,  # ❌ INCORRECTO
+    "p_manychat_subscriber_id": contact_id if platform == "manychat" else None,  # ❌ INCORRECTO
+    "p_email": email,
+    "p_phone": phone,
+    "p_full_name": full_name,
+    "p_tracking_data": tracking_data or {}
+}
 ```
 
-El operador `&&` tiene mayor precedencia que `||`, lo que causa:
-- `stripeHasMore` se evalúa primero
-- Luego `(invoicesToProcess.length === 0 && allInvoices.length > 0)` 
-- Si `stripeHasMore = false` y `allInvoices = []`, entonces `hasMore = true` cuando debería ser `false`
+Pero la función RPC en Supabase espera **orden diferente y nombres diferentes**:
+```sql
+unify_identity(
+  p_source text,
+  p_email text,                    -- 2do parámetro
+  p_phone text,                    -- 3ro
+  p_full_name text,                -- 4to
+  p_stripe_customer_id text,       -- 5to
+  p_paypal_customer_id text,       -- 6to
+  p_ghl_contact_id text,           -- 7mo ← tu script lo envía como 2do
+  p_manychat_subscriber_id text,   -- 8vo ← tu script lo envía como 3ro
+  p_tags text[],
+  p_opt_in jsonb,
+  p_tracking_data jsonb
+)
+```
 
-### 3. Stripe Sync ATASCADO (57 minutos)
-- **Sync ID**: `8b02c115-02fb-41ac-b2dd-62d2ab264408`
-- **Status**: `running` pero el proceso background murió
-- **Total**: 1795 transacciones procesadas antes de morir
+## ✅ Estado de Componentes
 
-### 4. Timeout de Smart Recovery Insuficiente
-- El timeout actual es de 10 minutos (línea 340)
-- Debería ser más agresivo (5 minutos) para liberar syncs atascados
+| Componente | Estado | Notas |
+|------------|--------|-------|
+| `unify_identity` RPC | ⚠️ Funciona pero parámetros incompatibles | Orden diferente al esperado |
+| `match_knowledge` RPC | ✅ OK | Acepta `query_embedding`, `match_threshold`, `match_count` |
+| Tabla `knowledge_base` | ✅ OK | Columna `embedding` tipo vector(1536), 163 registros |
+| Índice HNSW | ⚠️ Usa IVFFlat | Funcional pero no es HNSW |
+| Tabla `clients` | ✅ OK | Tiene `full_name`, `lifecycle_stage`, `total_spend`, `tags`, `last_attribution_at` |
+| Tabla `chat_events` | ✅ OK | Tiene `contact_id`, `platform`, `sender`, `message`, `meta` |
 
 ---
 
 ## Solución
 
-### Paso 1: Arreglar Bug de Precedencia (recover-revenue)
+### Opción 1: Modificar tu Script Python (Recomendado)
 
-**Archivo**: `supabase/functions/recover-revenue/index.ts`
+Cambiar el payload para que coincida con Supabase:
 
-```typescript
-// ANTES (línea 441) - BUGGY
-const hasMore = stripeHasMore || invoicesToProcess.length === 0 && allInvoices.length > 0;
-
-// DESPUÉS - CORRECTO
-const hasMore = stripeHasMore || (invoicesToProcess.length === 0 && allInvoices.length > 0);
+```python
+def identify_and_get_context(...):
+    payload = {
+        "p_source": platform,
+        "p_email": email,
+        "p_phone": phone,
+        "p_full_name": full_name,
+        "p_stripe_customer_id": None,
+        "p_paypal_customer_id": None,
+        "p_ghl_contact_id": contact_id if platform == "ghl" else None,
+        "p_manychat_subscriber_id": contact_id if platform == "manychat" else None,
+        "p_tags": None,
+        "p_opt_in": None,
+        "p_tracking_data": tracking_data or {}
+    }
+    identity_res = supabase.rpc("unify_identity", payload).execute()
+    client_db_id = identity_res.data.get("client_id")
 ```
 
-Además, agregar lógica para cerrar cuando no hay facturas:
-```typescript
-// Si no hay facturas en absoluto, cerrar inmediatamente
-if (allInvoices.length === 0) {
-  // Marcar como completado, no hay nada que procesar
-  await supabaseService.from("sync_runs").update({
-    status: "completed",
-    completed_at: new Date().toISOString(),
-  }).eq("id", syncRunId);
-  
-  return Response con hasMore: false
-}
-```
+### Opción 2: Crear Wrapper RPC Compatible
 
-### Paso 2: Timeout Más Agresivo
+Agregar una función RPC `unify_identity_v2` que acepte los parámetros en el orden que tu script envía:
 
-**Archivo**: `supabase/functions/recover-revenue/index.ts`
-
-```typescript
-// ANTES (línea 340)
-const isStale = Date.now() - startedAt > 10 * 60 * 1000; // 10 min
-
-// DESPUÉS
-const isStale = Date.now() - startedAt > 5 * 60 * 1000; // 5 min (más agresivo)
-```
-
-### Paso 3: Limpiar Syncs Atascados en fetch-stripe
-
-**Archivo**: `supabase/functions/fetch-stripe/index.ts`
-
-El código ya tiene auto-cleanup (líneas 696-707) pero el threshold de 3 minutos no es suficiente cuando hay syncs de 57+ minutos. Necesita limpieza más agresiva al iniciar.
-
-### Paso 4: Agregar Mejor Manejo de "No Facturas"
-
-Cuando Stripe retorna 0 facturas en el rango, el sync debe cerrarse inmediatamente como "completed" con mensaje claro.
-
----
-
-## Cambios Específicos
-
-### Archivo 1: `supabase/functions/recover-revenue/index.ts`
-
-| Línea | Cambio |
-|-------|--------|
-| 27 | Reducir batch size para rangos grandes: `const BATCH_SIZE = 15` |
-| 340 | Timeout más agresivo: `5 * 60 * 1000` |
-| 415-420 | Agregar manejo cuando `allInvoices.length === 0` |
-| 441 | Corregir precedencia: agregar paréntesis |
-| 477 | Mejor lógica de cierre |
-
-### Archivo 2: `supabase/functions/fetch-stripe/index.ts`
-
-| Línea | Cambio |
-|-------|--------|
-| 696 | Threshold más agresivo para auto-cleanup: `3 * 60 * 1000` → funciona bien |
-| 705-707 | Logging mejorado |
-
----
-
-## Código Actualizado: recover-revenue/index.ts
-
-### Sección 1: Manejo de "Sin Facturas" (después de línea 420)
-```typescript
-// Si no hay facturas en absoluto para este rango, cerrar inmediatamente
-if (allInvoices.length === 0) {
-  console.log(`📭 No invoices found in range ${hours_lookback}h. Marking as completed.`);
-  
-  await supabaseService
-    .from("sync_runs")
-    .update({
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      metadata: { ...existingMeta, no_invoices_found: true },
-      checkpoint: { recovered_amount: 0, failed_amount: 0, skipped_amount: 0, processed: 0 },
-    })
-    .eq("id", syncRunId);
-
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      status: "completed",
-      syncRunId,
-      processed: 0,
-      hasMore: false,
-      message: `No hay facturas abiertas en las últimas ${hours_lookback} horas`,
-      // ... rest of response fields with 0s
-    }),
-    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+```sql
+CREATE OR REPLACE FUNCTION public.unify_identity_v2(
+  p_source text,
+  p_ghl_contact_id text DEFAULT NULL,
+  p_manychat_subscriber_id text DEFAULT NULL,
+  p_email text DEFAULT NULL,
+  p_phone text DEFAULT NULL,
+  p_full_name text DEFAULT NULL,
+  p_tracking_data jsonb DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- Delegar a la función principal con el orden correcto
+  RETURN unify_identity(
+    p_source,
+    p_email,
+    p_phone,
+    p_full_name,
+    NULL,  -- stripe
+    NULL,  -- paypal
+    p_ghl_contact_id,
+    p_manychat_subscriber_id,
+    NULL,  -- tags
+    NULL,  -- opt_in
+    p_tracking_data
   );
-}
-```
-
-### Sección 2: Corregir Precedencia (línea 441)
-```typescript
-// CORREGIDO: Paréntesis explícitos
-const hasMore = stripeHasMore || (invoicesToProcess.length === 0 && allInvoices.length > 0);
-```
-
-### Sección 3: Timeout Agresivo (línea 340)
-```typescript
-// Cambiar de 10 min a 5 min
-const isStale = Date.now() - startedAt > 5 * 60 * 1000;
+END;
+$$;
 ```
 
 ---
 
-## Resultado Esperado
+## Plan de Ejecución
 
-Después de aplicar estos cambios:
+### Paso 1: Crear wrapper `unify_identity_v2`
+Agregar la función SQL que traduce los parámetros de tu script al formato interno.
 
-1. **Smart Recovery 7/15/30/60 días** funcionará correctamente
-2. **Si no hay facturas** → Se cierra inmediatamente como "completed"
-3. **Syncs atascados** → Se limpian automáticamente después de 5 minutos
-4. **El frontend** recibirá `hasMore: false` correctamente cuando no hay más
-5. **Stripe Sync** no bloqueará nuevos syncs
+### Paso 2: Verificar permisos RLS
+Asegurar que `chat_events` permita INSERT desde el backend de Python.
+
+### Paso 3: Testing
+- Probar con un contacto de prueba desde ManyChat
+- Probar con un contacto de prueba desde GHL
 
 ---
 
@@ -168,22 +129,38 @@ Después de aplicar estos cambios:
 
 | Archivo | Acción |
 |---------|--------|
-| `supabase/functions/recover-revenue/index.ts` | MODIFICAR - Corregir bugs |
-| `supabase/functions/fetch-stripe/index.ts` | VERIFICAR - Ya tiene auto-cleanup |
+| Nueva migración SQL | Crear función `unify_identity_v2` |
 
 ---
 
-## SQL de Limpieza Inmediata (Ejecutar ahora)
+## Respuesta JSON Esperada
 
-Para desbloquear los syncs atascados actuales:
-
-```sql
-UPDATE sync_runs 
-SET status = 'cancelled', 
-    completed_at = now(), 
-    error_message = 'Limpieza manual - sync atascado'
-WHERE status IN ('running', 'continuing')
-  AND started_at < now() - interval '5 minutes';
+Tu script espera:
+```json
+{"client_id": "uuid-aqui"}
 ```
 
-Esto liberará ambos syncs y permitirá nuevos intentos inmediatamente.
+La función actual retorna:
+```json
+{
+  "success": true,
+  "client_id": "uuid-aqui",
+  "action": "created|updated",
+  "match_by": "email|phone|ghl_contact_id|etc",
+  "source": "ghl|manychat"
+}
+```
+
+Tu script debería usar: `identity_res.data.get("client_id")` - Esto ya es compatible.
+
+---
+
+## Verificación de match_knowledge
+
+La función está correcta:
+- Acepta `query_embedding` (vector 1536)
+- Acepta `match_threshold` (float) - tu script usa 0.30 ✅
+- Acepta `match_count` (int) - tu script usa 5 ✅
+- Retorna `id`, `content`, `similarity` ✅
+
+La base tiene 163 documentos con embeddings listos.
