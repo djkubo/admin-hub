@@ -588,12 +588,15 @@ async function runFullInvoiceSync(
       cursor = result.nextCursor;
       hasMore = result.hasMore && cursor !== null;
       
-      // Update progress in sync_runs
+      // Update progress in sync_runs with lastActivity for stale detection
       await supabase.from('sync_runs').update({
         status: hasMore ? 'continuing' : 'completed',
         total_fetched: totalFetched,
         total_inserted: totalInserted,
-        checkpoint: hasMore ? { cursor } : null,
+        checkpoint: hasMore ? { 
+          cursor,
+          lastActivity: new Date().toISOString() // Track activity for stale detection
+        } : null,
         completed_at: hasMore ? null : new Date().toISOString(),
         metadata: { mode, startDate, endDate, stats, pageCount: (currentRun?.metadata?.pageCount || 0) + pageCount }
       }).eq('id', syncRunId);

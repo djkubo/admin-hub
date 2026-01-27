@@ -18,6 +18,23 @@ import type {
   SyncContactsResponse
 } from '@/types/edgeFunctions';
 
+// Helper to safely format error messages (avoid [object Object])
+const formatError = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const obj = error as Record<string, unknown>;
+    if (obj.message) return String(obj.message);
+    if (obj.error) return String(obj.error);
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Error desconocido';
+    }
+  }
+  return 'Error desconocido';
+};
+
 export function APISyncPanel() {
   const queryClient = useQueryClient();
   const [stripeSyncing, setStripeSyncing] = useState(false);
@@ -577,7 +594,7 @@ export function APISyncPanel() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      const errorMessage = formatError(error);
       setInvoicesResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando facturas: ${errorMessage}`);
       setInvoicesSyncing(false);
