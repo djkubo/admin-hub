@@ -537,7 +537,7 @@ async function handleInvoicePaid(supabase: SupabaseClient, stripe: Stripe, invoi
 }
 
 // ============================================
-// HANDLER: Invoice Payment Failed - ENHANCED
+// HANDLER: Invoice Payment Failed - ENHANCED + RECOVERY QUEUE
 // ============================================
 async function handleInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stripe, invoice: Stripe.Invoice) {
   console.log(`📄 Processing invoice.payment_failed: ${invoice.id}`);
@@ -554,6 +554,32 @@ async function handleInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stri
 
   const { planName, planInterval, productName } = extractPlanInfo(invoice);
 
+  // Get the last payment error to determine failure reason
+  let failureReason = 'unknown';
+  let failureMessage = 'Pago fallido';
+  
+  if (invoice.payment_intent) {
+    try {
+      const piId = typeof invoice.payment_intent === 'string' ? invoice.payment_intent : invoice.payment_intent.id;
+      const pi = await stripe.paymentIntents.retrieve(piId);
+      if (pi.last_payment_error) {
+        failureReason = pi.last_payment_error.code || 'unknown';
+        const declineMap: Record<string, string> = {
+          'insufficient_funds': 'Fondos insuficientes',
+          'card_declined': 'Tarjeta rechazada',
+          'expired_card': 'Tarjeta expirada',
+          'incorrect_cvc': 'CVC incorrecto',
+          'processing_error': 'Error de procesamiento',
+          'do_not_honor': 'No aceptar',
+        };
+        failureMessage = declineMap[failureReason] || pi.last_payment_error.message || failureReason;
+      }
+    } catch (piError) {
+      console.warn('Could not fetch payment intent for failure reason:', piError);
+    }
+  }
+
+  // Upsert invoice record
   const { error } = await supabase.from('invoices').upsert({
     stripe_invoice_id: invoice.id,
     stripe_customer_id: invoice.customer ? String(invoice.customer) : null,
@@ -584,6 +610,118 @@ async function handleInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stri
 
   if (error) console.error('Error upserting failed invoice:', error);
   else console.log(`✅ Failed invoice logged: ${invoice.id}`);
+
+  // ============================================
+  // RECOVERY QUEUE INTEGRATION
+  // ============================================
+  
+  // Only add to recovery queue for recoverable failures
+  const recoverableReasons = ['insufficient_funds', 'card_declined', 'processing_error', 'do_not_honor', 'unknown'];
+  const shouldQueueForRecovery = recoverableReasons.includes(failureReason);
+
+  if (shouldQueueForRecovery && customerDetails.stripeCustomerId) {
+    console.log(`🔄 Adding to recovery queue: ${invoice.id} (${failureReason})`);
+    
+    // Calculate retry_at (48 hours from now)
+    const retryAt = new Date();
+    retryAt.setHours(retryAt.getHours() + 48);
+
+    // Check if already in queue
+    const { data: existingQueue } = await supabase
+      .from('recovery_queue')
+      .select('id, status')
+      .eq('invoice_id', invoice.id)
+      .single();
+
+    if (existingQueue && ['recovered', 'cancelled'].includes(existingQueue.status)) {
+      console.log(`ℹ️ Invoice ${invoice.id} already processed in recovery queue, skipping`);
+    } else {
+      // Generate payment link for the customer
+      let portalLinkToken: string | null = null;
+      try {
+        const linkResponse = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-payment-link`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+          },
+          body: JSON.stringify({
+            stripe_customer_id: customerDetails.stripeCustomerId,
+            invoice_id: invoice.id,
+            client_id: clientId,
+            customer_email: invoice.customer_email || customerDetails.email,
+            customer_name: invoice.customer_name || customerDetails.name,
+          }),
+        });
+
+        if (linkResponse.ok) {
+          const linkResult = await linkResponse.json();
+          portalLinkToken = linkResult.token;
+          console.log(`🔗 Payment link generated: ${linkResult.url}`);
+        }
+      } catch (linkError) {
+        console.warn('Could not generate payment link:', linkError);
+      }
+
+      // Upsert into recovery queue
+      const { error: queueError } = await supabase.from('recovery_queue').upsert({
+        invoice_id: invoice.id,
+        client_id: clientId,
+        stripe_customer_id: customerDetails.stripeCustomerId,
+        customer_email: (invoice.customer_email || customerDetails.email)?.toLowerCase(),
+        customer_phone: customerDetails.phone,
+        customer_name: invoice.customer_name || customerDetails.name,
+        amount_due: invoice.amount_due || 0,
+        currency: invoice.currency?.toLowerCase() || 'usd',
+        failure_reason: failureReason,
+        failure_message: failureMessage,
+        retry_at: retryAt.toISOString(),
+        status: 'pending',
+        portal_link_token: portalLinkToken,
+      }, { onConflict: 'invoice_id' });
+
+      if (queueError) {
+        console.error('Error adding to recovery queue:', queueError);
+      } else {
+        console.log(`✅ Added to recovery queue: ${invoice.id}`);
+        
+        // Send initial notification if phone available
+        if (customerDetails.phone && portalLinkToken) {
+          try {
+            const baseUrl = Deno.env.get('APP_URL') || 'https://zen-admin-joy.lovable.app';
+            const portalLink = `${baseUrl}/update-card?token=${portalLinkToken}`;
+            
+            await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/send-sms`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+              },
+              body: JSON.stringify({
+                to: customerDetails.phone,
+                message: `Hola ${invoice.customer_name || customerDetails.name || 'Cliente'} 👋\n\nTu pago de $${((invoice.amount_due || 0) / 100).toFixed(2)} no se procesó (${failureMessage}).\n\nPara evitar la suspensión de tu servicio, actualiza tu método de pago aquí:\n${portalLink}\n\n¿Necesitas ayuda? Responde a este mensaje.`,
+                client_id: clientId,
+              }),
+            });
+            
+            // Mark notification as sent
+            await supabase
+              .from('recovery_queue')
+              .update({ 
+                notification_sent_at: new Date().toISOString(),
+                notification_channel: 'sms',
+                status: 'notified',
+              })
+              .eq('invoice_id', invoice.id);
+              
+            console.log(`📱 Initial recovery notification sent to ${customerDetails.phone}`);
+          } catch (smsError) {
+            console.warn('Could not send SMS notification:', smsError);
+          }
+        }
+      }
+    }
+  }
 }
 
 // ============================================
