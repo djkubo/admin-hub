@@ -207,18 +207,42 @@ function formatPayPalDate(date: Date): string {
   return iso.replace(/\.\d{3}Z$/, 'Z');
 }
 
-// ============= AUTO-CONTINUATION =============
+// ============= AUTO-CONTINUATION WITH ATOMIC LOCK =============
 
-function triggerContinuation(
+async function triggerContinuationWithLock(
+  supabase: SupabaseClient,
   syncRunId: string,
   nextPage: number,
   startDate: string,
-  endDate: string
-): void {
+  endDate: string,
+  currentPage: number,
+  totalPages: number
+): Promise<boolean> {
+  // ATOMIC LOCK: Update checkpoint only if page hasn't changed
+  // This prevents duplicate continuations from racing
+  const { data: updated, error } = await supabase
+    .from('sync_runs')
+    .update({
+      checkpoint: {
+        page: nextPage, // Mark that we're moving to next page
+        lastActivity: new Date().toISOString(),
+        totalPages
+      }
+    })
+    .eq('id', syncRunId)
+    .eq('status', 'continuing') // Only if still in continuing status
+    .select('id')
+    .single();
+
+  if (error || !updated) {
+    logger.warn(`Continuation lock failed - another instance may have taken over`, { syncRunId, nextPage, error: error?.message });
+    return false;
+  }
+
+  // Lock acquired - safe to trigger continuation
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-  // Fire-and-forget: self-invoke for next page
   fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
     method: 'POST',
     headers: {
@@ -233,9 +257,10 @@ function triggerContinuation(
       endDate,
       _continuation: true
     })
-  }).catch(err => logger.error('Auto-continuation failed', err));
+  }).catch(err => logger.error('Auto-continuation fetch failed', err));
 
-  logger.info(`Triggered auto-continuation for page ${nextPage}`, { syncRunId });
+  logger.info(`✅ Triggered auto-continuation for page ${nextPage}/${totalPages}`, { syncRunId });
+  return true;
 }
 
 // ============= MAIN HANDLER =============
@@ -580,29 +605,51 @@ Deno.serve(async (req) => {
       // INCREMENTAL COUNTERS: Read current values before updating
       const { data: currentRun } = await supabase
         .from('sync_runs')
-        .select('total_fetched, total_inserted')
+        .select('total_fetched, total_inserted, checkpoint')
         .eq('id', syncRunId)
         .single();
+      
+      // DUPLICATE CHECK: If checkpoint page is ahead of us, another instance processed this
+      const checkpointPage = (currentRun?.checkpoint as { page?: number })?.page || 0;
+      if (checkpointPage > page) {
+        logger.warn(`Skipping duplicate page ${page} - checkpoint already at ${checkpointPage}`, { syncRunId });
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: 'skipped_duplicate',
+            syncRunId,
+            message: `Page ${page} already processed by another instance`,
+            currentPage: page,
+            checkpointPage,
+            duration_ms: Date.now() - startTime
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       
       const accumulatedFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
       const accumulatedInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
       
+      // Update counters first
       await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
           total_fetched: accumulatedFetched,
-          total_inserted: accumulatedInserted,
-          checkpoint: {
-            page,
-            totalPages: result.totalPages,
-            lastActivity: new Date().toISOString()
-          }
+          total_inserted: accumulatedInserted
         })
         .eq('id', syncRunId);
 
-      // AUTO-CONTINUATION: Trigger next page immediately
-      triggerContinuation(syncRunId!, page + 1, startDate, endDate);
+      // AUTO-CONTINUATION: Use atomic lock to prevent duplicates
+      await triggerContinuationWithLock(
+        supabase,
+        syncRunId!,
+        page + 1,
+        startDate,
+        endDate,
+        page,
+        result.totalPages
+      );
 
       return new Response(
         JSON.stringify({
