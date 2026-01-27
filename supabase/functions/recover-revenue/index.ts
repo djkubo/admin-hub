@@ -22,9 +22,9 @@ function getCorsHeaders(origin: string | null) {
 const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired"];
 // Skip invoices that are already resolved or uncollectible  
 const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
-const API_DELAY_MS = 150;
-const BATCH_SIZE = 10; // Process 10 invoices per invocation for reliability
-const MAX_INVOICES_PER_CALL = 20; // Maximum invoices to process in a single call
+const API_DELAY_MS = 80; // Mínimo delay para evitar rate limits
+const BATCH_SIZE = 3; // Procesar 3 facturas por invocación (evita timeout)
+const MAX_INVOICES_PER_CALL = 3; // Máximo 3 facturas para terminar en <60s
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
