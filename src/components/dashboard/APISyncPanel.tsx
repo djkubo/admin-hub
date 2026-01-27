@@ -49,7 +49,7 @@ export function APISyncPanel() {
   const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
   const [invoicesResult, setInvoicesResult] = useState<SyncResult | null>(null);
   const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number; status?: string } | null>(null);
-  const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number; page?: number; totalPages?: number } | null>(null);
+  const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number; page?: number; totalPages?: number; chunkIndex?: number; totalChunks?: number } | null>(null);
   const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
   const [ghlProgress, setGhlProgress] = useState<{ current: number; total: number } | null>(null);
   const [manychatProgress, setManychatProgress] = useState<{ current: number; total: number } | null>(null);
@@ -281,15 +281,30 @@ export function APISyncPanel() {
           return;
         }
         
-        const checkpoint = data.checkpoint as { page?: number; totalPages?: number } | null;
+        const checkpoint = data.checkpoint as { page?: number; totalPages?: number; chunkIndex?: number; totalChunks?: number } | null;
         
         if (data.status === 'running' || data.status === 'continuing') {
-          setPaypalProgress({ 
+          const progressInfo = { 
             current: data.total_fetched || 0, 
             total: 0,
             page: checkpoint?.page,
-            totalPages: checkpoint?.totalPages
+            totalPages: checkpoint?.totalPages,
+            chunkIndex: checkpoint?.chunkIndex,
+            totalChunks: checkpoint?.totalChunks
+          };
+          setPaypalProgress(progressInfo);
+          
+          // Show detailed progress in toast
+          const chunkInfo = checkpoint?.totalChunks 
+            ? `Chunk ${(checkpoint?.chunkIndex || 0) + 1}/${checkpoint.totalChunks}` 
+            : '';
+          const pageInfo = checkpoint?.page ? `Pág ${checkpoint.page}` : '';
+          const detailInfo = [chunkInfo, pageInfo].filter(Boolean).join(', ');
+          
+          toast.info(`PayPal: ${(data.total_fetched || 0).toLocaleString()} transacciones${detailInfo ? ` (${detailInfo})` : ''}...`, { 
+            id: 'paypal-sync' 
           });
+          
           paypalPollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setPaypalProgress(null);
@@ -808,15 +823,22 @@ export function APISyncPanel() {
             <div className="flex items-center gap-2 text-sm text-blue-400">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>PayPal: {paypalProgress.current.toLocaleString()} transacciones sincronizadas</span>
-              {paypalProgress.page && paypalProgress.totalPages && (
-                <span className="text-xs text-gray-500">
-                  (página {paypalProgress.page}/{paypalProgress.totalPages})
-                </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              {paypalProgress.chunkIndex !== undefined && paypalProgress.totalChunks && (
+                <Badge variant="outline" className="text-blue-300 border-blue-500/50">
+                  Chunk {paypalProgress.chunkIndex + 1}/{paypalProgress.totalChunks}
+                </Badge>
+              )}
+              {paypalProgress.page && (
+                <Badge variant="outline" className="text-blue-300 border-blue-500/50">
+                  Página {paypalProgress.page}
+                </Badge>
               )}
             </div>
             <Progress 
-              value={100} 
-              className="h-2 animate-pulse"
+              value={paypalProgress.totalChunks ? ((paypalProgress.chunkIndex || 0) + 1) / paypalProgress.totalChunks * 100 : 50} 
+              className="h-2"
             />
             <p className="text-xs text-gray-400">
               Procesando en background... Actualizando cada 3s
