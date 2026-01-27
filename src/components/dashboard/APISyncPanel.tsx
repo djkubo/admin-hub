@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
+import { supabase } from '@/integrations/supabase/client';
 import type { 
   SyncResult,
   FetchStripeBody,
@@ -124,54 +125,107 @@ export function APISyncPanel() {
     return allResults;
   };
 
+  // Polling ref to allow cleanup
+  const stripePollingRef = useRef<number | null>(null);
+
+  // Poll sync_runs for progress updates
+  const pollSyncProgress = useCallback(async (syncRunId: string, source: 'stripe') => {
+    // Clear any existing polling
+    if (stripePollingRef.current) {
+      clearTimeout(stripePollingRef.current);
+    }
+
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sync_runs')
+          .select('status, total_fetched, total_inserted')
+          .eq('id', syncRunId)
+          .single();
+        
+        if (error || !data) {
+          console.error('Polling error:', error);
+          return;
+        }
+        
+        if (data.status === 'running' || data.status === 'continuing') {
+          setStripeProgress({ current: data.total_fetched || 0, total: 0 });
+          toast.info(`Stripe: ${(data.total_fetched || 0).toLocaleString()} transacciones...`, { 
+            id: 'stripe-sync' 
+          });
+          stripePollingRef.current = window.setTimeout(poll, 3000);
+        } else if (data.status === 'completed') {
+          setStripeProgress(null);
+          setStripeResult({ 
+            success: true, 
+            synced_transactions: data.total_inserted ?? 0,
+            message: 'Sincronización completada'
+          });
+          toast.success(`Stripe: ${(data.total_inserted ?? 0).toLocaleString()} transacciones sincronizadas`, {
+            id: 'stripe-sync'
+          });
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          setStripeSyncing(false);
+        } else if (data.status === 'error' || data.status === 'cancelled') {
+          setStripeProgress(null);
+          setStripeResult({ success: false, error: 'Sync failed or cancelled' });
+          toast.error('Stripe: Sincronización falló', { id: 'stripe-sync' });
+          setStripeSyncing(false);
+        }
+      } catch (err) {
+        console.error('Poll error:', err);
+      }
+    };
+    
+    poll();
+  }, [queryClient]);
+
   const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
     setStripeSyncing(true);
     setStripeResult(null);
     
     try {
-      if (mode === 'last24h') {
-        const now = new Date();
-        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        
-        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-          'fetch-stripe', 
-          { 
-            fetchAll: true,
-            startDate: yesterday.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
-
-        setStripeResult(data);
-        
-        if (data.success) {
-          toast.success(`Stripe (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+      let startDate: Date;
+      const endDate = new Date();
+      
+      // Calculate date range based on mode
+      switch (mode) {
+        case 'last24h':
+          startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case 'last31d':
+          startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
+          break;
+        case 'all6months':
+          startDate = new Date(endDate.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
+          break;
+        case 'allHistory':
+        default:
+          startDate = new Date(endDate.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
+          break;
+      }
+      
+      // ONE single call - backend handles all pagination in background
+      const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+        'fetch-stripe', 
+        { 
+          fetchAll: true,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString()
         }
-      } else if (mode === 'last31d') {
-        const now = new Date();
-        const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
-        
-        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-          'fetch-stripe', 
-          { 
-            fetchAll: true,
-            startDate: startDate.toISOString(),
-            endDate: now.toISOString()
-          }
-        );
+      );
 
+      // Check if it's running in background
+      if (data.status === 'running' && data.syncRunId) {
+        toast.info('Stripe: Sincronización iniciada en background...', { id: 'stripe-sync' });
+        pollSyncProgress(data.syncRunId, 'stripe');
+        // Don't setStripeSyncing(false) - polling will handle it
+        return;
+      } else if (data.success) {
         setStripeResult(data);
-        
-        if (data.success) {
-          toast.success(`Stripe (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
-        }
-      } else if (mode === 'all6months') {
-        const results = await syncInChunks('stripe', 0.5, setStripeResult, setStripeProgress);
-        toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
-      } else if (mode === 'allHistory') {
-        // Sync last 3 years - this covers most business histories
-        const results = await syncInChunks('stripe', 3, setStripeResult, setStripeProgress);
-        toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
+        const modeLabel = mode === 'last24h' ? '24h' : mode === 'last31d' ? '31 días' : mode === 'all6months' ? '6 meses' : 'historial completo';
+        toast.success(`Stripe (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
       
       // Refresh all data
@@ -184,8 +238,11 @@ export function APISyncPanel() {
       setStripeResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando Stripe: ${errorMessage}`);
     } finally {
-      setStripeSyncing(false);
-      setStripeProgress(null);
+      // Only set syncing to false if not polling
+      if (!stripePollingRef.current) {
+        setStripeSyncing(false);
+        setStripeProgress(null);
+      }
     }
   };
 
@@ -537,14 +594,14 @@ export function APISyncPanel() {
           <div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/30 space-y-2">
             <div className="flex items-center gap-2 text-sm text-purple-400">
               <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Stripe: Mes {stripeProgress.current}/{stripeProgress.total}</span>
+              <span>Stripe: {stripeProgress.current.toLocaleString()} transacciones sincronizadas</span>
             </div>
             <Progress 
-              value={(stripeProgress.current / stripeProgress.total) * 100} 
-              className="h-2"
+              value={100} 
+              className="h-2 animate-pulse"
             />
             <p className="text-xs text-gray-400">
-              Procesando... {stripeProgress.current} de {stripeProgress.total} períodos
+              Procesando en background... Actualizando cada 3s
             </p>
           </div>
         )}
@@ -893,7 +950,7 @@ export function APISyncPanel() {
         </Button>
 
         <p className="text-xs text-gray-500 text-center">
-          💡 "Todo el Historial" sincroniza los últimos 3 años en bloques mensuales para evitar timeouts
+          💡 Backend procesa todo el historial automáticamente con paginación interna
         </p>
       </CardContent>
     </Card>
