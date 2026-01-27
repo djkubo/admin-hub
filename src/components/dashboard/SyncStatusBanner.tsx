@@ -40,7 +40,7 @@ export function SyncStatusBanner() {
       .in("status", ["running", "continuing"])
       .order("started_at", { ascending: false });
 
-    // Separate active vs stale
+    // Separate active vs stale - improved detection using multiple signals
     const activeSyncs: SyncRun[] = [];
     const staleSyncsList: SyncRun[] = [];
 
@@ -49,11 +49,17 @@ export function SyncStatusBanner() {
         ? sync.checkpoint as Record<string, unknown>
         : null;
 
+      // Use lastActivity from checkpoint, or fall back to started_at
       const lastActivity = checkpoint?.lastActivity
         ? new Date(checkpoint.lastActivity as string).getTime()
         : new Date(sync.started_at).getTime();
 
-      if (now - lastActivity > STALE_THRESHOLD_MS) {
+      // Additional check: if total_fetched is high and recently updated, consider active
+      // This catches cases where background sync is processing but lastActivity wasn't set
+      const isRecentlyActive = (sync.total_fetched && sync.total_fetched > 0) && 
+        (now - lastActivity < STALE_THRESHOLD_MS * 2); // More lenient for high-volume syncs
+
+      if (now - lastActivity > STALE_THRESHOLD_MS && !isRecentlyActive) {
         staleSyncsList.push(sync);
       } else {
         activeSyncs.push(sync);
