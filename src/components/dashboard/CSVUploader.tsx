@@ -652,121 +652,71 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             toast.warning(`${file.name}: ${manychatResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_payments') {
-          // For large Stripe Payments CSVs (> 10MB), use Edge Function with chunking
+          // ALWAYS use Edge Function for Stripe Payments (unified_payments.csv)
           const lineCount = text.split('\n').length;
-          const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
+          
+          toast.info(`💳 Procesando Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
+          
+          const { ok, result: processingResult, error } = await processInChunks(text, 'stripe_payments', file.name);
 
-          if (useEdgeFunction) {
-            toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
-            
-            const { ok, result: processingResult, error } = await processInChunks(text, 'stripe_payments', file.name);
-
-            if (!ok || !processingResult) {
-              setFiles(prev => prev.map((f, idx) => 
-                idx === originalIndex ? { ...f, status: 'error' } : f
-              ));
-              toast.error(`Error procesando CSV: ${error}`);
-              continue;
-            }
-
+          if (!ok || !processingResult) {
             setFiles(prev => prev.map((f, idx) => 
-              idx === originalIndex ? { 
-                ...f, 
-                status: 'done' as const, 
-                result: processingResult,
-                stripePaymentsStats: {
-                  totalAmount: 0,
-                  uniqueCustomers: processingResult.clientsCreated || 0,
-                  refundedCount: 0
-                }
-              } : f
+              idx === originalIndex ? { ...f, status: 'error' } : f
             ));
-            toast.success(
-              `${file.name}: ${processingResult.transactionsCreated || 0} transacciones importadas. ` +
-              `${processingResult.clientsCreated || 0} clientes creados/actualizados`
-            );
-          } else {
-            // Process Stripe Payments (unified_payments.csv) locally
-            const paymentsResult = await processStripePaymentsCSV(text);
+            toast.error(`Error procesando CSV: ${error}`);
+            continue;
+          }
+
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
               ...f, 
-              status: 'done', 
-              result: paymentsResult,
+              status: 'done' as const, 
+              result: processingResult,
               stripePaymentsStats: {
-                totalAmount: paymentsResult.totalAmountCents,
-                uniqueCustomers: paymentsResult.uniqueCustomers,
-                refundedCount: paymentsResult.refundedCount
+                totalAmount: 0,
+                uniqueCustomers: processingResult.clientsCreated || 0,
+                refundedCount: 0
               }
             } : f
           ));
           toast.success(
-            `${file.name}: ${paymentsResult.transactionsCreated} transacciones importadas. ` +
-            `${paymentsResult.uniqueCustomers} clientes únicos. ` +
-            `Total: $${(paymentsResult.totalAmountCents / 100).toLocaleString()}`
+            `✅ ${file.name}: ${processingResult.transactionsCreated || 0} transacciones importadas. ` +
+            `${processingResult.clientsCreated || 0} clientes creados/actualizados`
           );
           
-            if (paymentsResult.refundedCount > 0) {
-              toast.info(`📋 ${paymentsResult.refundedCount} transacciones con reembolsos`);
-            }
-            
-            if (paymentsResult.errors.length > 0) {
-              toast.warning(`${file.name}: ${paymentsResult.errors.length} errores`);
-            }
+          if (processingResult.errors?.length > 0) {
+            toast.warning(`⚠️ ${processingResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_customers') {
-          // Use Edge Function for Stripe Customers (LTV) with chunking
+          // ALWAYS use Edge Function for Stripe Customers (LTV)
           const lineCount = text.split('\n').length;
-          const useEdgeFunction = fileSizeMB > 5 || lineCount > 10000;
+          
+          toast.info(`👤 Procesando Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-          if (useEdgeFunction) {
-            toast.info(`Procesando CSV de Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
+          const { ok, result: customerResult, error } = await processInChunks(text, 'stripe_customers', file.name);
 
-            const { ok, result: customerResult, error } = await processInChunks(text, 'stripe_customers', file.name);
-
-            if (!ok || !customerResult) {
-              setFiles(prev => prev.map((f, idx) => 
-                idx === originalIndex ? { ...f, status: 'error' } : f
-              ));
-              toast.error(`Error procesando CSV: ${error}`);
-              continue;
-            }
-
+          if (!ok || !customerResult) {
             setFiles(prev => prev.map((f, idx) => 
-              idx === originalIndex ? {
-                ...f,
-                status: 'done' as const,
-                result: customerResult,
-                duplicatesResolved: 0
-              } : f
+              idx === originalIndex ? { ...f, status: 'error' } : f
             ));
-            toast.success(
-              `${file.name}: ${customerResult.clientsUpdated || 0} clientes actualizados con LTV`
-            );
-          } else {
-            // Process Stripe Customers (LTV Master Data) locally
-            const customerResult = await processStripeCustomersCSV(text);
-            setFiles(prev => prev.map((f, idx) => 
-              idx === originalIndex ? { 
-                ...f, 
-                status: 'done', 
-                result: customerResult,
-                duplicatesResolved: customerResult.duplicatesResolved
-              } : f
-            ));
-            toast.success(
-              `${file.name}: ${customerResult.clientsUpdated} clientes actualizados con LTV. ` +
-              `${customerResult.duplicatesResolved} duplicados resueltos. ` +
-              `Total LTV: $${(customerResult.totalLTV / 100).toFixed(2)}`
-            );
+            toast.error(`Error procesando CSV: ${error}`);
+            continue;
+          }
 
-            if (customerResult.delinquentCount > 0) {
-              toast.warning(`⚠️ ${customerResult.delinquentCount} clientes morosos detectados`);
-            }
-
-            if (customerResult.errors.length > 0) {
-              toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
-            }
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
+              result: customerResult,
+              duplicatesResolved: 0
+            } : f
+          ));
+          toast.success(
+            `✅ ${file.name}: ${customerResult.clientsUpdated || 0} clientes actualizados con LTV`
+          );
+          
+          if (customerResult.errors?.length > 0) {
+            toast.warning(`⚠️ ${customerResult.errors.length} errores`);
           }
         } else if (file.type === 'web') {
           // Process web users via Edge Function with chunking (same as other types)
