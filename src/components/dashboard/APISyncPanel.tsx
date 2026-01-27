@@ -299,24 +299,41 @@ export function APISyncPanel() {
     }
   };
 
+  // Extended response for GHL stage-only mode
+  interface GHLSyncResponse extends StandardSyncResponse {
+    staged?: number;
+    stageOnly?: boolean;
+    nextStartAfterId?: string | null;
+    nextStartAfter?: number | null;
+  }
+
   const syncGHL = async () => {
     setGhlSyncing(true);
     setGhlResult(null);
     
     try {
       let totalProcessed = 0;
+      let totalStaged = 0;
       let hasMore = true;
-      let offset: number | undefined = undefined;
+      let startAfterId: string | null = null;
+      let startAfter: number | null = null;
       let syncRunId: string | undefined = undefined;
       let page = 0;
 
       // Paginated sync loop - handles 150k+ contacts
+      // Using stageOnly mode for "stage first, merge later" architecture
       while (hasMore) {
         page++;
         
-        const data = await invokeWithAdminKey<StandardSyncResponse>(
+        const data = await invokeWithAdminKey<GHLSyncResponse>(
           'sync-ghl', 
-          { dry_run: false, offset, syncRunId }
+          { 
+            dry_run: false, 
+            stageOnly: true, // Stage only - no immediate merge
+            startAfterId,
+            startAfter,
+            syncRunId 
+          }
         );
 
         if (!data?.ok) {
@@ -331,17 +348,24 @@ export function APISyncPanel() {
 
         syncRunId = data.syncRunId;
         totalProcessed += data.processed ?? 0;
+        totalStaged += data.staged ?? data.processed ?? 0;
         
         hasMore = data.hasMore ?? false;
-        offset = data.nextCursor ? parseInt(data.nextCursor) : undefined;
+        startAfterId = data.nextStartAfterId ?? null;
+        startAfter = data.nextStartAfter ?? null;
 
-        // Progress toast every 10 pages
-        if (page % 10 === 0) {
-          toast.info(`GHL: ${totalProcessed} contactos procesados...`, { id: 'ghl-progress' });
+        // Progress toast every 5 pages
+        if (page % 5 === 0) {
+          toast.info(`GHL: ${totalStaged} contactos descargados...`, { id: 'ghl-progress' });
         }
 
-        // Safety limit: 1500 pages = 150k contacts
-        if (page >= 1500) {
+        // Small delay between pages to avoid rate limits
+        if (hasMore) {
+          await new Promise(r => setTimeout(r, 150));
+        }
+
+        // Safety limit: 2000 pages = 200k contacts
+        if (page >= 2000) {
           console.log('GHL sync reached page limit');
           break;
         }
@@ -349,11 +373,11 @@ export function APISyncPanel() {
 
       setGhlResult({
         success: true,
-        total_fetched: totalProcessed,
-        message: `${totalProcessed} contactos sincronizados`
+        total_fetched: totalStaged,
+        message: `${totalStaged} contactos descargados a staging`
       });
       
-      toast.success(`GoHighLevel: ${totalProcessed} contactos sincronizados`, { id: 'ghl-progress' });
+      toast.success(`GoHighLevel: ${totalStaged} contactos descargados (listos para unificar)`, { id: 'ghl-progress' });
       
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });

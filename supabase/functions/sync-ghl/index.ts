@@ -13,7 +13,7 @@ const rateLimiter = RATE_LIMITERS.GHL;
 
 // ============ CONFIGURATION ============
 const CONTACTS_PER_PAGE = 100;
-const STALE_TIMEOUT_MINUTES = 30;
+const STALE_TIMEOUT_MINUTES = 5; // Reduced from 30 to 5 for faster recovery
 
 // ============ VERIFY ADMIN ============
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
