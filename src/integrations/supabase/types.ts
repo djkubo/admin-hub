@@ -2220,22 +2220,39 @@ export type Database = {
           reset_ids: string[]
         }[]
       }
-      unify_identity: {
-        Args: {
-          p_email?: string
-          p_full_name?: string
-          p_ghl_contact_id?: string
-          p_manychat_subscriber_id?: string
-          p_opt_in?: Json
-          p_paypal_customer_id?: string
-          p_phone?: string
-          p_source: string
-          p_stripe_customer_id?: string
-          p_tags?: string[]
-          p_tracking_data?: Json
-        }
-        Returns: Json
-      }
+      unify_identity:
+        | {
+            Args: {
+              p_email?: string
+              p_full_name?: string
+              p_ghl_contact_id?: string
+              p_manychat_subscriber_id?: string
+              p_opt_in?: Json
+              p_paypal_customer_id?: string
+              p_phone?: string
+              p_source: string
+              p_stripe_customer_id?: string
+              p_tags?: string[]
+              p_tracking_data?: Json
+            }
+            Returns: Json
+          }
+        | {
+            Args: {
+              p_email?: string
+              p_full_name?: string
+              p_ghl_contact_id?: string
+              p_manychat_subscriber_id?: string
+              p_opt_in?: Json
+              p_paypal_customer_id?: string
+              p_phone?: string
+              p_source: string
+              p_stripe_customer_id?: string
+              p_tags?: string[]
+              p_tracking_data?: Json
+            }
+            Returns: Json
+          }
     }
     Enums: {
       app_role: "admin" | "user"
