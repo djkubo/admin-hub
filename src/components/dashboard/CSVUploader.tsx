@@ -768,54 +768,94 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
             }
           }
-        } else {
-          let result: ProcessingResult;
+        } else if (file.type === 'web') {
+          // Process web users via Edge Function with chunking (same as other types)
+          const lineCount = text.split('\n').length;
+          
+          toast.info(`👥 Procesando usuarios (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
+          
+          const { ok, result: webResult, error } = await processInChunks(text, 'web', file.name);
 
-          if (file.type === 'web') {
-            result = await processWebUsersCSV(text);
-          } else if (file.type === 'paypal') {
-            // Use Edge Function for large PayPal CSVs with chunking
-            const lineCount = text.split('\n').length;
-            const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
-
-            if (useEdgeFunction) {
-              toast.info(`Procesando CSV grande de PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
-
-              const { ok, result: paypalResult, error } = await processInChunks(text, 'paypal', file.name);
-
-              if (!ok || !paypalResult) {
-                setFiles(prev => prev.map((f, idx) => 
-                  idx === originalIndex ? { ...f, status: 'error' } : f
-                ));
-                toast.error(`Error procesando CSV: ${error}`);
-                continue;
-              }
-
-              setFiles(prev => prev.map((f, idx) => 
-                idx === originalIndex ? {
-                  ...f,
-                  status: 'done' as const,
-                  result: paypalResult
-                } : f
-              ));
-              toast.success(
-                `${file.name}: ${paypalResult.transactionsCreated || 0} transacciones importadas. ` +
-                `${paypalResult.clientsCreated || 0} clientes creados/actualizados`
-              );
-              continue;
-            } else {
-              result = await processPayPalCSV(text);
-            }
-          } else {
-            result = await processPaymentCSV(text, 'stripe');
+          if (!ok || !webResult) {
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { ...f, status: 'error' } : f
+            ));
+            toast.error(`❌ Error procesando usuarios: ${error || 'Error desconocido'}`);
+            continue;
           }
 
           setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { ...f, status: 'done', result } : f
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done' as const, 
+              result: webResult
+            } : f
           ));
+          
+          toast.success(
+            `✅ Usuarios: ${webResult.clientsCreated || 0} nuevos, ${webResult.clientsUpdated || 0} actualizados`
+          );
+          
+          if (webResult.errors?.length > 0) {
+            toast.warning(`⚠️ ${webResult.errors.length} advertencias`);
+          }
+        } else if (file.type === 'paypal') {
+          // Use Edge Function for PayPal CSVs with chunking
+          const lineCount = text.split('\n').length;
+          
+          toast.info(`💰 Procesando PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-          if (result.errors.length > 0) {
-            toast.warning(`${file.name}: ${result.errors.length} errores`);
+          const { ok, result: paypalResult, error } = await processInChunks(text, 'paypal', file.name);
+
+          if (!ok || !paypalResult) {
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { ...f, status: 'error' } : f
+            ));
+            toast.error(`Error procesando CSV: ${error}`);
+            continue;
+          }
+
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
+              result: paypalResult
+            } : f
+          ));
+          toast.success(
+            `${file.name}: ${paypalResult.transactionsCreated || 0} transacciones importadas. ` +
+            `${paypalResult.clientsCreated || 0} clientes creados/actualizados`
+          );
+        } else {
+          // Stripe legacy - also use Edge Function
+          const lineCount = text.split('\n').length;
+          
+          toast.info(`💳 Procesando Stripe (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
+
+          const { ok, result: stripeResult, error } = await processInChunks(text, 'stripe', file.name);
+
+          if (!ok || !stripeResult) {
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { ...f, status: 'error' } : f
+            ));
+            toast.error(`Error procesando CSV: ${error}`);
+            continue;
+          }
+
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
+              result: stripeResult
+            } : f
+          ));
+          toast.success(
+            `${file.name}: ${stripeResult.transactionsCreated || 0} transacciones. ` +
+            `${stripeResult.clientsCreated || 0} clientes`
+          );
+          
+          if (stripeResult.errors?.length > 0) {
+            toast.warning(`${file.name}: ${stripeResult.errors.length} errores`);
           }
         }
       } catch (error) {
