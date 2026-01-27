@@ -1,71 +1,81 @@
 
-# Plan de Corrección: Sincronización de Facturas
+# Plan: Optimización de Sincronización PayPal con Paginación Correcta
 
-## Diagnóstico del Problema
+## Diagnóstico
 
-Tras analizar los logs y el código, identifiqué **2 problemas críticos**:
+| Problema | Impacto |
+|----------|---------|
+| Frontend no continúa páginas internas de PayPal | Solo 1 de cada 9-21 páginas se procesa |
+| Contadores se sobrescriben en lugar de sumar | Métricas de progreso incorrectas |
+| Sin loop `while(hasMore)` como el de facturas Stripe | Datos incompletos (~10% real) |
 
-### Problema 1: Contadores se Sobrescriben en Lugar de Sumar
-En `fetch-invoices/index.ts` línea 661:
-```typescript
-total_fetched: invoices.length,  // ❌ Sobreescribe con 100 cada página
-total_inserted: upsertedCount,   // ❌ Sobreescribe con 100 cada página
-```
-
-**Comportamiento actual**: Cada página resetea los contadores a 100, por eso ves `total_fetched: 0` o `total_fetched: 100` independientemente de cuántas páginas se hayan procesado.
-
-**Comportamiento esperado**: Los contadores deben SUMAR incrementalmente.
-
-### Problema 2: Frontend Inicia Nuevos Syncs Antes de que se Actualice el Estado
-El check de "sync already running" detecta el sync que acaba de crear, bloqueando la continuación.
+**Estado actual**: 38,502 transacciones PayPal, pero probablemente faltan decenas de miles.
 
 ---
 
-## Correcciones Requeridas
+## Solución: Paginación de PayPal al Estilo Facturas
 
-### 1. Edge Function `fetch-invoices`: Contadores Incrementales
+### 1. Frontend - APISyncPanel.tsx
 
-```typescript
-// Antes de actualizar, leer los contadores actuales
-const { data: currentRun } = await supabase
-  .from('sync_runs')
-  .select('total_fetched, total_inserted')
-  .eq('id', syncRunId)
-  .single();
+Agregar loop de paginación interno para PayPal (como el de facturas):
 
-const currentFetched = currentRun?.total_fetched || 0;
-const currentInserted = currentRun?.total_inserted || 0;
-
-// Actualizar SUMANDO los nuevos valores
-await supabase
-  .from('sync_runs')
-  .update({
-    status: hasMore ? 'continuing' : 'completed',
-    total_fetched: currentFetched + invoices.length,  // ✅ Sumar
-    total_inserted: currentInserted + upsertedCount,  // ✅ Sumar
-    checkpoint: hasMore ? { cursor: nextCursor } : null,
-    completed_at: hasMore ? null : new Date().toISOString(),
-  })
-  .eq('id', syncRunId);
-```
-
-### 2. Edge Function `fetch-invoices`: Mejorar Check de Duplicados
-
-Cuando el frontend pasa un `syncRunId`, NO debe bloquear el sync:
-```typescript
-// Solo bloquear si NO tenemos syncRunId y hay uno running reciente
-if (!syncRunId) {
-  // Check for existing...
+```text
+syncPayPal() {
+  for (cada chunk de 31 días) {
+    syncRunId = null
+    hasMore = true
+    page = 1
+    
+    while (hasMore) {
+      response = fetch-paypal({ 
+        syncRunId, 
+        page, 
+        startDate, 
+        endDate 
+      })
+      
+      syncRunId = response.syncRunId
+      hasMore = response.hasMore
+      page = response.nextPage
+      
+      acumulador += response.synced_transactions
+      
+      await delay(200ms)  // Rate limit
+    }
+  }
 }
-// Si tenemos syncRunId, continuar inmediatamente
 ```
 
-### 3. Añadir Logging para Debugging
+### 2. Backend - fetch-paypal/index.ts
 
-```typescript
-console.log(`📈 Updated sync run ${syncRunId}: 
-  fetched: ${currentFetched} + ${invoices.length} = ${currentFetched + invoices.length}
-  inserted: ${currentInserted} + ${upsertedCount} = ${currentInserted + upsertedCount}`);
+Arreglar contadores incrementales (como fetch-invoices):
+
+```text
+Antes:
+  total_fetched: transactionsSaved
+
+Después:
+  const { data: currentRun } = await supabase
+    .from('sync_runs')
+    .select('total_fetched, total_inserted')
+    .eq('id', syncRunId)
+    .single();
+    
+  total_fetched: (currentRun?.total_fetched || 0) + transactionsSaved
+  total_inserted: (currentRun?.total_inserted || 0) + transactionsSaved
+```
+
+### 3. Limpiar Syncs Bloqueados
+
+Cancelar cualquier sync de PayPal en estado `running` o `continuing`:
+
+```sql
+UPDATE sync_runs 
+SET status = 'cancelled', 
+    completed_at = NOW(),
+    error_message = 'Limpieza - optimización paginación'
+WHERE source = 'paypal' 
+AND status IN ('running', 'continuing');
 ```
 
 ---
@@ -74,56 +84,103 @@ console.log(`📈 Updated sync run ${syncRunId}:
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/fetch-invoices/index.ts` | Contadores incrementales + logging mejorado |
+| `src/components/dashboard/APISyncPanel.tsx` | Agregar loop `while(hasMore)` para PayPal |
+| `supabase/functions/fetch-paypal/index.ts` | Contadores incrementales + bypass "sync already running" si tiene syncRunId |
 
 ---
 
-## Limpieza Requerida
+## Flujo Optimizado
 
-Cancelar syncs bloqueados actuales:
-```sql
-UPDATE sync_runs 
-SET status = 'cancelled', 
-    completed_at = NOW(),
-    error_message = 'Limpieza - corrección de contadores'
-WHERE source = 'stripe_invoices' 
-AND status IN ('running', 'continuing');
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                      Frontend Loop                          │
+├─────────────────────────────────────────────────────────────┤
+│  Chunk 1: Enero 2026                                        │
+│    ├─ Página 1 → 100 tx → syncRunId: abc123                │
+│    ├─ Página 2 → 100 tx → hasMore: true                    │
+│    ├─ Página 3 → 50 tx → hasMore: false ✓                  │
+│                                                             │
+│  Chunk 2: Diciembre 2025                                    │
+│    ├─ Página 1 → 100 tx → syncRunId: def456                │
+│    └─ ...                                                   │
+└─────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Resultado Esperado
-
-Después de aplicar estos cambios:
-1. La primera página creará un sync_run con `total_fetched: 100`
-2. La segunda página actualizará a `total_fetched: 200`
-3. La tercera página actualizará a `total_fetched: 300`
-4. Y así sucesivamente hasta completar todas las facturas
-
-El frontend podrá mostrar el progreso real y la sincronización se completará correctamente.
 
 ---
 
 ## Sección Técnica
 
-### Flujo de Datos Corregido
+### Cambios Específicos
 
-```text
-Frontend llama fetch-invoices (page 1)
-  ├─ Crea sync_run con status='running'
-  ├─ Procesa 100 facturas
-  ├─ Actualiza sync_run: total_fetched=100, status='continuing'
-  └─ Retorna: {hasMore: true, nextCursor: "in_xxx", syncRunId: "abc"}
+**APISyncPanel.tsx - Nueva función `syncPayPalPaginated`:**
 
-Frontend llama fetch-invoices (page 2, syncRunId="abc")
-  ├─ Lee sync_run actual: total_fetched=100
-  ├─ Procesa 100 facturas más
-  ├─ Actualiza sync_run: total_fetched=200 (100+100)
-  └─ Retorna: {hasMore: true, nextCursor: "in_yyy"}
-
-... continúa hasta hasMore=false
+```typescript
+const syncPayPalPaginated = async (
+  startDate: Date, 
+  endDate: Date
+): Promise<number> => {
+  let syncRunId: string | null = null;
+  let hasMore = true;
+  let page = 1;
+  let totalSynced = 0;
+  
+  while (hasMore && page <= 500) {
+    const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+      'fetch-paypal',
+      { 
+        fetchAll: true,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        syncRunId,
+        page
+      }
+    );
+    
+    if (!data.success) break;
+    
+    syncRunId = data.syncRunId || syncRunId;
+    hasMore = data.hasMore === true;
+    page = data.nextPage || (page + 1);
+    totalSynced += data.synced_transactions || 0;
+    
+    await new Promise(r => setTimeout(r, 200));
+  }
+  
+  return totalSynced;
+};
 ```
 
-### Consideraciones de Performance
-- El SELECT adicional para leer contadores actuales añade ~10ms por página
-- Esto es insignificante comparado con el tiempo de fetch de Stripe (~5-15s por página)
+**fetch-paypal/index.ts - Líneas 340-378:**
+
+```typescript
+// Permitir continuar sync existente sin bloquear
+if (!syncRunId) {
+  // Check existing sync...
+} 
+// Si ya tiene syncRunId, saltar check de "sync already running"
+```
+
+**fetch-paypal/index.ts - Líneas 543-555:**
+
+```typescript
+// Leer valores actuales antes de actualizar
+const { data: currentRun } = await supabase
+  .from('sync_runs')
+  .select('total_fetched, total_inserted')
+  .eq('id', syncRunId)
+  .single();
+
+await supabase.from('sync_runs').update({
+  status: 'continuing',
+  total_fetched: (currentRun?.total_fetched || 0) + transactionsSaved,
+  total_inserted: (currentRun?.total_inserted || 0) + transactionsSaved,
+  checkpoint: { page, totalPages, lastActivity: new Date().toISOString() }
+}).eq('id', syncRunId);
+```
+
+### Resultado Esperado
+
+- Cada página de PayPal se procesa completamente
+- Los contadores muestran progreso real acumulado
+- Sin syncs bloqueados que impidan nuevas ejecuciones
+- Consistencia con el patrón ya probado de facturas Stripe
