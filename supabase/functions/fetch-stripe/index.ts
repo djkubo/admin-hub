@@ -379,6 +379,10 @@ async function processSinglePage(
 
 // ============= FULL SYNC (BACKGROUND TASK) =============
 
+const MAX_SYNC_DURATION_MS = 10 * 60 * 1000; // 10 minutes max
+const PAGE_TIMEOUT_MS = 60 * 1000; // 60 seconds per page max
+const STALE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes without progress = stale
+
 async function runFullSync(
   supabase: SupabaseClient,
   stripeSecretKey: string,
@@ -393,57 +397,135 @@ async function runFullSync(
   let pageCount = 0;
   let hasMore = true;
   let lastError: string | null = null;
+  const syncStartTime = Date.now();
+  let lastActivityTime = Date.now();
+  let consecutiveErrors = 0;
 
   logger.info('Starting full sync', { syncRunId, startDate, cursor, total: totalTransactions });
 
   try {
     while (hasMore && pageCount < MAX_PAGES) {
-      pageCount++;
-
-      const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
-
-      if (result.error) {
-        lastError = result.error;
-        logger.error(`Page ${pageCount} error`, new Error(result.error));
-        // Wait and retry once
-        await delay(5000);
-        const retry = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
-        if (retry.error) {
-          logger.error(`Retry failed`, new Error(retry.error));
-          break;
-        }
-        totalTransactions += retry.transactions;
-        cursor = retry.nextCursor;
-        hasMore = retry.hasMore && cursor !== null;
-      } else {
-        totalTransactions += result.transactions;
-        cursor = result.nextCursor;
-        hasMore = result.hasMore && cursor !== null;
+      // ============= SAFETY CHECKS =============
+      const elapsedMs = Date.now() - syncStartTime;
+      const timeSinceLastActivity = Date.now() - lastActivityTime;
+      
+      // Check global timeout
+      if (elapsedMs > MAX_SYNC_DURATION_MS) {
+        logger.warn('Global timeout reached', { elapsedMs, totalTransactions, pageCount });
+        await supabase.from('sync_runs').update({
+          status: 'completed_with_errors',
+          completed_at: new Date().toISOString(),
+          total_fetched: totalTransactions,
+          total_inserted: totalTransactions,
+          error_message: `Timeout after ${Math.floor(elapsedMs / 60000)} min. Resume with cursor: ${cursor}`,
+          checkpoint: { cursor, runningTotal: totalTransactions, page: pageCount, timeout: true }
+        }).eq('id', syncRunId);
+        return;
       }
 
-      // Update progress every page
-      await supabase
+      // Check stale detection
+      if (timeSinceLastActivity > STALE_THRESHOLD_MS) {
+        logger.warn('Stale sync detected', { timeSinceLastActivity, lastActivityTime });
+        await supabase.from('sync_runs').update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: 'Sync stalled - no activity for 2 minutes',
+          checkpoint: { cursor, runningTotal: totalTransactions, page: pageCount, stale: true }
+        }).eq('id', syncRunId);
+        return;
+      }
+
+      pageCount++;
+
+      // ============= PROCESS PAGE WITH TIMEOUT =============
+      let result: { transactions: number; clients: number; hasMore: boolean; nextCursor: string | null; error: string | null };
+      
+      try {
+        const pagePromise = processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Page timeout')), PAGE_TIMEOUT_MS)
+        );
+        
+        result = await Promise.race([pagePromise, timeoutPromise]);
+        lastActivityTime = Date.now(); // Reset activity timer on success
+        consecutiveErrors = 0;
+      } catch (timeoutError) {
+        consecutiveErrors++;
+        logger.error(`Page ${pageCount} timeout`, new Error('Page processing exceeded 60s'));
+        
+        if (consecutiveErrors >= 3) {
+          lastError = 'Three consecutive page timeouts';
+          break;
+        }
+        
+        // Wait and retry
+        await delay(5000);
+        continue;
+      }
+
+      if (result.error) {
+        consecutiveErrors++;
+        lastError = result.error;
+        logger.error(`Page ${pageCount} error`, new Error(result.error));
+        
+        if (consecutiveErrors >= 3) {
+          logger.error('Three consecutive errors, stopping sync');
+          break;
+        }
+        
+        // Wait and retry once
+        await delay(5000);
+        try {
+          result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, cursor);
+          if (!result.error) {
+            consecutiveErrors = 0;
+            lastActivityTime = Date.now();
+          }
+        } catch {
+          continue;
+        }
+        
+        if (result.error) continue;
+      }
+
+      totalTransactions += result.transactions;
+      cursor = result.nextCursor;
+      hasMore = result.hasMore && cursor !== null;
+
+      // Update progress every page with heartbeat
+      const updateResult = await supabase
         .from('sync_runs')
         .update({
           status: hasMore ? 'running' : 'completed',
           total_fetched: totalTransactions,
           total_inserted: totalTransactions,
-          checkpoint: hasMore ? { cursor, runningTotal: totalTransactions, page: pageCount, lastActivity: new Date().toISOString() } : null,
+          checkpoint: hasMore ? { 
+            cursor, 
+            runningTotal: totalTransactions, 
+            page: pageCount, 
+            lastActivity: new Date().toISOString(),
+            elapsedSeconds: Math.floor(elapsedMs / 1000)
+          } : null,
           completed_at: hasMore ? null : new Date().toISOString()
         })
         .eq('id', syncRunId);
-
-      if (pageCount % 10 === 0) {
-        logger.info(`Progress: ${totalTransactions} tx in ${pageCount} pages`);
+      
+      if (updateResult.error) {
+        logger.warn('Failed to update sync progress', { error: updateResult.error.message });
       }
 
-      // Small delay between pages
+      if (pageCount % 5 === 0) {
+        logger.info(`Progress: ${totalTransactions} tx in ${pageCount} pages (${Math.floor(elapsedMs / 1000)}s)`);
+      }
+
+      // Small delay between pages to avoid rate limits
       if (hasMore) {
-        await delay(200);
+        await delay(150);
       }
     }
 
-    // Final update
+    // ============= FINAL UPDATE =============
+    const finalElapsed = Date.now() - syncStartTime;
     await supabase
       .from('sync_runs')
       .update({
@@ -452,11 +534,16 @@ async function runFullSync(
         total_fetched: totalTransactions,
         total_inserted: totalTransactions,
         error_message: lastError,
-        checkpoint: null
+        checkpoint: null,
+        metadata: { 
+          duration_seconds: Math.floor(finalElapsed / 1000),
+          pages_processed: pageCount,
+          avg_ms_per_page: Math.floor(finalElapsed / Math.max(pageCount, 1))
+        }
       })
       .eq('id', syncRunId);
 
-    logger.info(`SYNC COMPLETE`, { totalTransactions, pageCount });
+    logger.info(`SYNC COMPLETE`, { totalTransactions, pageCount, durationSeconds: Math.floor(finalElapsed / 1000) });
 
   } catch (error) {
     logger.error(`Fatal sync error`, error instanceof Error ? error : new Error(String(error)));
@@ -466,7 +553,8 @@ async function runFullSync(
         status: 'failed',
         completed_at: new Date().toISOString(),
         total_fetched: totalTransactions,
-        error_message: error instanceof Error ? error.message : 'Unknown error'
+        error_message: error instanceof Error ? error.message : 'Unknown error',
+        checkpoint: { cursor, runningTotal: totalTransactions, page: pageCount, fatal: true }
       })
       .eq('id', syncRunId);
   }
