@@ -19,7 +19,10 @@ import {
   ChevronRight,
   CheckCircle,
   CreditCard,
-  ChevronDown
+  ChevronDown,
+  TrendingUp,
+  Megaphone,
+  ShieldAlert
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -321,15 +324,25 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   }, [subscriptions]);
 
   const totalRevenue = kpis.newRevenue + kpis.conversionRevenue + kpis.renewalRevenue;
-  const atRiskAmount = kpis.failuresToday * 50;
 
+  // Card definitions with navigation targets
   const cards = [
+    {
+      title: 'MRR',
+      value: `$${kpis.mrr.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      icon: TrendingUp,
+      color: 'primary',
+      subtitle: `${kpis.mrrActiveCount.toLocaleString()} activas`,
+      navigateTo: 'analytics',
+      isHighlight: true,
+    },
     {
       title: 'Ventas',
       value: `$${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: DollarSign,
       color: 'emerald',
       subtitle: filterLabels[filter],
+      navigateTo: 'movements',
     },
     {
       title: 'Nuevos',
@@ -337,6 +350,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       icon: UserPlus,
       color: 'cyan',
       subtitle: `$${kpis.newRevenue.toFixed(0)}`,
+      navigateTo: 'clients',
     },
     {
       title: 'Trials',
@@ -344,6 +358,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       icon: Clock,
       color: 'blue',
       subtitle: 'iniciados',
+      navigateTo: 'subscriptions',
     },
     {
       title: 'Trial→Paid',
@@ -351,6 +366,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       icon: ArrowRightCircle,
       color: 'purple',
       subtitle: `$${kpis.conversionRevenue.toFixed(0)}`,
+      navigateTo: 'subscriptions',
     },
     {
       title: 'Renovaciones',
@@ -358,27 +374,32 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       icon: RefreshCw,
       color: 'green',
       subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
+      navigateTo: 'subscriptions',
     },
     {
-      title: 'Fallos',
-      value: kpis.failuresToday,
-      icon: AlertTriangle,
-      color: 'amber',
-      subtitle: kpis.failuresToday > 0 ? `~$${atRiskAmount} riesgo` : 'OK',
+      title: 'En Riesgo',
+      value: `$${kpis.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      icon: ShieldAlert,
+      color: 'red',
+      subtitle: `${kpis.revenueAtRiskCount.toLocaleString()} facturas`,
       isNegative: true,
+      navigateTo: 'recovery',
+      isWarning: kpis.revenueAtRisk > 10000,
     },
     {
       title: 'Cancelaciones',
       value: kpis.cancellationsToday,
       icon: XCircle,
-      color: 'red',
+      color: 'amber',
       subtitle: 'suscripciones',
       isNegative: true,
+      navigateTo: 'subscriptions',
     },
   ];
 
   const getColorClasses = (color: string) => {
     const colors: Record<string, { bg: string; text: string; icon: string; border: string }> = {
+      primary: { bg: 'bg-primary/10', text: 'text-primary', icon: 'text-primary', border: 'border-primary/30' },
       emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: 'text-emerald-500', border: 'border-emerald-500/30' },
       cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', icon: 'text-cyan-500', border: 'border-cyan-500/30' },
       blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', icon: 'text-blue-500', border: 'border-blue-500/30' },
@@ -421,8 +442,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             </div>
           </div>
 
-          {/* Sync section */}
-          <div className="flex items-center justify-between sm:justify-end gap-3">
+          {/* Action Buttons */}
+          <div className="flex items-center justify-between sm:justify-end gap-2 md:gap-3">
             {/* Last Sync Status - hide time text on mobile */}
             <div className="flex items-center gap-2 text-xs md:text-sm">
               <Clock className="h-4 w-4 text-muted-foreground" />
@@ -435,6 +456,17 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                 </Badge>
               )}
             </div>
+
+            {/* Broadcast Button */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onNavigate?.('campaigns')}
+              className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10 text-xs md:text-sm touch-feedback"
+            >
+              <Megaphone className="h-4 w-4" />
+              <span className="hidden sm:inline">Broadcast</span>
+            </Button>
 
             {/* Sync All Dropdown */}
             {isSyncing ? (
@@ -482,8 +514,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         </div>
       </div>
 
-      {/* B) 6 KPI Cards - 2 cols on mobile, 3 on tablet, 6 on desktop */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-4">
+      {/* B) 8 KPI Cards - All Clickable with Navigation */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 md:gap-3">
         {cards.map((card, index) => {
           const colors = getColorClasses(card.color);
           const Icon = card.icon;
@@ -498,16 +530,35 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             );
           }
 
+          const isWarningCard = 'isWarning' in card && card.isWarning;
+          const isHighlightCard = 'isHighlight' in card && card.isHighlight;
+
           return (
             <div
               key={index}
-              className={`rounded-xl border ${colors.border} bg-card p-3 md:p-4 transition-all hover:shadow-lg touch-feedback`}
+              onClick={() => card.navigateTo && onNavigate?.(card.navigateTo)}
+              className={`rounded-xl border ${
+                isWarningCard 
+                  ? 'border-red-500/50 bg-red-500/5 ring-1 ring-red-500/20' 
+                  : isHighlightCard
+                  ? 'border-primary/50 bg-primary/5'
+                  : `${colors.border} bg-card`
+              } p-3 md:p-4 transition-all hover:shadow-lg cursor-pointer hover:ring-2 hover:ring-primary/30 touch-feedback group`}
             >
               <div className={`inline-flex p-1.5 md:p-2 rounded-lg ${colors.bg} mb-1.5 md:mb-2`}>
                 <Icon className={`h-3.5 w-3.5 md:h-4 md:w-4 ${colors.icon}`} />
               </div>
-              <p className="text-[10px] md:text-xs text-muted-foreground">{card.title}</p>
-              <p className={`text-lg md:text-2xl font-bold ${card.isNegative && typeof card.value === 'number' && card.value > 0 ? 'text-red-400' : 'text-foreground'}`}>
+              <p className="text-[10px] md:text-xs text-muted-foreground flex items-center gap-1">
+                {card.title}
+                <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </p>
+              <p className={`text-base md:text-xl font-bold ${
+                card.isNegative 
+                  ? 'text-red-400' 
+                  : isHighlightCard 
+                  ? 'text-primary' 
+                  : 'text-foreground'
+              }`}>
                 {card.value}
               </p>
               <p className={`text-[9px] md:text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>

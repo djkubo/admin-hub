@@ -17,6 +17,11 @@ export interface DailyKPIs {
   conversionRevenue: number;
   renewalRevenue: number;
   cancellationRevenue: number;
+  // NEW: Real-time MRR and Revenue at Risk
+  mrr: number;
+  mrrActiveCount: number;
+  revenueAtRisk: number;
+  revenueAtRiskCount: number;
 }
 
 const defaultKPIs: DailyKPIs = {
@@ -32,6 +37,10 @@ const defaultKPIs: DailyKPIs = {
   conversionRevenue: 0,
   renewalRevenue: 0,
   cancellationRevenue: 0,
+  mrr: 0,
+  mrrActiveCount: 0,
+  revenueAtRisk: 0,
+  revenueAtRiskCount: 0,
 };
 
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
@@ -89,6 +98,8 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       let trialConversions: { conversion_count: number; total_revenue: number }[] = [];
       let trialsCount = 0;
       let clientsCount = 0;
+      let mrrData: { amount: number }[] = [];
+      let revenueAtRiskData: { amount_due: number }[] = [];
 
       // Run in parallel but catch individual errors
       const promises = await Promise.allSettled([
@@ -107,7 +118,15 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         supabase.from('clients')
           .select('id', { count: 'exact', head: true })
           .gte('created_at', start)
-          .lte('created_at', end)
+          .lte('created_at', end),
+        // NEW: MRR from active subscriptions (same logic as LTVMetrics)
+        supabase.from('subscriptions')
+          .select('amount')
+          .eq('status', 'active'),
+        // NEW: Revenue at Risk from open/past_due invoices (real data, not estimate)
+        supabase.from('invoices')
+          .select('amount_due')
+          .in('status', ['open', 'past_due'])
       ]);
 
       // Extract results safely
@@ -118,6 +137,8 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       if (promises[4].status === 'fulfilled' && promises[4].value?.count !== null) trialsCount = promises[4].value.count || 0;
       if (promises[5].status === 'fulfilled' && promises[5].value?.data) trialConversions = promises[5].value.data;
       if (promises[6].status === 'fulfilled' && promises[6].value?.count !== null) clientsCount = promises[6].value.count || 0;
+      if (promises[7].status === 'fulfilled' && promises[7].value?.data) mrrData = promises[7].value.data;
+      if (promises[8].status === 'fulfilled' && promises[8].value?.data) revenueAtRiskData = promises[8].value.data;
 
       const failedQueries = promises.filter(p => p.status === 'rejected').length;
       if (failedQueries > 0) setError(`${failedQueries} métricas no cargaron`);
@@ -135,6 +156,14 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       const renewalRevenue = Math.max(0, usdSales.total_amount / 100 - newRevenue - conversionRevenue);
       const cancellationRevenue = (usdCancel.lost_mrr || 0) / 100;
 
+      // Calculate MRR from active subscriptions (amounts are in cents)
+      const mrr = mrrData.reduce((sum, sub) => sum + (sub.amount || 0), 0) / 100;
+      const mrrActiveCount = mrrData.length;
+
+      // Calculate real Revenue at Risk from pending invoices (amounts are in cents)
+      const revenueAtRisk = revenueAtRiskData.reduce((sum, inv) => sum + (inv.amount_due || 0), 0) / 100;
+      const revenueAtRiskCount = revenueAtRiskData.length;
+
       setKPIs({
         registrationsToday: clientsCount,
         trialsStartedToday: trialsCount,
@@ -148,6 +177,10 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         conversionRevenue,
         renewalRevenue,
         cancellationRevenue,
+        mrr,
+        mrrActiveCount,
+        revenueAtRisk,
+        revenueAtRiskCount,
       });
     } catch (err) {
       console.error('Error fetching KPIs:', err);
