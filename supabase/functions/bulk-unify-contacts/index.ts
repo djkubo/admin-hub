@@ -621,8 +621,12 @@ async function runBulkUnification(
   let totalMerged = 0;
   let hasMoreWork = true;
   let iterations = 0;
-  const MAX_ITERATIONS = 5000; // Support for 850k+ with batch size 200
+  const MAX_ITERATIONS = 10000; // Support for 850k+ with batch size 100
   const startTime = Date.now();
+  
+  // NEW: Batch timeout protection
+  let lastBatchTime = Date.now();
+  const BATCH_TIMEOUT_MS = 120000; // 2 minutes max per batch iteration
 
   logger.info('Starting bulk unification', { sources, batchSize, totalPending });
 
@@ -630,6 +634,12 @@ async function runBulkUnification(
     while (hasMoreWork && iterations < MAX_ITERATIONS) {
       iterations++;
       hasMoreWork = false;
+      
+      // NEW: Detect batch timeout (stuck processing)
+      if (Date.now() - lastBatchTime > BATCH_TIMEOUT_MS) {
+        logger.error(`Batch timeout detected after ${iterations} iterations, forcing failure for recovery`);
+        throw new Error(`Batch timeout: no progress for ${Math.round(BATCH_TIMEOUT_MS / 1000)}s after ${iterations} iterations`);
+      }
 
       // Check if cancelled
       const { data: syncCheck } = await supabase
@@ -668,9 +678,14 @@ async function runBulkUnification(
         if (result.hasMore) {
           hasMoreWork = true;
         }
+        
+        // Reset batch timer after successful processing
+        if (result.processed > 0) {
+          lastBatchTime = Date.now();
+        }
       }
 
-      // Update progress every iteration
+      // Update progress every iteration with lastUpdate timestamp
       const elapsedMs = Date.now() - startTime;
       const rate = totalProcessed > 0 ? (totalProcessed / (elapsedMs / 1000)).toFixed(1) : '0';
       const progressPct = totalPending > 0 ? Math.min((totalProcessed / totalPending) * 100, 100) : 0;
@@ -689,7 +704,7 @@ async function runBulkUnification(
             progressPct: Math.round(progressPct * 10) / 10,
             rate: `${rate}/s`,
             estimatedRemainingSeconds: estimatedRemaining,
-            lastUpdate: new Date().toISOString()
+            lastUpdate: new Date().toISOString() // Critical for stale detection
           }
         } as Record<string, unknown>)
         .eq('id', syncRunId);
@@ -761,7 +776,8 @@ Deno.serve(async (req) => {
     }
 
     const body: UnifyRequest = await req.json().catch(() => ({}));
-    const { sources = ['ghl', 'manychat', 'csv'], batchSize = 200, forceCancel = false } = body;
+    // OPTIMIZED: Reduced batch size from 200 to 100 for stability
+    const { sources = ['ghl', 'manychat', 'csv'], batchSize = 100, forceCancel = false } = body;
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -785,10 +801,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Check for existing running sync
+    // Check for existing running sync - FIXED: Now reads checkpoint for stale detection
     const { data: existingSync } = await supabase
       .from('sync_runs')
-      .select('id, status, started_at')
+      .select('id, status, started_at, checkpoint')
       .eq('source', 'bulk_unify')
       .in('status', ['running', 'continuing', 'completing'])
       .order('started_at', { ascending: false })
@@ -796,17 +812,34 @@ Deno.serve(async (req) => {
       .single();
 
     if (existingSync) {
-      const syncData = existingSync as { id: string; status: string; started_at: string };
-      // Check if it's stale (>10 minutes)
-      const startedAt = new Date(syncData.started_at).getTime();
-      const staleThreshold = 10 * 60 * 1000; // 10 minutes
+      const syncData = existingSync as { 
+        id: string; 
+        status: string; 
+        started_at: string;
+        checkpoint: { lastUpdate?: string } | null;
+      };
       
-      if (Date.now() - startedAt > staleThreshold) {
-        // Cancel stale sync
+      // FIXED: Use checkpoint.lastUpdate instead of started_at for stale detection
+      const lastActivity = syncData.checkpoint?.lastUpdate 
+        ? new Date(syncData.checkpoint.lastUpdate).getTime()
+        : new Date(syncData.started_at).getTime();
+      
+      // OPTIMIZED: Reduced stale threshold from 10 to 5 minutes
+      const staleThreshold = 5 * 60 * 1000; // 5 minutes without activity
+      const inactiveMinutes = Math.round((Date.now() - lastActivity) / 60000);
+      
+      if (Date.now() - lastActivity > staleThreshold) {
+        // Cancel stale sync and allow restart (auto-resume from where it stopped)
+        logger.info(`Cancelling stale sync: ${syncData.id} (inactive for ${inactiveMinutes} min)`);
         await supabase
           .from('sync_runs')
-          .update({ status: 'cancelled', error_message: 'Stale sync detected' } as Record<string, unknown>)
+          .update({ 
+            status: 'cancelled', 
+            completed_at: new Date().toISOString(),
+            error_message: `Stale: no activity for ${inactiveMinutes} minutes - auto-resuming` 
+          } as Record<string, unknown>)
           .eq('id', syncData.id);
+        // Continue to start new sync (will resume from unprocessed records)
       } else {
         // Return existing sync info
         return new Response(
@@ -814,7 +847,8 @@ Deno.serve(async (req) => {
             ok: true, 
             message: 'Unification already in progress',
             syncRunId: syncData.id,
-            status: syncData.status
+            status: syncData.status,
+            lastActivity: syncData.checkpoint?.lastUpdate || syncData.started_at
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -837,7 +871,8 @@ Deno.serve(async (req) => {
       .insert({
         source: 'bulk_unify',
         status: 'running',
-        metadata: { sources, batchSize, pending: pendingCounts }
+        metadata: { sources, batchSize, pending: pendingCounts },
+        checkpoint: { lastUpdate: new Date().toISOString(), iterations: 0 } // Start with checkpoint
       } as Record<string, unknown>)
       .select('id')
       .single();
