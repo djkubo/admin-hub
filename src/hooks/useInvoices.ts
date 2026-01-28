@@ -274,17 +274,29 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     .filter(inv => inv.status === 'paid')
     .reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) / 100;
 
-  // Get invoices due in next 72 hours
+  // Get invoices due in next 72 hours (includes both open AND draft)
   const next72Hours = new Date();
   next72Hours.setHours(next72Hours.getHours() + 72);
 
   const invoicesNext72h = invoices.filter((inv) => {
-    if (!inv.next_payment_attempt || inv.status !== 'open') return false;
-    const attemptDate = new Date(inv.next_payment_attempt);
-    return attemptDate <= next72Hours;
+    // Include both open and draft invoices
+    if (!['open', 'draft'].includes(inv.status)) return false;
+    
+    // For open invoices, use next_payment_attempt
+    // For draft invoices, use automatically_finalizes_at (when Stripe auto-finalizes them)
+    const targetDate = inv.status === 'open' 
+      ? inv.next_payment_attempt 
+      : (inv.automatically_finalizes_at || inv.next_payment_attempt);
+    
+    if (!targetDate) return false;
+    return new Date(targetDate) <= next72Hours;
   });
 
   const totalNext72h = invoicesNext72h.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
+
+  // Calculate uncollectible total for alert
+  const uncollectibleInvoices = invoices.filter(inv => inv.status === 'uncollectible');
+  const totalUncollectible = uncollectibleInvoices.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
 
   // Status counts
   const statusCounts = {
@@ -349,6 +361,8 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     totalPaid,
     totalNext72h,
     invoicesNext72h,
+    totalUncollectible,
+    uncollectibleCount: uncollectibleInvoices.length,
     statusCounts,
     exportToCSV,
   };
