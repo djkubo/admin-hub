@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -10,11 +10,14 @@ import { toast } from "sonner";
 
 interface SyncStatus {
   source: string;
-  status: 'idle' | 'running' | 'completed' | 'error' | 'continuing';
+  status: 'idle' | 'running' | 'completed' | 'error' | 'continuing' | 'paused';
   processed: number;
   total?: number;
   error?: string;
   syncRunId?: string;
+  chunk?: number;
+  lastActivity?: string;
+  canResume?: boolean;
 }
 
 interface PendingCounts {
@@ -113,11 +116,140 @@ export function SyncOrchestrator() {
     }
   }, []);
 
+  // Check for active syncs on mount and start polling
+  const checkActiveSync = useCallback(async (source: string) => {
+    try {
+      const { data: activeRun } = await supabase
+        .from('sync_runs')
+        .select('id, status, total_fetched, checkpoint, error_message')
+        .eq('source', source)
+        .in('status', ['running', 'continuing', 'paused'])
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeRun) {
+        const checkpoint = activeRun.checkpoint as { 
+          chunk?: number; 
+          runningTotal?: number; 
+          lastActivity?: string;
+          canResume?: boolean;
+        } | null;
+        
+        setSyncStatuses(prev => ({
+          ...prev,
+          [source]: {
+            ...prev[source],
+            status: activeRun.status as SyncStatus['status'],
+            processed: checkpoint?.runningTotal || activeRun.total_fetched || 0,
+            syncRunId: activeRun.id,
+            chunk: checkpoint?.chunk,
+            lastActivity: checkpoint?.lastActivity,
+            canResume: activeRun.status === 'paused' || checkpoint?.canResume,
+            error: activeRun.error_message || undefined
+          }
+        }));
+
+        // Start polling if running
+        if (activeRun.status === 'running' || activeRun.status === 'continuing') {
+          startPolling(source, activeRun.id);
+        }
+      }
+    } catch (error) {
+      console.error(`Error checking active ${source} sync:`, error);
+    }
+  }, []);
+
+  // Polling logic for real-time updates
+  const pollingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
+  
+  const startPolling = useCallback((source: string, syncRunId: string) => {
+    // Clear existing interval
+    if (pollingIntervals.current[source]) {
+      clearInterval(pollingIntervals.current[source]);
+    }
+
+    const poll = async () => {
+      try {
+        const { data: syncRun } = await supabase
+          .from('sync_runs')
+          .select('id, status, total_fetched, checkpoint, error_message, completed_at')
+          .eq('id', syncRunId)
+          .single();
+
+        if (!syncRun) return;
+
+        const checkpoint = syncRun.checkpoint as { 
+          chunk?: number; 
+          runningTotal?: number; 
+          lastActivity?: string;
+          canResume?: boolean;
+        } | null;
+
+        const processed = checkpoint?.runningTotal || syncRun.total_fetched || 0;
+        
+        setSyncStatuses(prev => ({
+          ...prev,
+          [source]: {
+            ...prev[source],
+            status: syncRun.status as SyncStatus['status'],
+            processed,
+            chunk: checkpoint?.chunk,
+            lastActivity: checkpoint?.lastActivity,
+            canResume: syncRun.status === 'paused' || checkpoint?.canResume,
+            error: syncRun.error_message || undefined
+          }
+        }));
+
+        // Stop polling if completed/failed
+        if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(syncRun.status)) {
+          clearInterval(pollingIntervals.current[source]);
+          delete pollingIntervals.current[source];
+          
+          if (syncRun.status === 'completed' || syncRun.status === 'completed_with_errors') {
+            toast.success(`${source.toUpperCase()}: ${processed.toLocaleString()} registros sincronizados`);
+          } else if (syncRun.status === 'failed') {
+            toast.error(`${source.toUpperCase()}: Error - ${syncRun.error_message || 'Unknown'}`);
+          }
+          
+          // Update to completed status
+          setSyncStatuses(prev => ({
+            ...prev,
+            [source]: {
+              ...prev[source],
+              status: syncRun.status === 'completed' || syncRun.status === 'completed_with_errors' 
+                ? 'completed' 
+                : syncRun.status === 'paused' ? 'paused' : 'error'
+            }
+          }));
+        }
+      } catch (error) {
+        console.error(`Poll error for ${source}:`, error);
+      }
+    };
+
+    // Poll immediately, then every 3 seconds
+    poll();
+    pollingIntervals.current[source] = setInterval(poll, 3000);
+  }, []);
+
+  // Cleanup polling on unmount
+  const pollingIntervalsRef = useRef(pollingIntervals);
+  useEffect(() => {
+    return () => {
+      Object.values(pollingIntervalsRef.current.current).forEach(clearInterval);
+    };
+  }, []);
+
   useEffect(() => {
     fetchCounts();
+    // Check for active syncs on mount
+    checkActiveSync('stripe');
+    checkActiveSync('paypal');
+    
     const interval = setInterval(fetchCounts, 5000);
     return () => clearInterval(interval);
-  }, [fetchCounts]);
+  }, [fetchCounts, checkActiveSync]);
 
   // Sync GHL (Stage Only)
   const syncGHL = async () => {
@@ -228,24 +360,40 @@ export function SyncOrchestrator() {
     }
   };
 
-  // Sync Stripe
-  const syncStripe = async () => {
-    setSyncStatuses(prev => ({ ...prev, stripe: { ...prev.stripe, status: 'running', processed: 0 } }));
+  // Sync Stripe (Full History with Backend Auto-Chain)
+  const syncStripe = async (resume = false) => {
+    setSyncStatuses(prev => ({ 
+      ...prev, 
+      stripe: { ...prev.stripe, status: 'running', processed: resume ? prev.stripe.processed : 0 } 
+    }));
     
     try {
-      const { data, error } = await supabase.functions.invoke('sync-command-center', {
-        body: { mode: 'full' }
+      const { data, error } = await supabase.functions.invoke('fetch-stripe', {
+        body: resume ? { resumeSync: true } : { fetchAll: true }
       });
 
       if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || data?.message || 'Unknown error');
 
-      const totalCount = Object.values(data?.results || {}).reduce((sum: number, r: { count?: number }) => sum + (r?.count || 0), 0);
+      const syncRunId = data.syncRunId;
       
       setSyncStatuses(prev => ({ 
         ...prev, 
-        stripe: { ...prev.stripe, status: 'completed', processed: totalCount as number } 
+        stripe: { 
+          ...prev.stripe, 
+          syncRunId,
+          processed: resume ? (data.resumedFrom || prev.stripe.processed) : 0
+        } 
       }));
-      toast.success(`Stripe: ${totalCount} registros sincronizados`);
+
+      // Start polling for real-time progress
+      if (syncRunId) {
+        startPolling('stripe', syncRunId);
+        toast.success(resume 
+          ? `Stripe: Reanudando desde ${(data.resumedFrom || 0).toLocaleString()} registros` 
+          : 'Stripe: Sync iniciado con auto-continuación'
+        );
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setSyncStatuses(prev => ({ 
@@ -255,6 +403,12 @@ export function SyncOrchestrator() {
       toast.error(`Error Stripe: ${errorMessage}`);
     }
   };
+
+  // Resume paused Stripe sync
+  const resumeStripe = () => syncStripe(true);
+  
+  // Handler for button click (no resume)
+  const handleSyncStripe = () => syncStripe(false);
 
   // Sync PayPal
   const syncPayPal = async () => {
@@ -399,6 +553,8 @@ export function SyncOrchestrator() {
         return <CheckCircle className="h-4 w-4 text-green-500" />;
       case 'error':
         return <AlertCircle className="h-4 w-4 text-red-500" />;
+      case 'paused':
+        return <Pause className="h-4 w-4 text-orange-500" />;
       default:
         return <Clock className="h-4 w-4 text-muted-foreground" />;
     }
@@ -413,6 +569,8 @@ export function SyncOrchestrator() {
         return <Badge variant="default" className="bg-green-500">Completado</Badge>;
       case 'error':
         return <Badge variant="destructive">Error</Badge>;
+      case 'paused':
+        return <Badge variant="default" className="bg-orange-500">Pausado</Badge>;
       default:
         return <Badge variant="secondary">Inactivo</Badge>;
     }
@@ -463,17 +621,47 @@ export function SyncOrchestrator() {
                   {getStatusIcon(syncStatuses.stripe.status)}
                 </div>
                 <div className="text-2xl font-bold">{syncStatuses.stripe.processed.toLocaleString()}</div>
-                <div className="text-sm text-muted-foreground mb-3">registros</div>
+                <div className="text-sm text-muted-foreground mb-1">registros</div>
+                {syncStatuses.stripe.chunk && (
+                  <div className="text-xs text-blue-500 mb-1">Chunk {syncStatuses.stripe.chunk}</div>
+                )}
+                {syncStatuses.stripe.lastActivity && (
+                  <div className="text-xs text-muted-foreground mb-2">
+                    Última act: {new Date(syncStatuses.stripe.lastActivity).toLocaleTimeString()}
+                  </div>
+                )}
                 {getStatusBadge(syncStatuses.stripe.status)}
-                <Button 
-                  className="w-full mt-3" 
-                  size="sm"
-                  onClick={syncStripe}
-                  disabled={syncStatuses.stripe.status === 'running'}
-                >
-                  <Zap className="h-4 w-4 mr-2" />
-                  Sync Stripe
-                </Button>
+                
+                {/* Show Resume button if paused */}
+                {syncStatuses.stripe.status === 'paused' || syncStatuses.stripe.canResume ? (
+                  <Button 
+                    className="w-full mt-3 bg-orange-500 hover:bg-orange-600" 
+                    size="sm"
+                    onClick={resumeStripe}
+                  >
+                    <Play className="h-4 w-4 mr-2" />
+                    Reanudar ({syncStatuses.stripe.processed.toLocaleString()})
+                  </Button>
+                ) : (
+                  <Button 
+                    className="w-full mt-3" 
+                    size="sm"
+                    onClick={handleSyncStripe}
+                    disabled={syncStatuses.stripe.status === 'running' || syncStatuses.stripe.status === 'continuing'}
+                  >
+                    {syncStatuses.stripe.status === 'running' || syncStatuses.stripe.status === 'continuing' ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Sincronizando...
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="h-4 w-4 mr-2" />
+                        Sync Stripe
+                      </>
+                    )}
+                  </Button>
+                )}
               </CardContent>
             </Card>
 
