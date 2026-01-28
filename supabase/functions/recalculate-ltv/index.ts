@@ -10,6 +10,7 @@ interface RecalculateRequest {
   dryRun?: boolean;
   startOffset?: number;
   clientEmail?: string; // For single-client recalculation
+  mode?: 'ltv' | 'backfill-invoices'; // Default is 'ltv'
 }
 
 interface ProcessResult {
@@ -39,13 +40,91 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     const body: RecalculateRequest = await req.json().catch(() => ({}));
+    const mode = body.mode || 'ltv';
     const batchSize = Math.min(body.batchSize || 500, 1000);
     const dryRun = body.dryRun ?? false;
     const startOffset = body.startOffset || 0;
     const singleEmail = body.clientEmail?.toLowerCase().trim();
 
-    console.log(`[recalculate-ltv] Starting batch: offset=${startOffset}, size=${batchSize}, dryRun=${dryRun}, singleEmail=${singleEmail || 'N/A'}`);
+    console.log(`[recalculate-ltv] Mode: ${mode}, offset=${startOffset}, size=${batchSize}, dryRun=${dryRun}`);
 
+    // ============= MODE: BACKFILL INVOICES CLIENT_ID =============
+    if (mode === 'backfill-invoices') {
+      console.log('[recalculate-ltv] Running invoice backfill mode...');
+      
+      // Build email-to-client mapping
+      const { data: allClients, error: clientsErr } = await supabase
+        .from('clients')
+        .select('id, email')
+        .not('email', 'is', null);
+      
+      if (clientsErr) {
+        throw new Error(`Failed to fetch clients: ${clientsErr.message}`);
+      }
+      
+      const emailToClientId = new Map<string, string>();
+      for (const client of allClients || []) {
+        if (client.email) {
+          emailToClientId.set(client.email.toLowerCase(), client.id);
+        }
+      }
+      console.log(`[recalculate-ltv] Built email map with ${emailToClientId.size} entries`);
+      
+      // Fetch invoices without client_id
+      const { data: invoices, error: invErr } = await supabase
+        .from('invoices')
+        .select('id, customer_email, client_id')
+        .is('client_id', null)
+        .not('customer_email', 'is', null)
+        .range(startOffset, startOffset + batchSize - 1);
+      
+      if (invErr) {
+        throw new Error(`Failed to fetch invoices: ${invErr.message}`);
+      }
+      
+      let linked = 0;
+      let notFound = 0;
+      
+      for (const inv of invoices || []) {
+        const email = inv.customer_email?.toLowerCase();
+        if (!email) continue;
+        
+        const clientId = emailToClientId.get(email);
+        if (clientId && !dryRun) {
+          const { error: updateErr } = await supabase
+            .from('invoices')
+            .update({ client_id: clientId })
+            .eq('id', inv.id);
+          
+          if (!updateErr) {
+            linked++;
+          }
+        } else if (clientId) {
+          linked++; // dry run count
+        } else {
+          notFound++;
+        }
+      }
+      
+      const hasMore = (invoices?.length || 0) === batchSize;
+      
+      console.log(`[recalculate-ltv] Invoice backfill: linked=${linked}, notFound=${notFound}, hasMore=${hasMore}`);
+      
+      return new Response(JSON.stringify({
+        success: true,
+        mode: 'backfill-invoices',
+        dryRun,
+        linked,
+        notFound,
+        processed: invoices?.length || 0,
+        hasMore,
+        nextOffset: startOffset + batchSize,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ============= MODE: LTV RECALCULATION (default) =============
     const result: ProcessResult = {
       processed: 0,
       updated: 0,
@@ -81,6 +160,7 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
+
 
     result.hasMore = clients.length === batchSize;
     result.nextOffset = startOffset + clients.length;

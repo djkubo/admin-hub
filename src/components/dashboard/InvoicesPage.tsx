@@ -29,6 +29,8 @@ import { toast } from 'sonner';
 import { formatDistanceToNow, format, subDays } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { invokeWithAdminKey } from '@/lib/adminApi';
+import { IncomingRevenueCard } from './IncomingRevenueCard';
+import { UncollectibleAlertCard } from './UncollectibleAlertCard';
 
 type DateRange = 'all' | '7d' | '30d' | '90d' | '365d';
 
@@ -58,6 +60,10 @@ export function InvoicesPage() {
     syncProgress,
     totalPending, 
     totalPaid,
+    totalNext72h,
+    invoicesNext72h,
+    totalUncollectible,
+    uncollectibleCount,
     statusCounts,
     exportToCSV,
     refetch 
@@ -184,7 +190,21 @@ export function InvoicesPage() {
         </div>
       </div>
 
-      {/* Sync Progress */}
+      {/* Revenue Widgets */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <IncomingRevenueCard
+          totalNext72h={totalNext72h}
+          totalPending={totalPending}
+          invoiceCount={invoicesNext72h.length}
+          isLoading={isLoading}
+        />
+        <UncollectibleAlertCard
+          totalAmount={totalUncollectible}
+          invoiceCount={uncollectibleCount}
+          isLoading={isLoading}
+        />
+      </div>
+
       {syncProgress && (
         <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
           <div className="flex items-center justify-between mb-2">
