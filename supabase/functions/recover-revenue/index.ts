@@ -1,50 +1,23 @@
 import Stripe from "https://esm.sh/stripe@14.21.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const ALLOWED_ORIGIN_PATTERNS = [
-  /^https:\/\/.*\.lovable\.app$/,
-  /^https:\/\/.*\.lovableproject\.com$/,
-  /^https:\/\/lovable\.dev$/,
-  /^http:\/\/localhost:\d+$/,
-];
-
-function getCorsHeaders(origin: string | null) {
-  const isAllowed = origin && ALLOWED_ORIGIN_PATTERNS.some(pattern => pattern.test(origin));
-  const allowedOrigin = isAllowed ? origin : "https://lovable.dev";
-  return {
-    "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
-}
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
 // Skip invoices linked to subscription statuses that are truly uncollectable
 const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired"];
 // Skip invoices that are already resolved or uncollectible  
 const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
-const API_DELAY_MS = 80; // Mínimo delay para evitar rate limits
-const BATCH_SIZE = 3; // Procesar 3 facturas por invocación (evita timeout)
-const MAX_INVOICES_PER_CALL = 3; // Máximo 3 facturas para terminar en <60s
+const API_DELAY_MS = 80;
+const BATCH_SIZE = 3; // Procesar 3 facturas por invocación
+const MAX_CHUNKS_PER_CALL = 1; // Procesar 1 batch y auto-continuar
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ============= Standard Response Contract =============
-interface StandardRecoveryResponse {
-  ok: boolean;
-  status: string;
-  syncRunId: string;
-  processed: number;
-  hasMore: boolean;
-  nextCursor?: string;
-  duration_ms: number;
-  recovered_amount: number;
-  failed_amount: number;
-  skipped_amount: number;
-  succeeded_count: number;
-  failed_count: number;
-  skipped_count: number;
-  error?: string;
-  // Detailed results for this batch
+interface ProcessResult {
   succeeded: Array<{
     invoice_id: string;
     customer_email: string | null;
@@ -68,15 +41,51 @@ interface StandardRecoveryResponse {
     reason: string;
     subscription_status?: string;
   }>;
-}
-
-interface ProcessResult {
-  succeeded: StandardRecoveryResponse['succeeded'];
-  failed: StandardRecoveryResponse['failed'];
-  skipped: StandardRecoveryResponse['skipped'];
   recovered_cents: number;
   failed_cents: number;
   skipped_cents: number;
+}
+
+// Track recent attempts to avoid spamming Stripe
+interface AttemptRecord {
+  last_attempt: string;
+  attempt_count: number;
+}
+
+async function getRecentAttempts(supabaseClient: any, syncRunId: string): Promise<Map<string, AttemptRecord>> {
+  const { data } = await supabaseClient
+    .from("sync_runs")
+    .select("metadata")
+    .eq("id", syncRunId)
+    .single();
+  
+  const attempts = new Map<string, AttemptRecord>();
+  if (data?.metadata?.attempt_history) {
+    const history = data.metadata.attempt_history as Record<string, AttemptRecord>;
+    for (const [invoiceId, record] of Object.entries(history)) {
+      attempts.set(invoiceId, record);
+    }
+  }
+  return attempts;
+}
+
+function shouldSkipDueToRecentAttempt(attemptRecord: AttemptRecord | undefined): { skip: boolean; reason?: string } {
+  if (!attemptRecord) return { skip: false };
+  
+  const lastAttempt = new Date(attemptRecord.last_attempt);
+  const hoursSince = (Date.now() - lastAttempt.getTime()) / (1000 * 60 * 60);
+  
+  // Skip if attempted in last 24h
+  if (hoursSince < 24) {
+    return { skip: true, reason: `Already attempted ${hoursSince.toFixed(1)}h ago` };
+  }
+  
+  // Skip if 3+ attempts in last 7 days
+  if (attemptRecord.attempt_count >= 3 && hoursSince < 168) {
+    return { skip: true, reason: `Max attempts (${attemptRecord.attempt_count}) reached this week` };
+  }
+  
+  return { skip: false };
 }
 
 async function processInvoice(
@@ -220,55 +229,15 @@ async function processInvoice(
   return true;
 }
 
-// Check if there's already an active recovery run
-async function getActiveRecoveryRun(supabaseClient: any): Promise<any | null> {
-  const { data } = await supabaseClient
-    .from("sync_runs")
-    .select("*")
-    .eq("source", "smart_recovery")
-    .eq("status", "running")
-    .order("started_at", { ascending: false })
-    .limit(1);
-  
-  return data?.[0] || null;
-}
-
-// Get invoice IDs already processed in this run
-async function getProcessedInvoicesFromRun(supabaseClient: any, syncRunId: string): Promise<Set<string>> {
-  const { data: syncRun } = await supabaseClient
-    .from("sync_runs")
-    .select("metadata")
-    .eq("id", syncRunId)
-    .single();
-  
-  const processedIds = new Set<string>();
-  
-  if (syncRun?.metadata) {
-    const meta = syncRun.metadata as Record<string, unknown>;
-    const succeeded = (meta.succeeded_ids as string[]) || [];
-    const failed = (meta.failed_ids as string[]) || [];
-    const skipped = (meta.skipped_ids as string[]) || [];
-    
-    for (const id of [...succeeded, ...failed, ...skipped]) {
-      processedIds.add(id);
-    }
-  }
-  
-  return processedIds;
-}
-
 Deno.serve(async (req: Request) => {
-  const origin = req.headers.get("origin");
-  const corsHeaders = getCorsHeaders(origin);
-
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   const startTime = Date.now();
+  const requestId = crypto.randomUUID().slice(0, 8);
 
   try {
-    // Quick auth check
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
@@ -280,16 +249,17 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     const { 
       hours_lookback = 24, 
-      cursor, // starting_after for pagination
-      sync_run_id, // Existing run to continue
-      exclude_recent_hours = 0,
-      force_new = false, // Force create new run even if one exists
+      cursor,
+      sync_run_id,
+      _continuation = false, // Flag for auto-continuation
     } = body;
     
+    console.log(`[${requestId}] 🚀 recover-revenue: hours=${hours_lookback}, continuation=${_continuation}, cursor=${cursor?.slice(0, 20) || 'none'}`);
+
     const validHours = [24, 168, 360, 720, 1440];
     if (!validHours.includes(hours_lookback)) {
       return new Response(
-        JSON.stringify({ ok: false, error: `Invalid hours_lookback. Valid values: ${validHours.join(", ")}` }),
+        JSON.stringify({ ok: false, error: `Invalid hours_lookback. Valid: ${validHours.join(", ")}` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -302,110 +272,97 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Authenticate user
-    const supabaseUser = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
-
-    const { data: { user }, error: userError } = await supabaseUser.auth.getUser();
-    if (userError || !user) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "Authentication failed" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log(`✅ User authenticated: ${user.email}`);
-
-    const supabaseService = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    
+    const supabaseService = createClient(supabaseUrl, serviceRoleKey);
     const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
 
+    // For continuation calls, skip auth check (we use service role)
+    if (!_continuation) {
+      const supabaseUser = createClient(
+        supabaseUrl,
+        Deno.env.get("SUPABASE_ANON_KEY")!,
+        { global: { headers: { Authorization: authHeader } } }
+      );
+      const { data: { user }, error: userError } = await supabaseUser.auth.getUser();
+      if (userError || !user) {
+        return new Response(
+          JSON.stringify({ ok: false, error: "Authentication failed" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      console.log(`[${requestId}] ✅ User: ${user.email}`);
+    }
+
     let syncRunId = sync_run_id;
-    let isNewRun = false;
     let currentCursor = cursor;
 
-    // Check for existing active run OR create new one
+    // Create or resume sync run
     if (!syncRunId) {
-      const activeRun = await getActiveRecoveryRun(supabaseService);
+      // Check for existing running sync
+      const { data: existingRun } = await supabaseService
+        .from("sync_runs")
+        .select("*")
+        .eq("source", "smart_recovery")
+        .eq("status", "running")
+        .order("started_at", { ascending: false })
+        .limit(1);
       
-      if (activeRun && !force_new) {
-        // Check if it's stale (> 10 minutes old without progress)
-        const startedAt = new Date(activeRun.started_at).getTime();
-        const isStale = Date.now() - startedAt > 5 * 60 * 1000; // 5 min timeout (más agresivo)
+      if (existingRun?.[0]) {
+        const run = existingRun[0];
+        const startedAt = new Date(run.started_at).getTime();
+        const checkpoint = run.checkpoint as Record<string, unknown> | null;
+        const lastActivity = checkpoint?.lastActivity ? new Date(checkpoint.lastActivity as string).getTime() : startedAt;
+        const staleMinutes = (Date.now() - lastActivity) / (1000 * 60);
         
-        if (isStale) {
-          console.log(`⚠️ Found stale active run ${activeRun.id}, marking as failed`);
+        if (staleMinutes > 5) {
+          console.log(`[${requestId}] ⚠️ Stale run ${run.id} (${staleMinutes.toFixed(1)}m), marking failed`);
           await supabaseService
             .from("sync_runs")
-            .update({ status: "failed", completed_at: new Date().toISOString(), error_message: "Timed out" })
-            .eq("id", activeRun.id);
+            .update({ status: "failed", completed_at: new Date().toISOString(), error_message: "Timeout - no activity" })
+            .eq("id", run.id);
         } else {
-          // Resume existing run
-          syncRunId = activeRun.id;
-          const checkpoint = activeRun.checkpoint as Record<string, unknown> | null;
+          syncRunId = run.id;
           currentCursor = checkpoint?.last_cursor as string || undefined;
-          console.log(`📋 Resuming existing run ${syncRunId} from cursor ${currentCursor}`);
+          console.log(`[${requestId}] 📋 Resuming ${syncRunId}`);
         }
       }
       
       if (!syncRunId) {
-        // Create new run
         const newId = crypto.randomUUID();
-        const { error: insertError } = await supabaseService
-          .from("sync_runs")
-          .insert({
-            id: newId,
-            source: "smart_recovery",
-            status: "running",
-            started_at: new Date().toISOString(),
-            metadata: {
-              hours_lookback,
-              initiated_by: user.email,
-              exclude_recent_hours,
-              succeeded_ids: [],
-              failed_ids: [],
-              skipped_ids: [],
-            },
-            checkpoint: {
-              last_cursor: null,
-              recovered_amount: 0,
-              failed_amount: 0,
-              skipped_amount: 0,
-              processed: 0,
-            },
-          });
-        
-        if (insertError) {
-          console.error("❌ Failed to create sync run:", insertError);
-          return new Response(
-            JSON.stringify({ ok: false, error: "Failed to create sync run" }),
-            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-        
+        await supabaseService.from("sync_runs").insert({
+          id: newId,
+          source: "smart_recovery",
+          status: "running",
+          started_at: new Date().toISOString(),
+          metadata: { hours_lookback, attempt_history: {} },
+          checkpoint: {
+            last_cursor: null,
+            recovered_amount: 0,
+            failed_amount: 0,
+            skipped_amount: 0,
+            processed: 0,
+            succeeded_count: 0,
+            failed_count: 0,
+            skipped_count: 0,
+            lastActivity: new Date().toISOString(),
+          },
+        });
         syncRunId = newId;
-        isNewRun = true;
-        console.log(`📝 Created new sync run: ${syncRunId}`);
+        console.log(`[${requestId}] 📝 Created run: ${syncRunId}`);
       }
     }
 
-    // Get already processed invoices from this run
-    const processedInRun = await getProcessedInvoicesFromRun(supabaseService, syncRunId);
-    console.log(`📋 Already processed in this run: ${processedInRun.size} invoices`);
+    // Get attempt history to avoid re-trying recently failed invoices
+    const attemptHistory = await getRecentAttempts(supabaseService, syncRunId);
 
     // Fetch invoices from Stripe
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
-    console.log(`📅 Cutoff: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
 
     const params: Stripe.InvoiceListParams = {
       status: "open",
-      limit: MAX_INVOICES_PER_CALL,
+      limit: BATCH_SIZE,
       created: { gte: cutoffTimestamp },
       expand: ["data.subscription", "data.customer"],
     };
@@ -416,66 +373,35 @@ Deno.serve(async (req: Request) => {
     const allInvoices = response.data;
     const stripeHasMore = response.has_more;
 
-    // Filter out already processed
-    const invoicesToProcess = allInvoices.filter((inv: Stripe.Invoice) => !processedInRun.has(inv.id));
-    console.log(`📄 Fetched ${allInvoices.length} invoices, ${invoicesToProcess.length} new to process`);
+    console.log(`[${requestId}] 📄 Fetched ${allInvoices.length} invoices, hasMore: ${stripeHasMore}`);
 
-    // Si no hay facturas en absoluto para este rango, cerrar inmediatamente
-    if (allInvoices.length === 0) {
-      console.log(`📭 No invoices found in range ${hours_lookback}h. Marking as completed.`);
+    // No invoices in range
+    if (allInvoices.length === 0 && !currentCursor) {
+      console.log(`[${requestId}] 📭 No invoices in range`);
       
-      // Get existing metadata
-      const { data: currentRunData } = await supabaseService
-        .from("sync_runs")
-        .select("metadata, checkpoint")
-        .eq("id", syncRunId)
-        .single();
-      
-      const existingMeta = (currentRunData?.metadata as Record<string, unknown>) || {};
-      
-      await supabaseService
-        .from("sync_runs")
-        .update({
-          status: "completed",
-          completed_at: new Date().toISOString(),
-          metadata: { ...existingMeta, no_invoices_found: true, completed_reason: "no_invoices_in_range" },
-          checkpoint: { 
-            recovered_amount: 0, 
-            failed_amount: 0, 
-            skipped_amount: 0, 
-            processed: 0,
-            succeeded_count: 0,
-            failed_count: 0,
-            skipped_count: 0,
-          },
-        })
-        .eq("id", syncRunId);
+      await supabaseService.from("sync_runs").update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        checkpoint: {
+          recovered_amount: 0, failed_amount: 0, skipped_amount: 0,
+          processed: 0, succeeded_count: 0, failed_count: 0, skipped_count: 0,
+          lastActivity: new Date().toISOString(),
+        },
+      }).eq("id", syncRunId);
 
-      const duration = Date.now() - startTime;
       return new Response(
         JSON.stringify({
           ok: true,
           status: "completed",
           syncRunId,
-          processed: 0,
-          hasMore: false,
-          duration_ms: duration,
-          recovered_amount: 0,
-          failed_amount: 0,
-          skipped_amount: 0,
-          succeeded_count: 0,
-          failed_count: 0,
-          skipped_count: 0,
-          succeeded: [],
-          failed: [],
-          skipped: [],
           message: `No hay facturas abiertas en las últimas ${hours_lookback / 24} días`,
+          hasMore: false,
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Process invoices
+    // Process invoices with skip checks
     const result: ProcessResult = {
       succeeded: [],
       failed: [],
@@ -485,104 +411,162 @@ Deno.serve(async (req: Request) => {
       skipped_cents: 0,
     };
 
+    const updatedAttemptHistory: Record<string, AttemptRecord> = {};
     let lastProcessedId: string | undefined;
 
-    for (const invoice of invoicesToProcess) {
+    for (const invoice of allInvoices) {
+      // Check if recently attempted
+      const attemptCheck = shouldSkipDueToRecentAttempt(attemptHistory.get(invoice.id));
+      if (attemptCheck.skip) {
+        console.log(`[${requestId}] ⏭️ Skipping ${invoice.id}: ${attemptCheck.reason}`);
+        result.skipped.push({
+          invoice_id: invoice.id,
+          customer_email: typeof invoice.customer === "object" ? (invoice.customer as Stripe.Customer)?.email : null,
+          amount_due: invoice.amount_due,
+          currency: invoice.currency,
+          reason: attemptCheck.reason!,
+        });
+        result.skipped_cents += invoice.amount_due;
+        lastProcessedId = invoice.id;
+        continue;
+      }
+
       await processInvoice(stripe, invoice, result);
       lastProcessedId = invoice.id;
+
+      // Track this attempt
+      const prev = attemptHistory.get(invoice.id);
+      updatedAttemptHistory[invoice.id] = {
+        last_attempt: new Date().toISOString(),
+        attempt_count: (prev?.attempt_count || 0) + 1,
+      };
     }
 
-    // Determine if there's more to process (FIXED: paréntesis explícitos para precedencia correcta)
-    const hasMore = stripeHasMore || (invoicesToProcess.length === 0 && allInvoices.length > 0);
+    const hasMore = stripeHasMore;
     const nextCursor = lastProcessedId || (allInvoices.length > 0 ? allInvoices[allInvoices.length - 1].id : undefined);
 
     // Update sync run with progress
     const { data: currentRun } = await supabaseService
       .from("sync_runs")
-      .select("metadata, checkpoint, total_fetched, total_inserted, total_skipped")
+      .select("metadata, checkpoint")
       .eq("id", syncRunId)
       .single();
 
     const existingMeta = (currentRun?.metadata as Record<string, unknown>) || {};
     const existingCheckpoint = (currentRun?.checkpoint as Record<string, unknown>) || {};
     
-    const updatedMeta = {
-      ...existingMeta,
-      succeeded_ids: [...((existingMeta.succeeded_ids as string[]) || []), ...result.succeeded.map(s => s.invoice_id)],
-      failed_ids: [...((existingMeta.failed_ids as string[]) || []), ...result.failed.map(f => f.invoice_id)],
-      skipped_ids: [...((existingMeta.skipped_ids as string[]) || []), ...result.skipped.map(s => s.invoice_id)],
+    const mergedAttemptHistory = {
+      ...((existingMeta.attempt_history as Record<string, AttemptRecord>) || {}),
+      ...updatedAttemptHistory,
     };
 
     const prevRecovered = (existingCheckpoint.recovered_amount as number) || 0;
     const prevFailed = (existingCheckpoint.failed_amount as number) || 0;
     const prevSkipped = (existingCheckpoint.skipped_amount as number) || 0;
     const prevProcessed = (existingCheckpoint.processed as number) || 0;
+    const prevSucceededCount = (existingCheckpoint.succeeded_count as number) || 0;
+    const prevFailedCount = (existingCheckpoint.failed_count as number) || 0;
+    const prevSkippedCount = (existingCheckpoint.skipped_count as number) || 0;
 
-    const updatedCheckpoint = {
+    const newCheckpoint = {
       last_cursor: nextCursor,
       recovered_amount: prevRecovered + result.recovered_cents / 100,
       failed_amount: prevFailed + result.failed_cents / 100,
       skipped_amount: prevSkipped + result.skipped_cents / 100,
-      processed: prevProcessed + invoicesToProcess.length,
-      succeeded_count: (updatedMeta.succeeded_ids as string[]).length,
-      failed_count: (updatedMeta.failed_ids as string[]).length,
-      skipped_count: (updatedMeta.skipped_ids as string[]).length,
+      processed: prevProcessed + allInvoices.length,
+      succeeded_count: prevSucceededCount + result.succeeded.length,
+      failed_count: prevFailedCount + result.failed.length,
+      skipped_count: prevSkippedCount + result.skipped.length,
+      lastActivity: new Date().toISOString(),
     };
 
     const newStatus = hasMore ? "running" : "completed";
 
-    await supabaseService
-      .from("sync_runs")
-      .update({
-        status: newStatus,
-        completed_at: newStatus === "completed" ? new Date().toISOString() : null,
-        metadata: updatedMeta,
-        checkpoint: updatedCheckpoint,
-        total_fetched: (currentRun?.total_fetched || 0) + allInvoices.length,
-        total_inserted: updatedCheckpoint.succeeded_count,
-        total_skipped: updatedCheckpoint.skipped_count,
-      })
-      .eq("id", syncRunId);
+    await supabaseService.from("sync_runs").update({
+      status: newStatus,
+      completed_at: newStatus === "completed" ? new Date().toISOString() : null,
+      metadata: { ...existingMeta, attempt_history: mergedAttemptHistory },
+      checkpoint: newCheckpoint,
+      total_fetched: (existingCheckpoint.processed as number || 0) + allInvoices.length,
+      total_inserted: newCheckpoint.succeeded_count,
+      total_skipped: newCheckpoint.skipped_count,
+    }).eq("id", syncRunId);
 
     const duration = Date.now() - startTime;
-    console.log(`\n🏁 Batch complete in ${duration}ms - hasMore: ${hasMore}`);
-    console.log(`✅ Recovered: $${(result.recovered_cents / 100).toFixed(2)}`);
-    console.log(`❌ Failed: $${(result.failed_cents / 100).toFixed(2)}`);
+    console.log(`[${requestId}] 🏁 Batch done in ${duration}ms - hasMore: ${hasMore}`);
+    console.log(`[${requestId}] ✅ Recovered: $${(result.recovered_cents / 100).toFixed(2)}`);
 
-    const responseBody: StandardRecoveryResponse = {
-      ok: true,
-      status: newStatus,
-      syncRunId,
-      processed: invoicesToProcess.length,
-      hasMore,
-      nextCursor: hasMore ? nextCursor : undefined,
-      duration_ms: duration,
-      recovered_amount: updatedCheckpoint.recovered_amount,
-      failed_amount: updatedCheckpoint.failed_amount,
-      skipped_amount: updatedCheckpoint.skipped_amount,
-      succeeded_count: updatedCheckpoint.succeeded_count,
-      failed_count: updatedCheckpoint.failed_count,
-      skipped_count: updatedCheckpoint.skipped_count,
-      succeeded: result.succeeded,
-      failed: result.failed,
-      skipped: result.skipped,
-    };
+    // Auto-continuation with background task
+    if (hasMore && nextCursor) {
+      console.log(`[${requestId}] 🔄 Auto-continuing with cursor ${nextCursor.slice(0, 20)}...`);
+      
+      // Use globalThis.EdgeRuntime for Deno/Supabase compatibility
+      const runtime = (globalThis as any).EdgeRuntime;
+      if (runtime?.waitUntil) {
+        runtime.waitUntil((async () => {
+          await sleep(1500); // 1.5s delay between batches
+          
+          try {
+            await fetch(`${supabaseUrl}/functions/v1/recover-revenue`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${serviceRoleKey}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                hours_lookback,
+                cursor: nextCursor,
+                sync_run_id: syncRunId,
+                _continuation: true,
+              }),
+            });
+          } catch (err) {
+            console.error(`[${requestId}] ❌ Auto-continuation failed:`, err);
+          }
+        })());
+      } else {
+        // Fallback: direct fetch without waitUntil
+        console.log(`[${requestId}] ⚠️ No EdgeRuntime.waitUntil, using direct fetch`);
+        fetch(`${supabaseUrl}/functions/v1/recover-revenue`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${serviceRoleKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            hours_lookback,
+            cursor: nextCursor,
+            sync_run_id: syncRunId,
+            _continuation: true,
+          }),
+        }).catch(err => console.error(`[${requestId}] ❌ Fallback continuation failed:`, err));
+      }
+    }
 
     return new Response(
-      JSON.stringify(responseBody),
+      JSON.stringify({
+        ok: true,
+        status: newStatus,
+        syncRunId,
+        processed: allInvoices.length,
+        hasMore,
+        duration_ms: duration,
+        checkpoint: newCheckpoint,
+        batch: {
+          succeeded: result.succeeded.length,
+          failed: result.failed.length,
+          skipped: result.skipped.length,
+        },
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("❌ Fatal error:", errorMessage);
+    console.error(`[${requestId}] ❌ Fatal:`, errorMessage);
     
     return new Response(
-      JSON.stringify({ 
-        ok: false, 
-        error: errorMessage,
-        duration_ms: Date.now() - startTime,
-      }),
+      JSON.stringify({ ok: false, error: errorMessage, duration_ms: Date.now() - startTime }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
