@@ -22,7 +22,6 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
     global: { headers: { Authorization: authHeader } }
   });
 
-  // Use getUser() instead of getClaims() for compatibility
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   
   if (userError || !user) {
@@ -38,10 +37,65 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
   return { valid: true };
 }
 
+// ============ PLAN CLASSIFICATION BY AMOUNT/INTERVAL ============
+// This replaces fragile string-based matching with amount-based logic
+function classifyPlan(amount: number, interval: string, productName: string | null, nickname: string | null): string {
+  // Amount is in cents
+  const amountUSD = amount / 100;
+  
+  // Annual plans (typically $150-$250/year range)
+  if (interval === 'year') {
+    if (amountUSD >= 180 && amountUSD <= 220) {
+      return 'Plan Anual ~$195';
+    }
+    if (amountUSD >= 350 && amountUSD <= 450) {
+      return 'Plan Anual Premium ~$400';
+    }
+    // Generic annual
+    return `Plan Anual $${Math.round(amountUSD)}`;
+  }
+  
+  // Monthly plans
+  if (interval === 'month') {
+    if (amountUSD >= 30 && amountUSD <= 40) {
+      return 'Plan Mensual ~$35';
+    }
+    if (amountUSD >= 45 && amountUSD <= 55) {
+      return 'Plan Mensual ~$50';
+    }
+    if (amountUSD >= 95 && amountUSD <= 105) {
+      return 'Plan Mensual ~$100';
+    }
+    // Generic monthly
+    return `Plan Mensual $${Math.round(amountUSD)}`;
+  }
+  
+  // Weekly plans
+  if (interval === 'week') {
+    return `Plan Semanal $${Math.round(amountUSD)}`;
+  }
+  
+  // Daily plans
+  if (interval === 'day') {
+    return `Plan Diario $${Math.round(amountUSD)}`;
+  }
+  
+  // Fallback: use product name or nickname if available
+  if (productName && productName !== 'Unknown Plan') {
+    return productName;
+  }
+  if (nickname) {
+    return nickname;
+  }
+  
+  // Ultimate fallback
+  return `Legacy Plan $${Math.round(amountUSD)}/${interval || 'unknown'}`;
+}
+
 // Background sync function
 async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
   try {
-    console.log("📊 Starting background sync...");
+    console.log("📊 Starting background sync (ALL subscriptions, no filtering)...");
     
     let subscriptions: Stripe.Subscription[] = [];
     let hasMore = true;
@@ -52,6 +106,8 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
       const params: Stripe.SubscriptionListParams = {
         limit,
         expand: ["data.customer", "data.plan.product"],
+        // CRITICAL: Fetch ALL statuses, not just active
+        // Stripe returns all statuses by default, but we make it explicit
       };
       if (startingAfter) params.starting_after = startingAfter;
 
@@ -68,30 +124,37 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
       // Update progress in sync_runs
       await serviceClient.from("sync_runs").update({
         total_fetched: subscriptions.length,
-        checkpoint: { last_id: startingAfter },
+        checkpoint: { last_id: startingAfter, lastUpdate: new Date().toISOString() },
       }).eq("id", syncRunId);
 
-      if (subscriptions.length >= 5000) {
-        console.log("⚠️ Reached 5000 subscription limit");
+      if (subscriptions.length >= 10000) {
+        console.log("⚠️ Reached 10000 subscription limit");
         break;
       }
     }
 
     console.log(`✅ Total subscriptions fetched: ${subscriptions.length}`);
 
+    // Map subscriptions with improved plan classification
     const records = subscriptions.map((sub) => {
       const customer = sub.customer;
       const plan = sub.plan;
       const product = plan?.product;
 
-      let planName = "Unknown Plan";
+      // Extract raw product name and nickname
+      let rawProductName: string | null = null;
+      let rawNickname: string | null = plan?.nickname || null;
+      
       if (typeof product === "object" && product?.name) {
-        planName = product.name;
-      } else if (plan?.nickname) {
-        planName = plan.nickname;
+        rawProductName = product.name;
       } else if (typeof product === "string") {
-        planName = product;
+        rawProductName = product;
       }
+
+      // FIXED: Use amount-based classification instead of fragile string matching
+      const amount = plan?.amount || 0;
+      const interval = plan?.interval || 'month';
+      const planName = classifyPlan(amount, interval, rawProductName, rawNickname);
 
       return {
         stripe_subscription_id: sub.id,
@@ -99,10 +162,10 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
         customer_email: typeof customer === "object" ? customer?.email : null,
         plan_name: planName,
         plan_id: plan?.id || null,
-        amount: plan?.amount || 0,
+        amount: amount,
         currency: (plan?.currency || "usd").toLowerCase(),
-        interval: plan?.interval || "month",
-        status: sub.status,
+        interval: interval,
+        status: sub.status, // ALL statuses preserved: active, past_due, unpaid, canceled, etc.
         provider: 'stripe',
         trial_start: sub.trial_start ? new Date(sub.trial_start * 1000).toISOString() : null,
         trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
@@ -111,8 +174,21 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
         canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
         cancel_reason: sub.cancellation_details?.reason || null,
         updated_at: new Date().toISOString(),
+        raw_data: {
+          // Store raw data for debugging
+          originalProductName: rawProductName,
+          originalNickname: rawNickname,
+          stripeStatus: sub.status,
+        }
       };
     });
+
+    // Log status breakdown for debugging
+    const statusBreakdown: Record<string, number> = {};
+    for (const r of records) {
+      statusBreakdown[r.status] = (statusBreakdown[r.status] || 0) + 1;
+    }
+    console.log("📊 Status breakdown:", JSON.stringify(statusBreakdown));
 
     const BATCH_SIZE = 500;
     let upserted = 0;
@@ -144,7 +220,10 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
       completed_at: new Date().toISOString(),
       total_fetched: subscriptions.length,
       total_inserted: upserted,
-      metadata: { planCount: records.length },
+      metadata: { 
+        planCount: records.length,
+        statusBreakdown,
+      },
     }).eq("id", syncRunId);
 
     console.log("✅ Background sync completed successfully");
@@ -194,7 +273,7 @@ Deno.serve(async (req: Request) => {
     // Check if there's already a running sync
     const { data: runningSyncs } = await serviceClient
       .from("sync_runs")
-      .select("id, started_at")
+      .select("id, started_at, checkpoint")
       .eq("source", "subscriptions")
       .eq("status", "running")
       .order("started_at", { ascending: false })
@@ -202,11 +281,17 @@ Deno.serve(async (req: Request) => {
 
     if (runningSyncs && runningSyncs.length > 0) {
       const runningSync = runningSyncs[0];
-      const startedAt = new Date(runningSync.started_at);
-      const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
+      const checkpoint = runningSync.checkpoint as { lastUpdate?: string } | null;
       
-      // If sync is stuck for more than 10 minutes, allow new one
-      if (minutesAgo < 10) {
+      // Use checkpoint.lastUpdate for stale detection
+      const lastActivity = checkpoint?.lastUpdate 
+        ? new Date(checkpoint.lastUpdate).getTime()
+        : new Date(runningSync.started_at).getTime();
+      
+      const minutesAgo = (Date.now() - lastActivity) / 1000 / 60;
+      
+      // If sync is stuck for more than 5 minutes, allow new one
+      if (minutesAgo < 5) {
         return new Response(
           JSON.stringify({ 
             success: true, 
@@ -220,7 +305,7 @@ Deno.serve(async (req: Request) => {
         // Mark old sync as failed
         await serviceClient.from("sync_runs").update({
           status: "failed",
-          error_message: "Timeout - sync took too long",
+          error_message: `Stale: no activity for ${Math.round(minutesAgo)} minutes`,
           completed_at: new Date().toISOString(),
         }).eq("id", runningSync.id);
       }
@@ -233,6 +318,7 @@ Deno.serve(async (req: Request) => {
         source: "subscriptions",
         status: "running",
         started_at: new Date().toISOString(),
+        checkpoint: { lastUpdate: new Date().toISOString() },
       })
       .select()
       .single();

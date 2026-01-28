@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, RefreshCw, Loader2, CloudCog } from 'lucide-react';
+import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, RefreshCw, Loader2, CloudCog, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useSubscriptions, Subscription } from '@/hooks/useSubscriptions';
@@ -7,7 +7,19 @@ import { formatDistanceToNow, addDays, isAfter, isBefore } from 'date-fns';
 import { es } from 'date-fns/locale';
 
 export function SubscriptionsPage() {
-  const { subscriptions, isLoading, syncSubscriptions, revenueByPlan, totalActiveRevenue, totalActiveCount, isSyncing, syncProgress } = useSubscriptions();
+  const { 
+    subscriptions, 
+    isLoading, 
+    syncSubscriptions, 
+    revenueByPlan, 
+    totalActiveRevenue, 
+    totalActiveCount, 
+    statusBreakdown,
+    revenueAtRisk,
+    atRiskCount,
+    isSyncing, 
+    syncProgress 
+  } = useSubscriptions();
 
   const now = new Date();
   const in3Days = addDays(now, 3);
@@ -22,20 +34,24 @@ export function SubscriptionsPage() {
     const canceled = subscriptions.filter((s: Subscription) => 
       s.canceled_at && isAfter(new Date(s.canceled_at), thirtyDaysAgo)
     );
-    const pastDue = subscriptions.filter((s: Subscription) => s.status === 'past_due');
+    // FIXED: Include both past_due AND unpaid in at-risk list
+    const atRisk = subscriptions.filter((s: Subscription) => 
+      s.status === 'past_due' || s.status === 'unpaid'
+    );
 
     return {
       trials: trials.length,
       trialsExpiringSoon: trialsExpiringSoon.length,
       active: active.length,
       canceled: canceled.length,
-      pastDue: pastDue.length,
+      atRisk: atRisk.length,
       trialsExpiringSoonList: trialsExpiringSoon.sort((a, b) => 
         new Date(a.trial_end!).getTime() - new Date(b.trial_end!).getTime()
       ),
       canceledList: canceled.sort((a, b) => 
         new Date(b.canceled_at!).getTime() - new Date(a.canceled_at!).getTime()
       ),
+      atRiskList: atRisk.sort((a, b) => b.amount - a.amount),
     };
   }, [subscriptions]);
 
@@ -43,8 +59,8 @@ export function SubscriptionsPage() {
     { label: 'Trials', value: funnel.trials, icon: Clock, color: 'purple' },
     { label: 'Por Vencer', value: funnel.trialsExpiringSoon, icon: AlertTriangle, color: 'amber' },
     { label: 'Activas', value: funnel.active, icon: CheckCircle, color: 'emerald' },
-    { label: 'Past Due', value: funnel.pastDue, icon: AlertTriangle, color: 'red' },
-    { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'red' },
+    { label: 'En Riesgo', value: funnel.atRisk, icon: AlertTriangle, color: 'red' },
+    { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'gray' },
   ];
 
   const getColorClasses = (color: string) => {
@@ -53,6 +69,7 @@ export function SubscriptionsPage() {
       amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
       emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', border: 'border-emerald-500/30' },
       red: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
+      gray: { bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
     };
     return colors[color] || colors.purple;
   };
@@ -71,12 +88,22 @@ export function SubscriptionsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 justify-between sm:justify-end">
+          {/* MRR Display */}
           <div className="text-left sm:text-right">
             <p className="text-lg md:text-2xl font-bold text-foreground">
               ${(totalActiveRevenue / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
             </p>
-            <p className="text-[10px] md:text-xs text-muted-foreground">MRR ({totalActiveCount})</p>
+            <p className="text-[10px] md:text-xs text-muted-foreground">MRR ({totalActiveCount} activas)</p>
           </div>
+          {/* Revenue at Risk - NEW */}
+          {revenueAtRisk > 0 && (
+            <div className="text-left sm:text-right border-l border-red-500/30 pl-3">
+              <p className="text-lg md:text-2xl font-bold text-red-400">
+                ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
+              </p>
+              <p className="text-[10px] md:text-xs text-red-400/70">En Riesgo ({atRiskCount})</p>
+            </div>
+          )}
           <Button
             onClick={() => syncSubscriptions.mutate()}
             disabled={isSyncing}
@@ -107,6 +134,25 @@ export function SubscriptionsPage() {
         </div>
       )}
 
+      {/* Revenue at Risk Alert - NEW */}
+      {revenueAtRisk > 0 && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 md:p-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-red-500/20">
+              <DollarSign className="h-5 w-5 text-red-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-400 text-sm md:text-base">
+                Revenue at Risk: ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}/mes
+              </h3>
+              <p className="text-[10px] md:text-xs text-red-400/70 mt-0.5">
+                {statusBreakdown.past_due} pagos vencidos + {statusBreakdown.unpaid} impagos = {atRiskCount} clientes requieren atención
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Funnel Cards - 3 cols mobile, 5 cols desktop */}
       <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 md:gap-4">
         {funnelCards.map((card, i) => {
@@ -124,8 +170,53 @@ export function SubscriptionsPage() {
         })}
       </div>
 
-      {/* Two Lists - Stack on mobile */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Three Lists - Stack on mobile */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* At Risk List - NEW (most important, shown first) */}
+        <div className="rounded-xl border border-red-500/30 bg-card overflow-hidden">
+          <div className="p-3 border-b border-red-500/30 flex items-center gap-2 bg-red-500/5">
+            <AlertTriangle className="h-4 w-4 text-red-500" />
+            <h3 className="font-semibold text-red-400 text-sm">Requieren Atención</h3>
+            <Badge variant="outline" className="ml-auto border-red-500/30 text-red-400 text-[10px]">
+              {funnel.atRisk}
+            </Badge>
+          </div>
+          {funnel.atRiskList.length === 0 ? (
+            <div className="p-6 text-center">
+              <CheckCircle className="h-6 w-6 mx-auto mb-2 text-emerald-500/50" />
+              <p className="text-muted-foreground text-xs">Sin pagos pendientes 🎉</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
+              {funnel.atRiskList.slice(0, 15).map((sub: Subscription) => (
+                <div key={sub.id} className="p-3 hover:bg-red-500/5 touch-feedback">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs md:text-sm font-medium truncate">{sub.customer_email || 'Sin email'}</p>
+                      <div className="flex items-center gap-1 mt-1">
+                        <Badge 
+                          variant="outline" 
+                          className={`text-[10px] ${
+                            sub.status === 'unpaid' 
+                              ? 'bg-red-500/20 text-red-300 border-red-500/30' 
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                          }`}
+                        >
+                          {sub.status === 'unpaid' ? 'Impago' : 'Vencido'}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">{sub.plan_name}</span>
+                      </div>
+                    </div>
+                    <span className="text-red-400 font-bold text-sm shrink-0">
+                      ${(sub.amount / 100).toFixed(0)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Trials Expiring Soon */}
         <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
           <div className="p-3 border-b border-border/50 flex items-center gap-2">
@@ -161,7 +252,7 @@ export function SubscriptionsPage() {
         {/* Recent Cancellations */}
         <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
           <div className="p-3 border-b border-border/50 flex items-center gap-2">
-            <XCircle className="h-4 w-4 text-red-500" />
+            <XCircle className="h-4 w-4 text-gray-500" />
             <h3 className="font-semibold text-foreground text-sm">Cancelaciones (30d)</h3>
           </div>
           {funnel.canceledList.length === 0 ? (
@@ -180,7 +271,7 @@ export function SubscriptionsPage() {
                         {sub.plan_name}
                       </Badge>
                     </div>
-                    <span className="text-[10px] text-red-400 shrink-0 max-w-[80px] truncate">
+                    <span className="text-[10px] text-gray-400 shrink-0 max-w-[80px] truncate">
                       {sub.cancel_reason || 'Sin razón'}
                     </span>
                   </div>
@@ -199,9 +290,9 @@ export function SubscriptionsPage() {
             Ingresos por Plan
           </h3>
           <div className="space-y-2">
-            {revenueByPlan.slice(0, 5).map((plan, i) => (
+            {revenueByPlan.slice(0, 8).map((plan, i) => (
               <div key={i} className="flex items-center gap-2 md:gap-4">
-                <div className="w-16 md:w-32 text-[10px] md:text-sm font-medium truncate">{plan.name}</div>
+                <div className="w-24 md:w-40 text-[10px] md:text-sm font-medium truncate">{plan.name}</div>
                 <div className="flex-1">
                   <div className="h-2 bg-muted rounded-full overflow-hidden">
                     <div
@@ -210,10 +301,13 @@ export function SubscriptionsPage() {
                     />
                   </div>
                 </div>
-                <div className="w-12 md:w-20 text-right text-[10px] md:text-sm text-muted-foreground">
+                <div className="w-8 md:w-12 text-center text-[10px] md:text-xs text-muted-foreground">
+                  {plan.count}
+                </div>
+                <div className="w-14 md:w-20 text-right text-[10px] md:text-sm font-medium text-foreground">
                   ${(plan.revenue / 100).toFixed(0)}
                 </div>
-                <div className="w-10 md:w-16 text-right text-[9px] md:text-xs text-muted-foreground">
+                <div className="w-10 md:w-12 text-right text-[9px] md:text-xs text-muted-foreground">
                   {plan.percentage.toFixed(0)}%
                 </div>
               </div>

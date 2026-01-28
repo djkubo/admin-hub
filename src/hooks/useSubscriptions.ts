@@ -34,6 +34,18 @@ export interface PlanRevenue {
   cumulative: number;
 }
 
+// NEW: Status breakdown for dashboard display
+export interface StatusBreakdown {
+  active: number;
+  trialing: number;
+  past_due: number;
+  unpaid: number;
+  canceled: number;
+  incomplete: number;
+  incomplete_expired: number;
+  paused: number;
+}
+
 interface SyncRun {
   id: string;
   status: string;
@@ -42,6 +54,21 @@ interface SyncRun {
   total_fetched: number | null;
   total_inserted: number | null;
   error_message: string | null;
+}
+
+// Helper to normalize Stripe status to display category
+function getStatusCategory(status: string): keyof StatusBreakdown {
+  switch (status) {
+    case 'active': return 'active';
+    case 'trialing': return 'trialing';
+    case 'past_due': return 'past_due';
+    case 'unpaid': return 'unpaid';
+    case 'canceled': return 'canceled';
+    case 'incomplete': return 'incomplete';
+    case 'incomplete_expired': return 'incomplete_expired';
+    case 'paused': return 'paused';
+    default: return 'active'; // Default fallback
+  }
 }
 
 export function useSubscriptions() {
@@ -115,16 +142,17 @@ export function useSubscriptions() {
   const { data: subscriptions = [], isLoading, error, refetch } = useQuery({
     queryKey: ["subscriptions"],
     queryFn: async () => {
+      // FIXED: Fetch ALL subscriptions without filtering by status
       const { data, error } = await supabase
         .from("subscriptions")
         .select("*")
         .order("amount", { ascending: false })
-        .limit(2000); // Safety limit to prevent timeout
+        .limit(5000); // Increased limit to capture all subscriptions
 
       if (error) throw error;
       return data as Subscription[];
     },
-    refetchInterval: 120000, // Refetch every 2 minutes (reduced from 1 min)
+    refetchInterval: 120000, // Refetch every 2 minutes
     staleTime: 60000, // Consider data fresh for 1 minute
   });
 
@@ -148,7 +176,29 @@ export function useSubscriptions() {
     };
   }, [refetch]);
 
+  // NEW: Calculate status breakdown for all subscriptions
+  const statusBreakdown: StatusBreakdown = (() => {
+    const breakdown: StatusBreakdown = {
+      active: 0,
+      trialing: 0,
+      past_due: 0,
+      unpaid: 0,
+      canceled: 0,
+      incomplete: 0,
+      incomplete_expired: 0,
+      paused: 0,
+    };
+    
+    for (const sub of subscriptions) {
+      const category = getStatusCategory(sub.status);
+      breakdown[category]++;
+    }
+    
+    return breakdown;
+  })();
+
   // Calculate revenue by plan with Pareto analysis
+  // FIXED: Include active + trialing for MRR (revenue-generating)
   const revenueByPlan: PlanRevenue[] = (() => {
     const activeSubscriptions = subscriptions.filter(
       (s) => s.status === "active" || s.status === "trialing"
@@ -183,8 +233,19 @@ export function useSubscriptions() {
     });
   })();
 
-  const totalActiveRevenue = revenueByPlan.reduce((sum, p) => sum + p.revenue, 0);
-  const totalActiveCount = revenueByPlan.reduce((sum, p) => sum + p.count, 0);
+  // FIXED: Active revenue only from status = 'active' (not trialing - they haven't paid yet)
+  const totalActiveRevenue = subscriptions
+    .filter((s) => s.status === "active")
+    .reduce((sum, s) => sum + s.amount, 0);
+  
+  const totalActiveCount = statusBreakdown.active;
+  
+  // NEW: Revenue at risk (past_due + unpaid)
+  const revenueAtRisk = subscriptions
+    .filter((s) => s.status === "past_due" || s.status === "unpaid")
+    .reduce((sum, s) => sum + s.amount, 0);
+  
+  const atRiskCount = statusBreakdown.past_due + statusBreakdown.unpaid;
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
@@ -231,6 +292,10 @@ export function useSubscriptions() {
     revenueByPlan,
     totalActiveRevenue,
     totalActiveCount,
+    // NEW exports
+    statusBreakdown,
+    revenueAtRisk,
+    atRiskCount,
     isSyncing,
     syncProgress,
   };
