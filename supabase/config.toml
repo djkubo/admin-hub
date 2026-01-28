@@ -87,6 +87,9 @@ verify_jwt = false
 [functions.receive-lead]
 verify_jwt = false
 
+[functions.recalculate-ltv]
+verify_jwt = false
+
 [functions.reconcile-metrics]
 verify_jwt = false
 

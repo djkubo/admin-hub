@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Mail,
   Phone,
@@ -31,6 +32,9 @@ import {
   Check,
   Loader2,
   FileText,
+  RefreshCw,
+  Send,
+  Clock,
 } from 'lucide-react';
 import { openWhatsApp, getRecoveryMessage, getGreetingMessage } from './RecoveryTable';
 import { useToast } from '@/hooks/use-toast';
@@ -78,7 +82,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
         .select('*')
         .eq('client_id', client.id)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(50);
       if (error) throw error;
       return data;
     },
@@ -95,24 +99,23 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
         .select('*')
         .eq('client_id', client.id)
         .order('processed_at', { ascending: false })
-        .limit(10);
+        .limit(20);
       if (error) throw error;
       return data;
     },
     enabled: open && !!client?.id,
   });
 
-  // Fetch client transactions
+  // Fetch ALL client transactions (NO LIMIT)
   const { data: transactions } = useQuery({
-    queryKey: ['client-transactions', client?.email],
+    queryKey: ['client-transactions-full', client?.email],
     queryFn: async () => {
       if (!client?.email) return [];
       const { data, error } = await supabase
         .from('transactions')
         .select('*')
         .eq('customer_email', client.email)
-        .order('stripe_created_at', { ascending: false })
-        .limit(10);
+        .order('stripe_created_at', { ascending: false, nullsFirst: false });
       if (error) throw error;
       return data;
     },
@@ -129,11 +132,45 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
         .select('*')
         .eq('stripe_customer_id', client.stripe_customer_id)
         .order('created_at', { ascending: false })
-        .limit(10);
+        .limit(20);
       if (error) throw error;
       return data;
     },
     enabled: open && !!client?.stripe_customer_id,
+  });
+
+  // NEW: Fetch active subscriptions
+  const { data: subscriptions } = useQuery({
+    queryKey: ['client-subscriptions', client?.email],
+    queryFn: async () => {
+      if (!client?.email) return [];
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('customer_email', client.email)
+        .in('status', ['active', 'trialing', 'past_due', 'unpaid'])
+        .order('current_period_end', { ascending: false });
+      if (error) throw error;
+      return data;
+    },
+    enabled: open && !!client?.email,
+  });
+
+  // NEW: Fetch communication history
+  const { data: messages } = useQuery({
+    queryKey: ['client-messages', client?.id],
+    queryFn: async () => {
+      if (!client?.id) return [];
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('client_id', client.id)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      return data;
+    },
+    enabled: open && !!client?.id,
   });
 
   if (!client) return null;
@@ -173,10 +210,20 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
   const lifecycleStage = client.lifecycle_stage?.toLowerCase() || 'lead';
   const status = statusConfig[lifecycleStage] || statusConfig.lead;
   const StatusIcon = status.icon;
-  const totalSpendUSD = (client.total_spend || 0) / 100;
+  
+  // Calculate REAL LTV from transactions if available
+  const calculatedLtv = transactions?.reduce((sum, tx) => {
+    if (tx.status === 'paid' || tx.status === 'succeeded') {
+      return sum + (tx.amount || 0);
+    }
+    return sum;
+  }, 0) || 0;
+  
+  const totalSpendUSD = (calculatedLtv > 0 ? calculatedLtv : (client.total_spend || 0)) / 100;
   const isVip = totalSpendUSD >= 1000;
+  const successfulPayments = transactions?.filter(t => t.status === 'paid' || t.status === 'succeeded').length || 0;
 
-  // Combine timeline data
+  // Combine timeline data (includes ALL transactions now)
   const timelineItems = [
     // Registration
     client.created_at && {
@@ -227,7 +274,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
       color: eventIcons[e.event_type]?.color || 'text-gray-400',
       metadata: e.metadata,
     })) || []),
-    // Transactions
+    // ALL Transactions (no limit)
     ...(transactions?.map((t) => ({
       type: 'transaction',
       date: t.stripe_created_at || t.created_at,
@@ -236,8 +283,19 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
       color: t.status === 'failed' ? 'text-red-400' : 'text-emerald-400',
       amount: t.amount / 100,
       currency: t.currency,
+      source: t.source,
     })) || []),
   ].filter(Boolean).sort((a, b) => new Date(b!.date).getTime() - new Date(a!.date).getTime());
+
+  const getSubscriptionStatusColor = (status: string) => {
+    switch (status) {
+      case 'active': return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
+      case 'trialing': return 'text-blue-400 border-blue-500/30 bg-blue-500/10';
+      case 'past_due': return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
+      case 'unpaid': return 'text-red-400 border-red-500/30 bg-red-500/10';
+      default: return 'text-gray-400 border-gray-500/30 bg-gray-500/10';
+    }
+  };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -327,11 +385,11 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
               <p className={`text-sm sm:text-lg font-bold ${isVip ? 'text-yellow-400' : 'text-foreground'}`}>
                 ${totalSpendUSD.toLocaleString()}
               </p>
-              <p className="text-[10px] sm:text-xs text-muted-foreground">LTV</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">LTV Real</p>
             </div>
             <div className="rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3 text-center">
               <CreditCard className="h-4 w-4 sm:h-5 sm:w-5 mx-auto text-blue-400 mb-0.5 sm:mb-1" />
-              <p className="text-sm sm:text-lg font-bold text-foreground">{transactions?.filter(t => t.status === 'paid' || t.status === 'succeeded').length || 0}</p>
+              <p className="text-sm sm:text-lg font-bold text-foreground">{successfulPayments}</p>
               <p className="text-[10px] sm:text-xs text-muted-foreground">Pagos</p>
             </div>
           </div>
@@ -359,6 +417,77 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
             </Button>
           </div>
 
+          {/* NEW: Active Subscription Card */}
+          {subscriptions && subscriptions.length > 0 && (
+            <div className="mb-4 sm:mb-6">
+              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
+                <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                Suscripciones ({subscriptions.length})
+              </h3>
+              <div className="space-y-2">
+                {subscriptions.map((sub) => (
+                  <div key={sub.id} className={`rounded-lg border p-2.5 sm:p-3 ${getSubscriptionStatusColor(sub.status)}`}>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-xs sm:text-sm">{sub.plan_name || 'Plan sin nombre'}</span>
+                      <Badge variant="outline" className={`text-[10px] sm:text-xs ${getSubscriptionStatusColor(sub.status)}`}>
+                        {sub.status === 'active' ? 'Activo' : 
+                         sub.status === 'trialing' ? 'Trial' : 
+                         sub.status === 'past_due' ? 'Vencido' : 
+                         sub.status === 'unpaid' ? 'Sin pagar' : sub.status}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 text-[10px] sm:text-xs text-muted-foreground space-y-1">
+                      <div className="flex justify-between">
+                        <span>Monto:</span>
+                        <span className="text-foreground">${((sub.amount || 0) / 100).toFixed(2)}/{sub.interval || 'mes'}</span>
+                      </div>
+                      {sub.current_period_end && (
+                        <div className="flex justify-between">
+                          <span>Renovación:</span>
+                          <span className="text-foreground">{format(new Date(sub.current_period_end), 'd MMM yyyy', { locale: es })}</span>
+                        </div>
+                      )}
+                      {sub.trial_end && new Date(sub.trial_end) > new Date() && (
+                        <div className="flex justify-between">
+                          <span>Fin Trial:</span>
+                          <span className="text-blue-400">{format(new Date(sub.trial_end), 'd MMM yyyy', { locale: es })}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* NEW: Communication History */}
+          {messages && messages.length > 0 && (
+            <div className="mb-4 sm:mb-6">
+              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
+                <Send className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                Comunicación ({messages.length})
+              </h3>
+              <div className="space-y-1.5 sm:space-y-2 rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3 max-h-40 overflow-y-auto">
+                {messages.slice(0, 10).map((msg) => (
+                  <div key={msg.id} className="flex items-start gap-2 text-[10px] sm:text-xs">
+                    <div className={`shrink-0 mt-0.5 ${msg.direction === 'outbound' ? 'text-blue-400' : 'text-emerald-400'}`}>
+                      {msg.direction === 'outbound' ? <Send className="h-3 w-3" /> : <Mail className="h-3 w-3" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-center gap-1">
+                        <span className="text-muted-foreground capitalize">{msg.channel}</span>
+                        <span className="text-muted-foreground shrink-0">
+                          {format(new Date(msg.created_at || ''), 'd MMM HH:mm', { locale: es })}
+                        </span>
+                      </div>
+                      <p className="text-foreground truncate">{msg.body?.slice(0, 50)}...</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Pending Invoices */}
           {invoices && invoices.filter(i => i.status === 'open' || i.status === 'draft').length > 0 && (
             <div className="mb-4 sm:mb-6">
@@ -383,12 +512,15 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
 
           <Separator className="my-3 sm:my-4" />
 
-          {/* Timeline */}
-          <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 sm:mb-3">Timeline</h3>
+          {/* Timeline - Now shows ALL items */}
+          <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 sm:mb-3 flex items-center gap-2">
+            <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            Timeline Completo ({timelineItems.length})
+          </h3>
           <div className="relative">
             <div className="absolute left-3 sm:left-4 top-2 bottom-2 w-px bg-border/50" />
             <div className="space-y-2 sm:space-y-3">
-              {timelineItems.slice(0, 15).map((item, idx) => {
+              {timelineItems.map((item, idx) => {
                 if (!item) return null;
                 const Icon = item.icon;
                 return (
@@ -398,14 +530,19 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
                     </div>
                     <div className="rounded-lg bg-background/50 border border-border/30 p-1.5 sm:p-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className={`text-[10px] sm:text-sm font-medium capitalize ${item.color} truncate`}>{item.label}</span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`text-[10px] sm:text-sm font-medium capitalize ${item.color} truncate`}>{item.label}</span>
+                          {'source' in item && typeof item.source === 'string' && item.source && (
+                            <Badge variant="outline" className="text-[8px] sm:text-[10px] px-1">{item.source as string}</Badge>
+                          )}
+                        </div>
                         <span className="text-[9px] sm:text-xs text-muted-foreground shrink-0">
                           {format(new Date(item.date), 'd MMM HH:mm', { locale: es })}
                         </span>
                       </div>
                       {'amount' in item && typeof item.amount === 'number' && (
                         <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5">
-                          ${item.amount.toFixed(2)} {('currency' in item && item.currency) ? String(item.currency).toUpperCase() : ''}
+                          ${item.amount.toFixed(2)} {('currency' in item && typeof item.currency === 'string') ? item.currency.toUpperCase() : ''}
                         </p>
                       )}
                     </div>
