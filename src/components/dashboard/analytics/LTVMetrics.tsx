@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { DollarSign, TrendingUp, Users, Calendar } from "lucide-react";
-import { subMonths, startOfMonth, endOfMonth, format } from "date-fns";
+import { Subscription } from "@/hooks/useSubscriptions";
 
 interface Transaction {
   id: string;
@@ -12,15 +12,11 @@ interface Transaction {
 
 interface LTVMetricsProps {
   transactions: Transaction[];
+  subscriptions: Subscription[];
 }
 
-export function LTVMetrics({ transactions }: LTVMetricsProps) {
+export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
   const metrics = useMemo(() => {
-    const now = new Date();
-    const currentMonthStart = startOfMonth(now);
-    const lastMonthStart = startOfMonth(subMonths(now, 1));
-    const lastMonthEnd = endOfMonth(subMonths(now, 1));
-
     // Get successful transactions
     const successfulTx = transactions.filter(
       (tx) =>
@@ -28,37 +24,51 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
         tx.status === "paid"
     );
 
-    // Calculate MRR (Monthly Recurring Revenue) - last month's revenue
-    const lastMonthTx = successfulTx.filter((tx) => {
-      if (!tx.stripe_created_at) return false;
-      const txDate = new Date(tx.stripe_created_at);
-      return txDate >= lastMonthStart && txDate <= lastMonthEnd;
-    });
-
-    const mrr = lastMonthTx.reduce((sum, tx) => sum + tx.amount / 100, 0);
-
-    // Get unique paying customers last month
-    const lastMonthCustomers = new Set(
-      lastMonthTx
-        .filter((tx) => tx.customer_email)
-        .map((tx) => tx.customer_email!.toLowerCase())
+    // *** MRR CORRECTO: Suma de suscripciones activas ***
+    // Solo considera suscripciones con status 'active' (no 'trialing', 'canceled', etc.)
+    const activeSubscriptions = subscriptions.filter(
+      (s) => s.status === "active"
     );
-    const activeCustomers = lastMonthCustomers.size;
+    const mrr = activeSubscriptions.reduce((sum, s) => sum + s.amount, 0) / 100;
+    const activeSubscriptionCount = activeSubscriptions.length;
 
-    // Calculate ARPU (Average Revenue Per User)
+    // Get unique paying customers from active subscriptions
+    const activeCustomerEmails = new Set(
+      activeSubscriptions
+        .filter((s) => s.customer_email)
+        .map((s) => s.customer_email!.toLowerCase())
+    );
+    const activeCustomers = activeCustomerEmails.size;
+
+    // Calculate ARPU (Average Revenue Per User) based on active subscriptions
     const arpu = activeCustomers > 0 ? mrr / activeCustomers : 0;
 
     // Calculate User Churn Rate
     // Compare active customers 2 months ago vs those who churned last month
-    const twoMonthsAgoStart = startOfMonth(subMonths(now, 2));
-    const twoMonthsAgoEnd = endOfMonth(subMonths(now, 2));
+    const now = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
 
+    // Customers who paid 30-60 days ago
     const twoMonthsAgoCustomers = new Set(
       successfulTx
         .filter((tx) => {
           if (!tx.stripe_created_at || !tx.customer_email) return false;
           const txDate = new Date(tx.stripe_created_at);
-          return txDate >= twoMonthsAgoStart && txDate <= twoMonthsAgoEnd;
+          return txDate >= sixtyDaysAgo && txDate < thirtyDaysAgo;
+        })
+        .map((tx) => tx.customer_email!.toLowerCase())
+    );
+
+    // Customers who paid in the last 30 days
+    const lastMonthCustomers = new Set(
+      successfulTx
+        .filter((tx) => {
+          if (!tx.stripe_created_at || !tx.customer_email) return false;
+          const txDate = new Date(tx.stripe_created_at);
+          return txDate >= thirtyDaysAgo;
         })
         .map((tx) => tx.customer_email!.toLowerCase())
     );
@@ -81,11 +91,6 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
     const effectiveChurnRate = Math.max(churnRate, 5) / 100;
     const ltv = arpu / effectiveChurnRate;
 
-    // Calculate LTV:CAC ratio (assuming CAC is ~1 month revenue for simplicity)
-    // This is a simplified estimate
-    const estimatedCAC = arpu * 0.3; // Assume 30% of ARPU goes to acquisition
-    const ltvCacRatio = estimatedCAC > 0 ? ltv / estimatedCAC : 0;
-
     // Calculate average customer lifespan in months
     const avgLifespanMonths = churnRate > 0 ? 100 / churnRate : 20;
 
@@ -94,11 +99,11 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
       arpu,
       churnRate,
       ltv,
-      ltvCacRatio,
       activeCustomers,
       avgLifespanMonths,
+      activeSubscriptionCount,
     };
-  }, [transactions]);
+  }, [transactions, subscriptions]);
 
   const MetricCard = ({
     icon: Icon,
@@ -133,7 +138,7 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
         <div>
           <h3 className="text-base sm:text-lg font-semibold text-white">Métricas de LTV</h3>
           <p className="text-xs sm:text-sm text-muted-foreground">
-            Fórmula: ARPU / User Churn Rate
+            MRR = Suma de suscripciones activas | LTV = ARPU / Churn
           </p>
         </div>
       </div>
@@ -141,23 +146,23 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
       <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           icon={DollarSign}
+          label="MRR"
+          value={`$${metrics.mrr.toLocaleString(undefined, {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+          })}`}
+          subtext={`${metrics.activeSubscriptionCount} suscripciones activas`}
+          color="bg-emerald-500/20 text-emerald-400"
+        />
+
+        <MetricCard
+          icon={TrendingUp}
           label="LTV"
           value={`$${metrics.ltv.toLocaleString(undefined, {
             minimumFractionDigits: 0,
             maximumFractionDigits: 0,
           })}`}
           subtext="Valor por cliente"
-          color="bg-emerald-500/20 text-emerald-400"
-        />
-
-        <MetricCard
-          icon={TrendingUp}
-          label="MRR"
-          value={`$${metrics.mrr.toLocaleString(undefined, {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0,
-          })}`}
-          subtext="Último mes"
           color="bg-indigo-500/20 text-indigo-400"
         />
 
@@ -185,6 +190,13 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
       <div className="hidden sm:block rounded-lg bg-gray-800/30 border border-gray-700/50 p-3 sm:p-4 mt-3 sm:mt-4">
         <div className="flex items-center gap-4 sm:gap-6 text-xs sm:text-sm overflow-x-auto">
           <div className="flex items-center gap-1 sm:gap-2 whitespace-nowrap">
+            <span className="text-gray-400">MRR =</span>
+            <span className="font-mono text-emerald-400 font-bold">
+              ${metrics.mrr.toFixed(0)}
+            </span>
+            <span className="text-gray-500">({metrics.activeSubscriptionCount} subs activas)</span>
+          </div>
+          <div className="flex items-center gap-1 sm:gap-2 whitespace-nowrap">
             <span className="text-gray-400">LTV =</span>
             <span className="font-mono text-primary">
               ${metrics.arpu.toFixed(2)}
@@ -196,7 +208,7 @@ export function LTVMetrics({ transactions }: LTVMetricsProps) {
             </span>
             <span className="text-gray-500">(Churn)</span>
             <span className="text-gray-400">=</span>
-            <span className="font-mono font-bold text-emerald-400">
+            <span className="font-mono font-bold text-indigo-400">
               ${metrics.ltv.toFixed(0)}
             </span>
           </div>

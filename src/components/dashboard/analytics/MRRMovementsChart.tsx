@@ -33,6 +33,7 @@ interface Client {
 interface MRRMovementsChartProps {
   transactions: Transaction[];
   clients: Client[];
+  monthsToShow?: number;
 }
 
 interface MonthData {
@@ -43,7 +44,7 @@ interface MonthData {
   net: number;
 }
 
-export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartProps) {
+export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: MRRMovementsChartProps) {
   const chartData = useMemo(() => {
     const now = new Date();
     const months: MonthData[] = [];
@@ -69,8 +70,8 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
       dates.sort((a, b) => a.getTime() - b.getTime());
     });
 
-    // Process last 6 months
-    for (let i = 5; i >= 0; i--) {
+    // Process the specified number of months
+    for (let i = monthsToShow - 1; i >= 0; i--) {
       const monthDate = subMonths(now, i);
       const monthStart = startOfMonth(monthDate);
       const monthEnd = endOfMonth(monthDate);
@@ -162,7 +163,7 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
     }
 
     return months;
-  }, [transactions, clients]);
+  }, [transactions, clients, monthsToShow]);
 
   // Custom tooltip content renderer (not a component, just a render function)
   const renderTooltipContent = (props: { active?: boolean; payload?: any[]; label?: string }) => {
@@ -186,12 +187,17 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
     return null;
   };
 
+  const periodLabel = monthsToShow === 1 ? "1m" : 
+                      monthsToShow === 2 ? "2m" : 
+                      monthsToShow === 4 ? "4m" : 
+                      `${monthsToShow}m`;
+
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
       <div className="mb-4 sm:mb-6">
         <h3 className="text-sm sm:text-lg font-semibold text-white">Movimientos de MRR</h3>
         <p className="text-xs sm:text-sm text-muted-foreground">
-          Nuevo negocio, reactivaciones y churn
+          Nuevo negocio, reactivaciones y churn ({periodLabel})
         </p>
       </div>
 
@@ -248,19 +254,19 @@ export function MRRMovementsChart({ transactions, clients }: MRRMovementsChartPr
       {/* Summary */}
       <div className="mt-3 sm:mt-4 grid grid-cols-3 gap-2 sm:gap-4">
         <div className="text-center p-2 sm:p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-          <p className="text-[10px] sm:text-xs text-emerald-400 mb-0.5 sm:mb-1">Nuevo (6m)</p>
+          <p className="text-[10px] sm:text-xs text-emerald-400 mb-0.5 sm:mb-1">Nuevo ({periodLabel})</p>
           <p className="text-sm sm:text-lg font-bold text-emerald-400">
             ${chartData.reduce((sum, d) => sum + d.newBusiness, 0).toLocaleString()}
           </p>
         </div>
         <div className="text-center p-2 sm:p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-          <p className="text-[10px] sm:text-xs text-indigo-400 mb-0.5 sm:mb-1">Reactiv (6m)</p>
+          <p className="text-[10px] sm:text-xs text-indigo-400 mb-0.5 sm:mb-1">Reactiv ({periodLabel})</p>
           <p className="text-sm sm:text-lg font-bold text-indigo-400">
             ${chartData.reduce((sum, d) => sum + d.reactivation, 0).toLocaleString()}
           </p>
         </div>
         <div className="text-center p-2 sm:p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
-          <p className="text-[10px] sm:text-xs text-rose-400 mb-0.5 sm:mb-1">Churn (6m)</p>
+          <p className="text-[10px] sm:text-xs text-rose-400 mb-0.5 sm:mb-1">Churn ({periodLabel})</p>
           <p className="text-sm sm:text-lg font-bold text-rose-400">
             ${Math.abs(chartData.reduce((sum, d) => sum + d.churn, 0)).toLocaleString()}
           </p>
