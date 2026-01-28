@@ -134,3 +134,6 @@ verify_jwt = false
 
 [functions.unify-identity]
 verify_jwt = false
+
+[functions.vrp-brain-api]
+verify_jwt = false
