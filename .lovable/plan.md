@@ -1,220 +1,345 @@
 
-# Plan de Reparación: Bulk Unify Atascado
 
-## Diagnóstico
+# Plan de Reparación: Sección Clientes 360°
 
-### Problema Identificado
-El sync de unificación masiva está **atascado** en estado `continuing`:
-- **Procesados**: 3,600 de 852,304 (0.4%)
-- **Última actividad**: hace ~22 minutos
-- **Velocidad**: 11.9/s (antes de atascarse)
+## Resumen de Cambios
 
-### Causa Raíz
-1. `EdgeRuntime.waitUntil` perdió la conexión sin marcar error
-2. La detección de "stale sync" usa `started_at` en lugar del `lastUpdate` del checkpoint
-3. Un proceso largo legítimo sería cancelado, pero uno atascado con `started_at` reciente no se detecta
+Este plan corrige los 3 problemas críticos identificados en la auditoría:
+
+| Prioridad | Problema | Solución |
+|-----------|----------|----------|
+| 🔴 ALTA | LTV solo suma Stripe ($194 vs $654 real) | Edge Function que recalcula desde TODAS las transacciones |
+| 🔴 ALTA | 8,376 CUSTOMER sin suscripción activa | Automatización de lifecycle_stage con lógica determinista |
+| 🟡 MEDIA | Perfil limitado (10 transacciones, sin subs) | CustomerDrawer 360° con timeline completo y suscripciones |
 
 ---
 
-## Cambios Propuestos
+## FASE 1: Reparación del LTV Real
 
-### 1. Corregir Detección de Stale (CRÍTICO)
-
-Cambiar la lógica para usar el timestamp de última actividad del checkpoint:
-
+### Problema Confirmado
 ```text
-ANTES (línea 800-804):
-  const startedAt = new Date(syncData.started_at).getTime();
-  const staleThreshold = 10 * 60 * 1000; // 10 minutes
-  if (Date.now() - startedAt > staleThreshold) { ... }
-
-DESPUÉS:
-  const checkpoint = syncData.checkpoint as { lastUpdate?: string } | null;
-  const lastActivity = checkpoint?.lastUpdate 
-    ? new Date(checkpoint.lastUpdate).getTime()
-    : new Date(syncData.started_at).getTime();
-  const staleThreshold = 5 * 60 * 1000; // 5 minutes sin actividad
-  if (Date.now() - lastActivity > staleThreshold) { ... }
+Cliente: cjmorales2009@gmail.com
+Stored LTV:     $194 (solo Stripe CSV)
+Calculated LTV: $654 (Stripe + PayPal + Web)
+Transacciones:  42 (fuentes: stripe, paypal, web)
 ```
 
-### 2. Agregar Auto-Resume (Reanudación Automática)
+### Solución: Nueva Edge Function `recalculate-ltv`
 
-Cuando se detecta un sync stale, en lugar de solo cancelarlo, ofrecer reanudación:
+Crearemos una función que:
+1. Agrupe transacciones por `customer_email`
+2. Sume `amount` donde `status IN ('succeeded', 'paid')`
+3. Actualice `clients.total_spend` con el resultado
 
 ```text
-NUEVO FLUJO:
-1. Si el sync está stale → Marcarlo como cancelled
-2. Iniciar nuevo sync DESDE donde se quedó (resumir)
-3. Los contactos ya procesados (processed_at no null) no se re-procesan
+supabase/functions/recalculate-ltv/index.ts
+
+Lógica:
+- Parámetro: { batchSize: 1000, dryRun: false }
+- Query: SUM(amount) FROM transactions GROUP BY customer_email
+- Update: clients.total_spend WHERE email = transactions.customer_email
+- Checkpoint: Actualiza sync_runs para tracking de progreso
 ```
 
-### 3. Reducir Batch Size para Estabilidad
+### Cambios en Código
 
-El batch de 200 puede ser demasiado grande para 852k registros. Cambiar a batches más pequeños con checkpoints más frecuentes:
+| Archivo | Acción |
+|---------|--------|
+| `supabase/functions/recalculate-ltv/index.ts` | CREAR - Edge Function con batch processing |
+| `supabase/config.toml` | ACTUALIZAR - Agregar configuración de la función |
+
+---
+
+## FASE 2: Automatización de Lifecycle Stage
+
+### Problema Confirmado
+```text
+┌────────────────┬─────────────┬──────────────┬──────────────┐
+│ lifecycle_stage│ Total       │ Con Sub Activa│ Sin Sub Activa│
+├────────────────┼─────────────┼──────────────┼──────────────┤
+│ LEAD           │ 210,737     │ 130          │ 210,607      │
+│ CUSTOMER       │ 9,532       │ 1,015        │ 8,517 ❌     │
+│ CHURN          │ 683         │ 0            │ 683          │
+└────────────────┴─────────────┴──────────────┴──────────────┘
+
+8,517 usuarios marcados como CUSTOMER pero sin suscripción activa
+```
+
+### Solución: Lógica Determinista
+
+La Edge Function `recalculate-ltv` también actualizará `lifecycle_stage`:
+
+```text
+LÓGICA DE CLASIFICACIÓN:
+
+1. Si tiene suscripción 'active' o 'trialing'
+   → CUSTOMER (o TRIAL si trialing)
+
+2. Si NO tiene suscripción activa PERO tiene transacciones exitosas
+   → Si última transacción < 30 días → CUSTOMER (gracia)
+   → Si última transacción > 30 días → CHURN
+
+3. Si NO tiene transacciones exitosas
+   → LEAD
+```
+
+### Query SQL Equivalente
+```sql
+UPDATE clients c SET lifecycle_stage = 
+  CASE 
+    WHEN EXISTS (
+      SELECT 1 FROM subscriptions s 
+      WHERE s.customer_email = c.email 
+        AND s.status IN ('active', 'trialing')
+    ) THEN 'CUSTOMER'
+    WHEN EXISTS (
+      SELECT 1 FROM transactions t 
+      WHERE t.customer_email = c.email 
+        AND t.status IN ('succeeded', 'paid')
+        AND t.stripe_created_at > NOW() - INTERVAL '30 days'
+    ) THEN 'CUSTOMER'
+    WHEN EXISTS (
+      SELECT 1 FROM transactions t 
+      WHERE t.customer_email = c.email 
+        AND t.status IN ('succeeded', 'paid')
+    ) THEN 'CHURN'
+    ELSE 'LEAD'
+  END
+```
+
+---
+
+## FASE 3: Customer Drawer 360°
+
+### Mejoras al Panel Lateral
 
 ```text
 ANTES:
-  batchSize = 200
-  checkpoint cada 1 iteración
+┌──────────────────────────┐
+│ Nombre + Badge Status    │
+│ ─────────────────────── │
+│ Email / Teléfono         │
+│ ─────────────────────── │
+│ LTV: $194 ❌             │
+│ Pagos: 3 (de 42) ❌      │
+│ ─────────────────────── │
+│ Timeline (últimos 10)    │
+│   - Pago 1               │
+│   - Pago 2               │
+│   ...                    │
+└──────────────────────────┘
 
 DESPUÉS:
-  batchSize = 100
-  checkpoint cada 1 iteración
-  timeout detection cada 50 iteraciones
+┌──────────────────────────┐
+│ Nombre + Badge Status    │
+│ ─────────────────────── │
+│ Email / Teléfono         │
+│ ─────────────────────── │
+│ LTV: $654 ✅             │
+│ Pagos: 42 ✅             │
+│ ─────────────────────── │
+│ 🎫 SUSCRIPCIÓN ACTIVA    │ ← NUEVO
+│ Plan: Mensual $35        │
+│ Renovación: 15 Feb 2026  │
+│ ─────────────────────── │
+│ 💬 COMUNICACIÓN (3)      │ ← NUEVO
+│ Último mensaje: hace 2d  │
+│ ─────────────────────── │
+│ Timeline (completo)      │
+│   - Ordenado por fecha   │
+│   - Incluye PayPal+Web   │
+│   ...                    │
+└──────────────────────────┘
 ```
 
-### 4. Agregar Heartbeat y Recovery
-
-Implementar un mecanismo de heartbeat que actualice el checkpoint cada N segundos incluso si no hay progreso, para distinguir entre "lento" y "atascado":
-
-```text
-while (hasMoreWork) {
-  // Actualizar heartbeat antes de cada batch
-  await updateHeartbeat(syncRunId);
-  
-  // Procesar batch
-  const result = await batchProcess...();
-  
-  // Si llevamos >60s sin nuevo batch, algo está mal
-  if (Date.now() - lastBatchComplete > 60000) {
-    throw new Error('Batch timeout detected');
-  }
-}
-```
-
----
-
-## Archivos a Modificar
+### Cambios en Código
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/bulk-unify-contacts/index.ts` | Corregir stale detection, agregar heartbeat, reducir batch |
+| `src/components/dashboard/CustomerDrawer.tsx` | Quitar límite 10, agregar sección suscripciones, agregar sección mensajes |
+
+### Queries Nuevas en CustomerDrawer
+
+```typescript
+// 1. Suscripciones activas del cliente
+const { data: subscriptions } = useQuery({
+  queryKey: ['client-subscriptions', client?.email],
+  queryFn: async () => {
+    if (!client?.email) return [];
+    const { data } = await supabase
+      .from('subscriptions')
+      .select('*')
+      .eq('customer_email', client.email)
+      .in('status', ['active', 'trialing', 'past_due'])
+      .order('current_period_end', { ascending: false });
+    return data;
+  },
+  enabled: open && !!client?.email,
+});
+
+// 2. Historial de mensajes
+const { data: messages } = useQuery({
+  queryKey: ['client-messages', client?.id],
+  queryFn: async () => {
+    if (!client?.id) return [];
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('client_id', client.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    return data;
+  },
+  enabled: open && !!client?.id,
+});
+
+// 3. Transacciones SIN LÍMITE con fecha unificada
+const { data: transactions } = useQuery({
+  queryKey: ['client-transactions', client?.email],
+  queryFn: async () => {
+    if (!client?.email) return [];
+    const { data } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('customer_email', client.email)
+      .order('stripe_created_at', { ascending: false }); // Sin límite
+    return data;
+  },
+  enabled: open && !!client?.email,
+});
+```
 
 ---
 
-## Resumen de Cambios en Código
+## Resumen de Archivos
 
-### Corrección de Stale Detection (líneas ~788-822)
+| Archivo | Acción | Descripción |
+|---------|--------|-------------|
+| `supabase/functions/recalculate-ltv/index.ts` | CREAR | LTV + Lifecycle batch processor |
+| `supabase/config.toml` | ACTUALIZAR | Agregar función |
+| `src/components/dashboard/CustomerDrawer.tsx` | ACTUALIZAR | Vista 360° completa |
 
-```typescript
-// NUEVO: Leer checkpoint para lastUpdate
-const { data: existingSync } = await supabase
-  .from('sync_runs')
-  .select('id, status, started_at, checkpoint')  // <-- agregar checkpoint
-  .eq('source', 'bulk_unify')
-  .in('status', ['running', 'continuing', 'completing'])
-  .order('started_at', { ascending: false })
-  .limit(1)
-  .single();
+---
 
-if (existingSync) {
-  const syncData = existingSync as { 
-    id: string; 
-    status: string; 
-    started_at: string;
-    checkpoint: { lastUpdate?: string } | null;
-  };
-  
-  // NUEVO: Usar lastUpdate del checkpoint en lugar de started_at
-  const lastActivity = syncData.checkpoint?.lastUpdate 
-    ? new Date(syncData.checkpoint.lastUpdate).getTime()
-    : new Date(syncData.started_at).getTime();
-  
-  const staleThreshold = 5 * 60 * 1000; // 5 minutos sin actividad
-  
-  if (Date.now() - lastActivity > staleThreshold) {
-    logger.info(`Cancelling stale sync: ${syncData.id} (inactive for ${Math.round((Date.now() - lastActivity) / 60000)} min)`);
-    await supabase.from('sync_runs').update({ 
-      status: 'cancelled', 
-      error_message: `Stale: no activity for ${Math.round((Date.now() - lastActivity) / 60000)} minutes` 
-    }).eq('id', syncData.id);
-    // Continuar para iniciar nuevo sync
-  } else {
-    return new Response(JSON.stringify({ 
-      ok: true, 
-      message: 'Unification already in progress',
-      syncRunId: syncData.id,
-      status: syncData.status
-    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
-}
-```
+## Resultado Esperado Post-Implementación
 
-### Reducción de Batch y Timeout Protection (línea ~763-764)
+### Métricas Corregidas
+
+| Métrica | Antes | Después |
+|---------|-------|---------|
+| LTV (cjmorales2009@gmail.com) | $194 | $654 |
+| Clientes con LTV > $0 | ~7,000 | ~18,000+ |
+| CUSTOMER sin sub activa | 8,517 | 0 (reclasificados) |
+| Transacciones visibles en perfil | 10 máx | Todas |
+| Suscripción visible en perfil | No | Sí |
+| Mensajes visibles en perfil | No | Sí |
+
+### Verificación
+
+Después de ejecutar el recálculo masivo:
+1. El cliente ejemplo mostrará $654 en vez de $194
+2. Los 8,517 ex-CUSTOMER serán reclasificados correctamente
+3. El perfil del cliente mostrará suscripción activa y comunicaciones
+
+---
+
+## Detalles Técnicos
+
+### Edge Function: recalculate-ltv
 
 ```typescript
-// ANTES:
-const { sources = ['ghl', 'manychat', 'csv'], batchSize = 200, forceCancel = false } = body;
+// Pseudocódigo del procesamiento
 
-// DESPUÉS:
-const { sources = ['ghl', 'manychat', 'csv'], batchSize = 100, forceCancel = false } = body;
-```
-
-### Heartbeat en el Loop Principal (líneas ~630-706)
-
-```typescript
-// NUEVO: Agregar tracking de tiempo por batch
-let lastBatchTime = Date.now();
-const BATCH_TIMEOUT_MS = 120000; // 2 minutos máximo por batch
-
-while (hasMoreWork && iterations < MAX_ITERATIONS) {
-  iterations++;
-  hasMoreWork = false;
+async function recalculateBatch(supabase, batchSize, offset) {
+  // 1. Obtener clientes con email
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('id, email')
+    .not('email', 'is', null)
+    .range(offset, offset + batchSize - 1);
   
-  // NUEVO: Detectar timeout de batch
-  if (Date.now() - lastBatchTime > BATCH_TIMEOUT_MS) {
-    logger.error('Batch timeout detected, marking as failed');
-    throw new Error(`Batch timeout after ${iterations} iterations`);
-  }
-  
-  // Check if cancelled (existente)
-  const { data: syncCheck } = await supabase...
-  
-  // Process each source (existente)
-  for (const source of sources) {
-    let result = await batchProcess...(supabase, batchSize, syncRunId);
+  for (const client of clients) {
+    // 2. Sumar transacciones
+    const { data: txSum } = await supabase
+      .from('transactions')
+      .select('amount.sum()')
+      .eq('customer_email', client.email)
+      .in('status', ['succeeded', 'paid']);
     
-    // NUEVO: Reset timer después de cada batch exitoso
-    lastBatchTime = Date.now();
+    // 3. Verificar suscripción activa
+    const { data: activeSub } = await supabase
+      .from('subscriptions')
+      .select('id, status')
+      .eq('customer_email', client.email)
+      .in('status', ['active', 'trialing'])
+      .limit(1);
     
-    totalProcessed += result.processed;
-    ...
-  }
-  
-  // Update progress (existente) - pero con timestamp forzado
-  await supabase.from('sync_runs').update({
-    status: hasMoreWork ? 'continuing' : 'completing',
-    total_fetched: totalProcessed,
-    total_inserted: totalMerged,
-    checkpoint: {
-      iterations,
-      progressPct: Math.round(progressPct * 10) / 10,
-      rate: `${rate}/s`,
-      estimatedRemainingSeconds: estimatedRemaining,
-      lastUpdate: new Date().toISOString()  // <-- ya existe, asegurar que se actualiza
+    // 4. Determinar lifecycle
+    let lifecycleStage = 'LEAD';
+    if (activeSub?.length > 0) {
+      lifecycleStage = activeSub[0].status === 'trialing' ? 'TRIAL' : 'CUSTOMER';
+    } else if (txSum > 0) {
+      // Verificar última transacción
+      const { data: lastTx } = await supabase
+        .from('transactions')
+        .select('stripe_created_at')
+        .eq('customer_email', client.email)
+        .order('stripe_created_at', { ascending: false })
+        .limit(1);
+      
+      const daysSinceLast = differenceInDays(new Date(), lastTx?.[0]?.stripe_created_at);
+      lifecycleStage = daysSinceLast <= 30 ? 'CUSTOMER' : 'CHURN';
     }
-  }).eq('id', syncRunId);
+    
+    // 5. Actualizar cliente
+    await supabase
+      .from('clients')
+      .update({ 
+        total_spend: txSum, 
+        lifecycle_stage: lifecycleStage 
+      })
+      .eq('id', client.id);
+  }
   
-  ...
+  return { processed: clients.length, hasMore: clients.length === batchSize };
 }
 ```
 
----
+### CustomerDrawer: Sección Suscripciones
 
-## Acción Inmediata
+```tsx
+// Nueva sección en CustomerDrawer.tsx
 
-Antes de los cambios de código, necesito cancelar el sync atascado actual para desbloquearte:
+{/* Active Subscription Card */}
+{subscriptions && subscriptions.length > 0 && (
+  <div className="mb-4 sm:mb-6">
+    <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
+      <CreditCard className="h-4 w-4" />
+      Suscripción Activa
+    </h3>
+    {subscriptions.map((sub) => (
+      <div key={sub.id} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
+        <div className="flex justify-between items-center">
+          <span className="font-medium text-sm">{sub.plan_name}</span>
+          <Badge variant="outline" className="text-emerald-400">
+            {sub.status}
+          </Badge>
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">
+          <div className="flex justify-between">
+            <span>Monto:</span>
+            <span>${(sub.amount / 100).toFixed(2)}/{sub.interval}</span>
+          </div>
+          {sub.current_period_end && (
+            <div className="flex justify-between">
+              <span>Renovación:</span>
+              <span>{format(new Date(sub.current_period_end), 'd MMM yyyy', { locale: es })}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    ))}
+  </div>
+)}
+```
 
-1. Llamar a `bulk-unify-contacts` con `{ forceCancel: true }`
-2. Aplicar las optimizaciones de código
-3. Re-ejecutar con la lógica mejorada
-
----
-
-## Resultado Esperado
-
-Después de estos cambios:
-1. Syncs atascados se detectan en **5 minutos** (no 10+ horas)
-2. Batches más pequeños = menos probabilidad de timeout
-3. Heartbeat permite distinguir "lento pero funcionando" de "atascado"
-4. El UI puede mostrar "Última actividad: hace X minutos" para transparencia
