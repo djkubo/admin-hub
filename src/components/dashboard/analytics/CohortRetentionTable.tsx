@@ -12,6 +12,7 @@ interface Transaction {
 
 interface CohortRetentionTableProps {
   transactions: Transaction[];
+  monthsToShow?: number;
 }
 
 interface CohortData {
@@ -21,7 +22,7 @@ interface CohortData {
   retention: (number | null)[];
 }
 
-export function CohortRetentionTable({ transactions }: CohortRetentionTableProps) {
+export function CohortRetentionTable({ transactions, monthsToShow = 6 }: CohortRetentionTableProps) {
   const cohortData = useMemo(() => {
     const now = new Date();
     const cohorts: CohortData[] = [];
@@ -50,12 +51,11 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
       customerPaymentMonths.get(email)!.add(monthKey);
     }
 
-    // Create cohorts for last 6 months
-    for (let i = 5; i >= 0; i--) {
+    // Create cohorts for the specified number of months
+    for (let i = monthsToShow - 1; i >= 0; i--) {
       const cohortMonthDate = subMonths(now, i);
       const cohortStart = startOfMonth(cohortMonthDate);
       const cohortEnd = endOfMonth(cohortMonthDate);
-      const cohortKey = format(cohortMonthDate, "yyyy-MM");
 
       // Find users whose first payment was in this cohort month
       const cohortUsers: string[] = [];
@@ -109,7 +109,7 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
     }
 
     return cohorts;
-  }, [transactions]);
+  }, [transactions, monthsToShow]);
 
   const getRetentionColor = (value: number | null): string => {
     if (value === null) return "bg-gray-800/30";
@@ -120,12 +120,15 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
     return "bg-rose-500/60 text-white";
   };
 
+  // Calculate max columns to show based on monthsToShow
+  const maxRetentionColumns = Math.min(12, monthsToShow);
+
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
       <div className="mb-4 sm:mb-6">
         <h3 className="text-sm sm:text-lg font-semibold text-white">Análisis de Cohortes</h3>
         <p className="text-xs sm:text-sm text-muted-foreground">
-          Retención por mes de adquisición
+          Retención por mes de adquisición ({monthsToShow} meses)
         </p>
       </div>
 
@@ -139,7 +142,7 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
               <th className="text-center py-2 sm:py-3 px-1 sm:px-2 text-gray-400 font-medium">
                 #
               </th>
-              {Array.from({ length: 12 }, (_, i) => (
+              {Array.from({ length: maxRetentionColumns }, (_, i) => (
                 <th
                   key={i}
                   className="text-center py-2 sm:py-3 px-0.5 sm:px-2 text-gray-400 font-medium min-w-[32px] sm:min-w-[50px]"
@@ -158,7 +161,7 @@ export function CohortRetentionTable({ transactions }: CohortRetentionTableProps
                 <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-center text-gray-300 text-xs sm:text-sm">
                   {cohort.totalUsers}
                 </td>
-                {cohort.retention.map((value, monthIdx) => (
+                {cohort.retention.slice(0, maxRetentionColumns).map((value, monthIdx) => (
                   <td key={monthIdx} className="py-1 sm:py-2 px-0.5 sm:px-1 text-center">
                     <div
                       className={`rounded px-1 sm:px-2 py-0.5 sm:py-1 text-[10px] sm:text-xs font-medium ${getRetentionColor(

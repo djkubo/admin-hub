@@ -1,3 +1,4 @@
+import { useState, useMemo } from "react";
 import { MRRMovementsChart } from "./MRRMovementsChart";
 import { CohortRetentionTable } from "./CohortRetentionTable";
 import { LTVMetrics } from "./LTVMetrics";
@@ -7,15 +8,77 @@ import { AnalyzeButton } from "./AnalyzeButton";
 import { AIInsightsWidget } from "../AIInsightsWidget";
 import { Transaction } from "@/hooks/useTransactions";
 import { Client } from "@/hooks/useClients";
+import { useSubscriptions } from "@/hooks/useSubscriptions";
 import { Sparkles } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { subDays, subMonths, subYears } from "date-fns";
+
+export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
 
 interface AnalyticsPanelProps {
   transactions: Transaction[];
   clients: Client[];
 }
 
+function getDateRangeStart(period: AnalyticsPeriod): Date {
+  const now = new Date();
+  switch (period) {
+    case "7d":
+      return subDays(now, 7);
+    case "30d":
+      return subDays(now, 30);
+    case "90d":
+      return subDays(now, 90);
+    case "all":
+      return subYears(now, 10);
+  }
+}
+
+function getMonthsForPeriod(period: AnalyticsPeriod): number {
+  switch (period) {
+    case "7d":
+      return 1;
+    case "30d":
+      return 2;
+    case "90d":
+      return 4;
+    case "all":
+      return 12;
+  }
+}
+
 export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
+  const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
+  const { subscriptions } = useSubscriptions();
+
+  // Filter transactions based on selected period
+  const filteredTransactions = useMemo(() => {
+    const startDate = getDateRangeStart(period);
+    return transactions.filter((tx) => {
+      if (!tx.stripe_created_at) return false;
+      return new Date(tx.stripe_created_at) >= startDate;
+    });
+  }, [transactions, period]);
+
+  // Filter clients based on selected period (by created_at)
+  const filteredClients = useMemo(() => {
+    const startDate = getDateRangeStart(period);
+    return clients.filter((client) => {
+      if (!client.created_at) return false;
+      return new Date(client.created_at) >= startDate;
+    });
+  }, [clients, period]);
+
+  const monthsToShow = getMonthsForPeriod(period);
+
+  const periodButtons: { value: AnalyticsPeriod; label: string }[] = [
+    { value: "7d", label: "7 días" },
+    { value: "30d", label: "30 días" },
+    { value: "90d", label: "90 días" },
+    { value: "all", label: "Todo" },
+  ];
+
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* AI Analysis Section */}
@@ -37,6 +100,22 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
       {/* AI Insights Results - Shows the last analysis */}
       <AIInsightsWidget />
 
+      {/* Period Filter */}
+      <div className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-muted/30 border border-border/50">
+        <span className="text-xs sm:text-sm text-muted-foreground px-2">Período:</span>
+        {periodButtons.map((btn) => (
+          <Button
+            key={btn.value}
+            variant={period === btn.value ? "default" : "ghost"}
+            size="sm"
+            onClick={() => setPeriod(btn.value)}
+            className="text-xs sm:text-sm h-7 sm:h-8 px-2 sm:px-3"
+          >
+            {btn.label}
+          </Button>
+        ))}
+      </div>
+
       <Tabs defaultValue="source" className="space-y-3 sm:space-y-4">
         <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
           <TabsList className="w-max sm:w-auto">
@@ -48,23 +127,33 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
 
         <TabsContent value="source" className="space-y-4 sm:space-y-6">
           {/* Source Attribution Analytics */}
-          <SourceAnalytics />
+          <SourceAnalytics period={period} />
         </TabsContent>
 
         <TabsContent value="ltv" className="space-y-4 sm:space-y-6">
           {/* LTV Metrics Row */}
-          <LTVMetrics transactions={transactions} />
+          <LTVMetrics 
+            transactions={filteredTransactions} 
+            subscriptions={subscriptions} 
+          />
 
           {/* Revenue by Plan Chart - Pareto Analysis */}
           <RevenueByPlanChart />
 
           {/* MRR Movements Chart */}
-          <MRRMovementsChart transactions={transactions} clients={clients} />
+          <MRRMovementsChart 
+            transactions={transactions} 
+            clients={clients} 
+            monthsToShow={monthsToShow}
+          />
         </TabsContent>
 
         <TabsContent value="cohorts" className="space-y-4 sm:space-y-6">
           {/* Cohort Retention Table */}
-          <CohortRetentionTable transactions={transactions} />
+          <CohortRetentionTable 
+            transactions={transactions} 
+            monthsToShow={monthsToShow}
+          />
         </TabsContent>
       </Tabs>
     </div>

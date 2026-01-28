@@ -20,14 +20,29 @@ interface SourceMetrics {
 
 const COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-export function SourceAnalytics() {
+export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
+
+interface SourceAnalyticsProps {
+  period?: AnalyticsPeriod;
+}
+
+function getDaysForPeriod(period: AnalyticsPeriod): number {
+  switch (period) {
+    case "7d": return 7;
+    case "30d": return 30;
+    case "90d": return 90;
+    case "all": return 365 * 5; // 5 years
+  }
+}
+
+export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<SourceMetrics[]>([]);
   const [activeTab, setActiveTab] = useState('overview');
 
   useEffect(() => {
     fetchSourceMetrics();
-  }, []);
+  }, [period]);
 
   const fetchSourceMetrics = async () => {
     setLoading(true);
@@ -40,14 +55,15 @@ export function SourceAnalytics() {
         .order('created_at', { ascending: false })
         .limit(10000);
 
-      // Get transactions for revenue calculation (last 30 days)
+      // Get transactions for revenue calculation based on period
       // OPTIMIZATION: Limit to 5000 transactions
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const periodDays = getDaysForPeriod(period);
+      const periodStart = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
       const { data: transactions } = await supabase
         .from('transactions')
         .select('customer_email, amount, status, currency, stripe_created_at')
         .in('status', ['succeeded', 'paid'])
-        .gte('stripe_created_at', thirtyDaysAgo)
+        .gte('stripe_created_at', periodStart)
         .order('stripe_created_at', { ascending: false })
         .limit(5000);
 
