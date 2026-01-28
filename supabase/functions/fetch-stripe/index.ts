@@ -305,11 +305,17 @@ async function processChunk(
     currentCursor = result.nextCursor;
     hasMore = result.hasMore && currentCursor !== null;
 
-    // Update progress every page
+    // Update progress every page with lastActivity timestamp
     await supabase.from('sync_runs').update({
       total_fetched: runningTotal + totalInChunk,
       total_inserted: runningTotal + totalInChunk,
-      checkpoint: { cursor: currentCursor, runningTotal: runningTotal + totalInChunk, chunk: chunkNumber, page: page + 1 }
+      checkpoint: { 
+        cursor: currentCursor, 
+        runningTotal: runningTotal + totalInChunk, 
+        chunk: chunkNumber, 
+        page: page + 1,
+        lastActivity: new Date().toISOString()
+      }
     }).eq('id', syncRunId);
 
     if (page % 5 === 0) {
@@ -327,44 +333,78 @@ async function processChunk(
   if (hasMore && chunkNumber < MAX_CHUNKS) {
     logger.info(`AUTO-CHAIN: Invoking next chunk ${chunkNumber + 1}`);
 
-    // Update status to "continuing"
+    // Update status to "continuing" with lastActivity for stale detection
     await supabase.from('sync_runs').update({
       status: 'continuing',
-      checkpoint: { cursor: currentCursor, runningTotal: newTotal, chunk: chunkNumber + 1 }
+      checkpoint: { 
+        cursor: currentCursor, 
+        runningTotal: newTotal, 
+        chunk: chunkNumber + 1,
+        lastActivity: new Date().toISOString()
+      }
     }).eq('id', syncRunId);
 
-    // Self-invoke via fetch (using Service Role Key for auth bypass)
+    // Self-invoke via EdgeRuntime.waitUntil (fire-and-forget pattern)
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    try {
-      await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceRoleKey}`
-        },
-        body: JSON.stringify({
-          _continuation: true,
-          syncRunId,
-          cursor: currentCursor,
-          runningTotal: newTotal,
-          chunkNumber: chunkNumber + 1,
-          startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
-          endDate: endDate ? new Date(endDate * 1000).toISOString() : null
-        })
-      });
-      logger.info('Chain invocation sent successfully');
-    } catch (chainError) {
-      logger.error('Chain invocation failed', chainError instanceof Error ? chainError : new Error(String(chainError)));
-      // Mark as completed with checkpoint for manual resume
+    const chainPayload = JSON.stringify({
+      _continuation: true,
+      syncRunId,
+      cursor: currentCursor,
+      runningTotal: newTotal,
+      chunkNumber: chunkNumber + 1,
+      startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+      endDate: endDate ? new Date(endDate * 1000).toISOString() : null
+    });
+
+    // Use EdgeRuntime.waitUntil for true fire-and-forget
+    EdgeRuntime.waitUntil((async () => {
+      await delay(500); // Small delay before chain invocation
+      
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const response = await fetch(`${supabaseUrl}/functions/v1/fetch-stripe`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${serviceRoleKey}`
+            },
+            body: chainPayload
+          });
+          
+          if (response.ok) {
+            logger.info(`Chain invocation succeeded (attempt ${attempt})`);
+            return;
+          }
+          
+          logger.warn(`Chain invocation returned ${response.status}, attempt ${attempt}/3`);
+        } catch (chainError) {
+          logger.error(`Chain attempt ${attempt} failed`, chainError instanceof Error ? chainError : new Error(String(chainError)));
+        }
+        
+        if (attempt < 3) {
+          await delay(2000 * attempt); // Exponential backoff
+        }
+      }
+      
+      // All retries failed - mark sync with recoverable state
+      logger.error('All chain retries exhausted');
       await supabase.from('sync_runs').update({
-        status: 'completed_with_errors',
-        completed_at: new Date().toISOString(),
-        error_message: `Chain failed at chunk ${chunkNumber}. Resume with cursor: ${currentCursor}`,
-        checkpoint: { cursor: currentCursor, runningTotal: newTotal, chunk: chunkNumber, chainFailed: true }
+        status: 'paused',
+        error_message: `Chain failed after 3 retries at chunk ${chunkNumber}. Can resume.`,
+        checkpoint: { 
+          cursor: currentCursor, 
+          runningTotal: newTotal, 
+          chunk: chunkNumber, 
+          chainFailed: true,
+          canResume: true,
+          lastActivity: new Date().toISOString()
+        }
       }).eq('id', syncRunId);
-    }
+    })());
+
+    logger.info('Chain invocation scheduled via waitUntil');
 
   } else {
     // ============= SYNC COMPLETE =============
@@ -469,13 +509,58 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ========== RESUME PAUSED SYNC ==========
+    if (body.resumeSync) {
+      const { data: pausedSync } = await supabase
+        .from('sync_runs')
+        .select('id, checkpoint')
+        .eq('source', 'stripe')
+        .in('status', ['paused', 'failed'])
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (!pausedSync || !pausedSync.checkpoint) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No resumable sync found' }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const checkpoint = pausedSync.checkpoint as any;
+      
+      // Mark as running again
+      await supabase.from('sync_runs').update({
+        status: 'running',
+        error_message: null,
+        checkpoint: { ...checkpoint, lastActivity: new Date().toISOString(), resumed: true }
+      }).eq('id', pausedSync.id);
+
+      const startDate = body.startDate ? Math.floor(new Date(body.startDate).getTime() / 1000) : null;
+      const endDate = body.endDate ? Math.floor(new Date(body.endDate).getTime() / 1000) : null;
+
+      EdgeRuntime.waitUntil(
+        processChunk(supabase, stripeSecretKey, pausedSync.id, startDate, endDate, checkpoint.cursor, checkpoint.runningTotal || 0, (checkpoint.chunk || 1) + 1)
+      );
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'resumed', 
+          syncRunId: pausedSync.id,
+          resumedFrom: checkpoint.runningTotal || 0
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // ========== FORCE CANCEL ==========
     if (body.forceCancel) {
       const { data: cancelled } = await supabase
         .from('sync_runs')
         .update({ status: 'cancelled', completed_at: new Date().toISOString(), error_message: 'Cancelado por usuario' })
         .eq('source', 'stripe')
-        .in('status', ['running', 'continuing'])
+        .in('status', ['running', 'continuing', 'paused'])
         .select('id');
 
       return new Response(
@@ -486,10 +571,10 @@ Deno.serve(async (req) => {
 
     // ========== CLEANUP STALE ==========
     if (body.cleanupStale) {
-      const threshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const threshold = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min threshold
       const { data: cleaned } = await supabase
         .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout cleanup' })
+        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout cleanup (no activity >10min)' })
         .eq('source', 'stripe')
         .in('status', ['running', 'continuing'])
         .lt('started_at', threshold)
@@ -502,13 +587,30 @@ Deno.serve(async (req) => {
     }
 
     // ========== CHECK EXISTING SYNC ==========
-    // Auto-cleanup syncs older than 5 minutes
-    await supabase
+    // Check for truly stale syncs (no activity in 10 minutes) - based on checkpoint.lastActivity
+    const { data: staleRuns } = await supabase
       .from('sync_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Auto-cleanup timeout' })
+      .select('id, checkpoint')
       .eq('source', 'stripe')
-      .in('status', ['running', 'continuing'])
-      .lt('started_at', new Date(Date.now() - 5 * 60 * 1000).toISOString());
+      .in('status', ['running', 'continuing']);
+    
+    if (staleRuns && staleRuns.length > 0) {
+      const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+      
+      for (const run of staleRuns) {
+        const checkpoint = run.checkpoint as any;
+        const lastActivity = checkpoint?.lastActivity ? new Date(checkpoint.lastActivity).getTime() : 0;
+        
+        // Only mark as failed if lastActivity is truly stale (>10 min)
+        if (lastActivity > 0 && lastActivity < tenMinutesAgo) {
+          await supabase.from('sync_runs').update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: `Auto-cleanup: no activity for >10min (last: ${checkpoint?.lastActivity})`
+          }).eq('id', run.id);
+        }
+      }
+    }
 
     const { data: existing } = await supabase
       .from('sync_runs')
