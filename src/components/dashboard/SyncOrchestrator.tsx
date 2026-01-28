@@ -4,9 +4,48 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RefreshCw, Play, Pause, CheckCircle, AlertCircle, Clock, Database, Users, Zap, XCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+
+// Time range options for Stripe sync
+type TimeRange = '24h' | '7d' | '31d' | '6m' | 'all';
+
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; description: string }[] = [
+  { value: '24h', label: 'Últimas 24 horas', description: '~100-500 transacciones' },
+  { value: '7d', label: 'Últimos 7 días', description: '~500-2,000 transacciones' },
+  { value: '31d', label: 'Últimos 31 días', description: '~2,000-5,000 transacciones' },
+  { value: '6m', label: 'Últimos 6 meses', description: '~10,000-30,000 transacciones' },
+  { value: 'all', label: 'Todo el historial', description: 'Puede tomar varios minutos' },
+];
+
+function getDateRangeForTimeRange(timeRange: TimeRange): { startDate: string | null; endDate: string | null } {
+  const now = new Date();
+  const endDate = now.toISOString();
+  
+  switch (timeRange) {
+    case '24h': {
+      const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    }
+    case '7d': {
+      const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    }
+    case '31d': {
+      const start = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    }
+    case '6m': {
+      const start = new Date(now.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
+      return { startDate: start.toISOString(), endDate };
+    }
+    case 'all':
+    default:
+      return { startDate: null, endDate: null };
+  }
+}
 
 interface SyncStatus {
   source: string;
@@ -37,6 +76,7 @@ interface RawCounts {
 }
 
 export function SyncOrchestrator() {
+  const [stripeTimeRange, setStripeTimeRange] = useState<TimeRange>('all');
   const [syncStatuses, setSyncStatuses] = useState<Record<string, SyncStatus>>({
     stripe: { source: 'stripe', status: 'idle', processed: 0 },
     paypal: { source: 'paypal', status: 'idle', processed: 0 },
@@ -360,16 +400,30 @@ export function SyncOrchestrator() {
     }
   };
 
-  // Sync Stripe (Full History with Backend Auto-Chain)
-  const syncStripe = async (resume = false) => {
+  // Sync Stripe with time range (Full History with Backend Auto-Chain)
+  const syncStripe = async (resume = false, timeRange: TimeRange = 'all') => {
     setSyncStatuses(prev => ({ 
       ...prev, 
       stripe: { ...prev.stripe, status: 'running', processed: resume ? prev.stripe.processed : 0 } 
     }));
     
     try {
+      // Build request body based on time range
+      let requestBody: Record<string, unknown>;
+      
+      if (resume) {
+        requestBody = { resumeSync: true };
+      } else {
+        const { startDate, endDate } = getDateRangeForTimeRange(timeRange);
+        requestBody = { 
+          fetchAll: true,
+          ...(startDate && { startDate }),
+          ...(endDate && { endDate })
+        };
+      }
+
       const { data, error } = await supabase.functions.invoke('fetch-stripe', {
-        body: resume ? { resumeSync: true } : { fetchAll: true }
+        body: requestBody
       });
 
       if (error) throw error;
@@ -389,9 +443,10 @@ export function SyncOrchestrator() {
       // Start polling for real-time progress
       if (syncRunId) {
         startPolling('stripe', syncRunId);
+        const rangeLabel = TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label || 'Todo';
         toast.success(resume 
           ? `Stripe: Reanudando desde ${(data.resumedFrom || 0).toLocaleString()} registros` 
-          : 'Stripe: Sync iniciado con auto-continuación'
+          : `Stripe: Sync iniciado (${rangeLabel})`
         );
       }
     } catch (error) {
@@ -405,10 +460,10 @@ export function SyncOrchestrator() {
   };
 
   // Resume paused Stripe sync
-  const resumeStripe = () => syncStripe(true);
+  const resumeStripe = () => syncStripe(true, stripeTimeRange);
   
-  // Handler for button click (no resume)
-  const handleSyncStripe = () => syncStripe(false);
+  // Handler for button click with selected time range
+  const handleSyncStripe = () => syncStripe(false, stripeTimeRange);
 
   // Sync PayPal
   const syncPayPal = async () => {
@@ -632,10 +687,31 @@ export function SyncOrchestrator() {
                 )}
                 {getStatusBadge(syncStatuses.stripe.status)}
                 
+                {/* Time range selector - only show when idle or completed */}
+                {(syncStatuses.stripe.status === 'idle' || syncStatuses.stripe.status === 'completed' || syncStatuses.stripe.status === 'error') && (
+                  <div className="mt-3 mb-2">
+                    <Select value={stripeTimeRange} onValueChange={(value: TimeRange) => setStripeTimeRange(value)}>
+                      <SelectTrigger className="w-full h-8 text-xs">
+                        <SelectValue placeholder="Seleccionar rango" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TIME_RANGE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            <div className="flex flex-col">
+                              <span>{option.label}</span>
+                              <span className="text-xs text-muted-foreground">{option.description}</span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
                 {/* Show Resume button if paused */}
                 {syncStatuses.stripe.status === 'paused' || syncStatuses.stripe.canResume ? (
                   <Button 
-                    className="w-full mt-3 bg-orange-500 hover:bg-orange-600" 
+                    className="w-full mt-2 bg-orange-500 hover:bg-orange-600" 
                     size="sm"
                     onClick={resumeStripe}
                   >
@@ -644,7 +720,7 @@ export function SyncOrchestrator() {
                   </Button>
                 ) : (
                   <Button 
-                    className="w-full mt-3" 
+                    className="w-full mt-2" 
                     size="sm"
                     onClick={handleSyncStripe}
                     disabled={syncStatuses.stripe.status === 'running' || syncStatuses.stripe.status === 'continuing'}
