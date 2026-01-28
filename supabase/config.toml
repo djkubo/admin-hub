@@ -140,3 +140,9 @@ verify_jwt = false
 
 [functions.vrp-brain-api]
 verify_jwt = false
+
+[functions.automated-dunning]
+verify_jwt = false
+
+[functions.create-portal-session-public]
+verify_jwt = false

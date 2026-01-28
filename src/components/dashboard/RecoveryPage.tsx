@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Smartphone, MessagesSquare } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Smartphone, MessagesSquare, Link2, Play, Loader2, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -23,23 +23,31 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { openWhatsApp, openNativeSms } from './RecoveryTable';
 import { supportsNativeSms } from '@/lib/nativeSms';
 import { useMetrics } from '@/hooks/useMetrics';
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
+import { formatDistanceToNow } from 'date-fns';
+import { es } from 'date-fns/locale';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 
 type RecoveryStage = 'pending' | 'contacted' | 'paid' | 'lost';
 
-const messageTemplates = {
-  friendly: (name: string, amount: number) => 
-    `Hola ${name || 'usuario'} 👋 Notamos que hubo un problemita con tu pago de $${amount.toFixed(2)}. ¿Te podemos ayudar a resolverlo? Estamos para servirte 🙌`,
-  urgent: (name: string, amount: number) => 
-    `Hola ${name || 'usuario'}, tu pago de $${amount.toFixed(2)} no pudo procesarse y tu suscripción está en riesgo. Por favor actualiza tu método de pago lo antes posible para evitar la suspensión del servicio.`,
-  final: (name: string, amount: number) => 
-    `Hola ${name || 'usuario'}, este es un último aviso sobre tu pago pendiente de $${amount.toFixed(2)}. Si no recibimos el pago en las próximas 24 horas, tu cuenta será suspendida. ¿Hay algo en lo que podamos ayudarte?`,
+const messageTemplatesWithLink = {
+  friendly: (name: string, amount: number, link?: string) => 
+    `Hola ${name || 'usuario'} 👋 Notamos que hubo un problemita con tu pago de $${amount.toFixed(2)}. ${link ? `Actualiza tu tarjeta aquí: ${link}` : '¿Te podemos ayudar a resolverlo?'}`,
+  urgent: (name: string, amount: number, link?: string) => 
+    `Hola ${name || 'usuario'}, tu pago de $${amount.toFixed(2)} no pudo procesarse y tu suscripción está en riesgo. ${link ? `Actualiza tu método de pago: ${link}` : 'Por favor actualiza tu método de pago lo antes posible.'}`,
+  final: (name: string, amount: number, link?: string) => 
+    `🚨 Último aviso: ${name || 'usuario'}, tu cuenta será suspendida en 24h por falta de pago ($${amount.toFixed(2)}). ${link ? `Actualiza tu tarjeta ahora: ${link}` : 'Contáctanos urgentemente.'}`,
 };
 
 const stageConfig: Record<RecoveryStage, { label: string; color: string; icon: typeof Clock }> = {
@@ -54,8 +62,45 @@ export function RecoveryPage() {
   const [stages, setStages] = useState<Record<string, RecoveryStage>>({});
   const [showOnlyWithPhone, setShowOnlyWithPhone] = useState(true);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'stripe' | 'paypal'>('all');
+  const [lastContactDates, setLastContactDates] = useState<Record<string, string>>({});
+  const [portalLinks, setPortalLinks] = useState<Record<string, string>>({});
+  const [generatingLink, setGeneratingLink] = useState<string | null>(null);
+  const [runningDunning, setRunningDunning] = useState(false);
 
   const getStage = (email: string): RecoveryStage => stages[email] || 'pending';
+
+  // Fetch last contact dates for all recovery clients
+  useEffect(() => {
+    const fetchLastContacts = async () => {
+      if (!metrics.recoveryList?.length) return;
+
+      const emails = metrics.recoveryList.map((c: RecoveryClient) => c.email);
+      
+      // Fetch last outbound message per email
+      const { data: messages } = await supabase
+        .from('messages')
+        .select('to_address, created_at, metadata')
+        .eq('direction', 'outbound')
+        .order('created_at', { ascending: false });
+
+      if (messages) {
+        const dateMap: Record<string, string> = {};
+        for (const client of metrics.recoveryList as RecoveryClient[]) {
+          const phoneDigits = client.phone?.replace(/\D/g, '').slice(-10);
+          const match = messages.find(m => 
+            m.to_address?.includes(phoneDigits || 'NOMATCH') ||
+            (m.metadata as Record<string, unknown>)?.customer_email === client.email
+          );
+          if (match) {
+            dateMap[client.email] = match.created_at;
+          }
+        }
+        setLastContactDates(dateMap);
+      }
+    };
+
+    fetchLastContacts();
+  }, [metrics.recoveryList]);
 
   const setStage = async (email: string, stage: RecoveryStage) => {
     setStages(prev => ({ ...prev, [email]: stage }));
@@ -81,10 +126,78 @@ export function RecoveryPage() {
     toast.success(`Estado actualizado a: ${stageConfig[stage].label}`);
   };
 
+  // Generate portal link for a client
+  const handleGeneratePortalLink = async (client: RecoveryClient) => {
+    if (portalLinks[client.email]) {
+      await navigator.clipboard.writeText(portalLinks[client.email]);
+      toast.success('Link copiado al portapapeles');
+      return;
+    }
+
+    setGeneratingLink(client.email);
+    try {
+      // First get the stripe_customer_id from clients table
+      const { data: clientData } = await supabase
+        .from('clients')
+        .select('id, stripe_customer_id')
+        .eq('email', client.email)
+        .single();
+
+      if (!clientData?.stripe_customer_id) {
+        toast.error('Cliente sin Stripe ID - no se puede generar link');
+        return;
+      }
+
+      const data = await invokeWithAdminKey('generate-payment-link', {
+        stripe_customer_id: clientData.stripe_customer_id,
+        client_id: clientData.id,
+        customer_email: client.email,
+        customer_name: client.full_name,
+      });
+
+      if (data?.url) {
+        const url = data.url as string;
+        setPortalLinks(prev => ({ ...prev, [client.email]: url }));
+        await navigator.clipboard.writeText(url);
+        toast.success('Link generado y copiado');
+      } else {
+        toast.error('Error generando link');
+      }
+    } catch (error: any) {
+      toast.error('Error: ' + error.message);
+    } finally {
+      setGeneratingLink(null);
+    }
+  };
+
+  // Run automated dunning
+  const handleRunDunning = async () => {
+    setRunningDunning(true);
+    toast.loading('Ejecutando dunning automático...', { id: 'dunning' });
+
+    try {
+      const data = await invokeWithAdminKey('automated-dunning', {});
+      
+      if (data?.success) {
+        toast.success(
+          `Dunning completado: ${data.messaged} mensajes enviados, ${data.marked_for_call} para llamar`,
+          { id: 'dunning' }
+        );
+      } else {
+        toast.error(String(data?.error) || 'Error en dunning', { id: 'dunning' });
+      }
+    } catch (error: any) {
+      toast.error('Error: ' + error.message, { id: 'dunning' });
+    } finally {
+      setRunningDunning(false);
+    }
+  };
+
   const handleWhatsApp = async (client: RecoveryClient, template: 'friendly' | 'urgent' | 'final') => {
     if (!client.phone) return;
     
-    const message = messageTemplates[template](client.full_name || '', client.amount);
+    const link = portalLinks[client.email];
+    const message = messageTemplatesWithLink[template](client.full_name || '', client.amount, link);
     openWhatsApp(client.phone, client.full_name || '', message);
     
     if (getStage(client.email) === 'pending') {
@@ -95,7 +208,8 @@ export function RecoveryPage() {
   const handleNativeSms = (client: RecoveryClient, template: 'friendly' | 'urgent' | 'final') => {
     if (!client.phone) return;
     
-    const message = messageTemplates[template](client.full_name || '', client.amount);
+    const link = portalLinks[client.email];
+    const message = messageTemplatesWithLink[template](client.full_name || '', client.amount, link);
     openNativeSms(client.phone, message);
     
     if (getStage(client.email) === 'pending') {
@@ -194,6 +308,7 @@ export function RecoveryPage() {
   };
 
   return (
+    <TooltipProvider>
     <div className="space-y-4 md:space-y-6">
       {/* Header - Responsive */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -206,9 +321,23 @@ export function RecoveryPage() {
             CRM para gestionar pagos fallidos
           </p>
         </div>
-        <div className="text-left sm:text-right">
-          <p className="text-2xl md:text-3xl font-bold text-red-400">${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-          <p className="text-xs md:text-sm text-muted-foreground">Deuda total</p>
+        <div className="flex items-center gap-4">
+          <Button
+            onClick={handleRunDunning}
+            disabled={runningDunning}
+            className="gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white"
+          >
+            {runningDunning ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+            {runningDunning ? 'Ejecutando...' : 'Auto-Dunning'}
+          </Button>
+          <div className="text-left sm:text-right">
+            <p className="text-2xl md:text-3xl font-bold text-red-400">${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-xs md:text-sm text-muted-foreground">Deuda total</p>
+          </div>
         </div>
       </div>
 
@@ -400,6 +529,7 @@ export function RecoveryPage() {
                     <TableHead className="text-muted-foreground">Cliente</TableHead>
                     <TableHead className="text-muted-foreground">Deuda</TableHead>
                     <TableHead className="text-muted-foreground">Etapa</TableHead>
+                    <TableHead className="text-muted-foreground">Último Contacto</TableHead>
                     <TableHead className="text-muted-foreground">Fuente</TableHead>
                     <TableHead className="text-muted-foreground">Teléfono</TableHead>
                     <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
@@ -445,6 +575,23 @@ export function RecoveryPage() {
                           </DropdownMenu>
                         </TableCell>
                         <TableCell>
+                          {lastContactDates[client.email] ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                                  <Calendar className="h-3 w-3" />
+                                  {formatDistanceToNow(new Date(lastContactDates[client.email]), { addSuffix: true, locale: es })}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {new Date(lastContactDates[client.email]).toLocaleString('es-MX')}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/50">Sin contacto</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
                           <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30">
                             {client.source}
                           </Badge>
@@ -458,6 +605,35 @@ export function RecoveryPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
+                            {/* Portal Link Button */}
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleGeneratePortalLink(client)}
+                                  disabled={generatingLink === client.email}
+                                  className={`gap-1.5 ${
+                                    portalLinks[client.email] 
+                                      ? 'border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10' 
+                                      : 'border-violet-500/30 text-violet-400 hover:bg-violet-500/10'
+                                  }`}
+                                >
+                                  {generatingLink === client.email ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Link2 className="h-4 w-4" />
+                                  )}
+                                  {portalLinks[client.email] ? 'Copiar' : 'Link'}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {portalLinks[client.email] 
+                                  ? 'Copiar link de actualización de tarjeta' 
+                                  : 'Generar link para actualizar tarjeta'}
+                              </TooltipContent>
+                            </Tooltip>
+
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="gap-2 border-[#0084FF]/30 text-[#0084FF] hover:bg-[#0084FF]/10">
@@ -534,5 +710,6 @@ export function RecoveryPage() {
         </>
       )}
     </div>
+    </TooltipProvider>
   );
 }
