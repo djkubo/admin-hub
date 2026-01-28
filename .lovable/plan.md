@@ -1,182 +1,220 @@
 
-# Plan de Reparación: MRR y Filtros de Fecha en Analytics
+# Plan de Reparación: Bulk Unify Atascado
 
-## Resumen Ejecutivo
-Voy a corregir dos problemas críticos en la sección Analytics:
+## Diagnóstico
 
-1. **MRR**: Actualmente calcula el ingreso histórico del mes pasado. Lo cambiaré para que sume el valor de suscripciones activas (`status = 'active'`).
+### Problema Identificado
+El sync de unificación masiva está **atascado** en estado `continuing`:
+- **Procesados**: 3,600 de 852,304 (0.4%)
+- **Última actividad**: hace ~22 minutos
+- **Velocidad**: 11.9/s (antes de atascarse)
 
-2. **Filtros de Fecha**: Actualmente solo afectan las tarjetas KPI. Los propagaré a todas las gráficas (MRR Movements, Cohortes, Source Analytics).
+### Causa Raíz
+1. `EdgeRuntime.waitUntil` perdió la conexión sin marcar error
+2. La detección de "stale sync" usa `started_at` en lugar del `lastUpdate` del checkpoint
+3. Un proceso largo legítimo sería cancelado, pero uno atascado con `started_at` reciente no se detecta
 
 ---
 
-## Cambio 1: Corregir Fórmula de MRR (PRIORIDAD MÁXIMA)
+## Cambios Propuestos
 
-### Problema Actual
+### 1. Corregir Detección de Stale (CRÍTICO)
+
+Cambiar la lógica para usar el timestamp de última actividad del checkpoint:
+
 ```text
-LTVMetrics.tsx (línea 32-38):
-  - Lee transacciones del mes pasado
-  - Suma todos los pagos exitosos (succeeded/paid)
-  - Esto NO es MRR, es ingreso histórico
+ANTES (línea 800-804):
+  const startedAt = new Date(syncData.started_at).getTime();
+  const staleThreshold = 10 * 60 * 1000; // 10 minutes
+  if (Date.now() - startedAt > staleThreshold) { ... }
+
+DESPUÉS:
+  const checkpoint = syncData.checkpoint as { lastUpdate?: string } | null;
+  const lastActivity = checkpoint?.lastUpdate 
+    ? new Date(checkpoint.lastUpdate).getTime()
+    : new Date(syncData.started_at).getTime();
+  const staleThreshold = 5 * 60 * 1000; // 5 minutes sin actividad
+  if (Date.now() - lastActivity > staleThreshold) { ... }
 ```
 
-### Solución
-Modificar `LTVMetrics.tsx` para:
-1. Recibir las suscripciones activas desde props (o usar el hook `useSubscriptions`)
-2. Calcular MRR como: `SUM(amount) WHERE status = 'active'`
+### 2. Agregar Auto-Resume (Reanudación Automática)
 
-### Archivos a Modificar
+Cuando se detecta un sync stale, en lugar de solo cancelarlo, ofrecer reanudación:
 
-**src/components/dashboard/analytics/LTVMetrics.tsx**
+```text
+NUEVO FLUJO:
+1. Si el sync está stale → Marcarlo como cancelled
+2. Iniciar nuevo sync DESDE donde se quedó (resumir)
+3. Los contactos ya procesados (processed_at no null) no se re-procesan
+```
+
+### 3. Reducir Batch Size para Estabilidad
+
+El batch de 200 puede ser demasiado grande para 852k registros. Cambiar a batches más pequeños con checkpoints más frecuentes:
+
 ```text
 ANTES:
-  - Props: transactions[]
-  - MRR = suma de transacciones del mes pasado
-  
+  batchSize = 200
+  checkpoint cada 1 iteración
+
 DESPUÉS:
-  - Props: transactions[], subscriptions[] (NUEVO)
-  - MRR = suma de subs.amount WHERE status = 'active'
+  batchSize = 100
+  checkpoint cada 1 iteración
+  timeout detection cada 50 iteraciones
 ```
 
-**src/components/dashboard/analytics/AnalyticsPanel.tsx**
+### 4. Agregar Heartbeat y Recovery
+
+Implementar un mecanismo de heartbeat que actualice el checkpoint cada N segundos incluso si no hay progreso, para distinguir entre "lento" y "atascado":
+
 ```text
-ANTES:
-  - Solo pasa transactions y clients a LTVMetrics
+while (hasMoreWork) {
+  // Actualizar heartbeat antes de cada batch
+  await updateHeartbeat(syncRunId);
   
-DESPUÉS:
-  - Importar useSubscriptions()
-  - Pasar subscriptions a LTVMetrics
-```
-
-### Código Propuesto (LTVMetrics)
-```typescript
-// Nuevo: Recibir subscriptions como prop
-interface LTVMetricsProps {
-  transactions: Transaction[];
-  subscriptions: Subscription[];  // NUEVO
-}
-
-// Nuevo cálculo de MRR
-const mrr = useMemo(() => {
-  const activeSubscriptions = subscriptions.filter(
-    (s) => s.status === "active"
-  );
-  return activeSubscriptions.reduce((sum, s) => sum + s.amount, 0) / 100;
-}, [subscriptions]);
-```
-
----
-
-## Cambio 2: Propagar Filtro de Fechas a Gráficas
-
-### Problema Actual
-```text
-┌─────────────────────────────────────────┐
-│  Command Center (filter: today/7d/...)  │
-│         ↓                               │
-│  useDailyKPIs ✅                        │
-│         ↓                               │
-│  KPI Cards ✅ (responden al filtro)     │
-│                                         │
-│  AnalyticsPanel ❌ (sin filtro)         │
-│    ├─ SourceAnalytics ❌                │
-│    ├─ LTVMetrics ❌                     │
-│    ├─ MRRMovementsChart ❌              │
-│    └─ CohortRetentionTable ❌           │
-└─────────────────────────────────────────┘
-```
-
-### Solución
-Crear un filtro de período dentro de Analytics y conectarlo a todos los componentes hijos.
-
-### Archivos a Modificar
-
-**src/components/dashboard/analytics/AnalyticsPanel.tsx**
-```text
-NUEVO:
-  - Agregar estado local [period, setPeriod] = useState<'7d' | '30d' | '90d' | 'all'>('30d')
-  - Agregar selector visual de período
-  - Pasar period a todos los componentes hijos
-  - Filtrar transactions/clients según período antes de pasarlos
-```
-
-**src/components/dashboard/analytics/MRRMovementsChart.tsx**
-```text
-ANTES: Siempre muestra últimos 6 meses hardcodeado
-DESPUÉS: Recibe prop 'period' y ajusta el rango de meses
-```
-
-**src/components/dashboard/analytics/CohortRetentionTable.tsx**
-```text
-ANTES: Siempre muestra últimos 6 meses hardcodeado
-DESPUÉS: Recibe prop 'period' y ajusta número de cohortes
-```
-
-**src/components/dashboard/analytics/SourceAnalytics.tsx**
-```text
-ANTES: Siempre usa últimos 30 días hardcodeado
-DESPUÉS: Recibe prop 'period' y ajusta el query
-```
-
-### UI Propuesta
-```text
-┌────────────────────────────────────────────┐
-│  Analytics                                 │
-│  [7d] [30d] [90d] [Todo] ← selector nuevo  │
-│                                            │
-│  ┌─ Por Fuente ─┬─ LTV & MRR ─┬─ Cohortes ─┤
-│  │              │             │            │
-│  │   (gráficas responden al período)       │
-│  │                                         │
-│  └─────────────────────────────────────────┘
-└────────────────────────────────────────────┘
-```
-
----
-
-## Resumen de Cambios
-
-| Archivo | Cambio |
-|---------|--------|
-| `LTVMetrics.tsx` | Nuevo cálculo MRR desde suscripciones activas |
-| `AnalyticsPanel.tsx` | Agregar selector de período + pasar subscriptions |
-| `MRRMovementsChart.tsx` | Aceptar prop `period` y ajustar rango |
-| `CohortRetentionTable.tsx` | Aceptar prop `period` y ajustar cohortes |
-| `SourceAnalytics.tsx` | Aceptar prop `period` y ajustar query |
-
----
-
-## Validación Post-Cambio
-
-Una vez implementados los cambios, podré confirmar:
-
-1. **Nuevo MRR**: Será la suma de suscripciones `status = 'active'`, diferente al valor anterior
-2. **Filtros Reactivos**: Al cambiar el período, las gráficas se redibujarán mostrando solo datos del rango seleccionado
-
----
-
-## Detalles Técnicos
-
-### Mapeo de Período a Rango de Fechas
-```typescript
-function getDateRange(period: AnalyticsPeriod) {
-  const now = new Date();
-  switch (period) {
-    case '7d':  return subDays(now, 7);
-    case '30d': return subDays(now, 30);
-    case '90d': return subDays(now, 90);
-    case 'all': return subYears(now, 10);
+  // Procesar batch
+  const result = await batchProcess...();
+  
+  // Si llevamos >60s sin nuevo batch, algo está mal
+  if (Date.now() - lastBatchComplete > 60000) {
+    throw new Error('Batch timeout detected');
   }
 }
 ```
 
-### Filtrado de Transacciones por Período
+---
+
+## Archivos a Modificar
+
+| Archivo | Cambio |
+|---------|--------|
+| `supabase/functions/bulk-unify-contacts/index.ts` | Corregir stale detection, agregar heartbeat, reducir batch |
+
+---
+
+## Resumen de Cambios en Código
+
+### Corrección de Stale Detection (líneas ~788-822)
+
 ```typescript
-const filteredTransactions = useMemo(() => {
-  const startDate = getDateRange(period);
-  return transactions.filter(tx => {
-    if (!tx.stripe_created_at) return false;
-    return new Date(tx.stripe_created_at) >= startDate;
-  });
-}, [transactions, period]);
+// NUEVO: Leer checkpoint para lastUpdate
+const { data: existingSync } = await supabase
+  .from('sync_runs')
+  .select('id, status, started_at, checkpoint')  // <-- agregar checkpoint
+  .eq('source', 'bulk_unify')
+  .in('status', ['running', 'continuing', 'completing'])
+  .order('started_at', { ascending: false })
+  .limit(1)
+  .single();
+
+if (existingSync) {
+  const syncData = existingSync as { 
+    id: string; 
+    status: string; 
+    started_at: string;
+    checkpoint: { lastUpdate?: string } | null;
+  };
+  
+  // NUEVO: Usar lastUpdate del checkpoint en lugar de started_at
+  const lastActivity = syncData.checkpoint?.lastUpdate 
+    ? new Date(syncData.checkpoint.lastUpdate).getTime()
+    : new Date(syncData.started_at).getTime();
+  
+  const staleThreshold = 5 * 60 * 1000; // 5 minutos sin actividad
+  
+  if (Date.now() - lastActivity > staleThreshold) {
+    logger.info(`Cancelling stale sync: ${syncData.id} (inactive for ${Math.round((Date.now() - lastActivity) / 60000)} min)`);
+    await supabase.from('sync_runs').update({ 
+      status: 'cancelled', 
+      error_message: `Stale: no activity for ${Math.round((Date.now() - lastActivity) / 60000)} minutes` 
+    }).eq('id', syncData.id);
+    // Continuar para iniciar nuevo sync
+  } else {
+    return new Response(JSON.stringify({ 
+      ok: true, 
+      message: 'Unification already in progress',
+      syncRunId: syncData.id,
+      status: syncData.status
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+}
 ```
+
+### Reducción de Batch y Timeout Protection (línea ~763-764)
+
+```typescript
+// ANTES:
+const { sources = ['ghl', 'manychat', 'csv'], batchSize = 200, forceCancel = false } = body;
+
+// DESPUÉS:
+const { sources = ['ghl', 'manychat', 'csv'], batchSize = 100, forceCancel = false } = body;
+```
+
+### Heartbeat en el Loop Principal (líneas ~630-706)
+
+```typescript
+// NUEVO: Agregar tracking de tiempo por batch
+let lastBatchTime = Date.now();
+const BATCH_TIMEOUT_MS = 120000; // 2 minutos máximo por batch
+
+while (hasMoreWork && iterations < MAX_ITERATIONS) {
+  iterations++;
+  hasMoreWork = false;
+  
+  // NUEVO: Detectar timeout de batch
+  if (Date.now() - lastBatchTime > BATCH_TIMEOUT_MS) {
+    logger.error('Batch timeout detected, marking as failed');
+    throw new Error(`Batch timeout after ${iterations} iterations`);
+  }
+  
+  // Check if cancelled (existente)
+  const { data: syncCheck } = await supabase...
+  
+  // Process each source (existente)
+  for (const source of sources) {
+    let result = await batchProcess...(supabase, batchSize, syncRunId);
+    
+    // NUEVO: Reset timer después de cada batch exitoso
+    lastBatchTime = Date.now();
+    
+    totalProcessed += result.processed;
+    ...
+  }
+  
+  // Update progress (existente) - pero con timestamp forzado
+  await supabase.from('sync_runs').update({
+    status: hasMoreWork ? 'continuing' : 'completing',
+    total_fetched: totalProcessed,
+    total_inserted: totalMerged,
+    checkpoint: {
+      iterations,
+      progressPct: Math.round(progressPct * 10) / 10,
+      rate: `${rate}/s`,
+      estimatedRemainingSeconds: estimatedRemaining,
+      lastUpdate: new Date().toISOString()  // <-- ya existe, asegurar que se actualiza
+    }
+  }).eq('id', syncRunId);
+  
+  ...
+}
+```
+
+---
+
+## Acción Inmediata
+
+Antes de los cambios de código, necesito cancelar el sync atascado actual para desbloquearte:
+
+1. Llamar a `bulk-unify-contacts` con `{ forceCancel: true }`
+2. Aplicar las optimizaciones de código
+3. Re-ejecutar con la lógica mejorada
+
+---
+
+## Resultado Esperado
+
+Después de estos cambios:
+1. Syncs atascados se detectan en **5 minutos** (no 10+ horas)
+2. Batches más pequeños = menos probabilidad de timeout
+3. Heartbeat permite distinguir "lento pero funcionando" de "atascado"
+4. El UI puede mostrar "Última actividad: hace X minutos" para transparencia
