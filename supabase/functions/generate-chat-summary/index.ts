@@ -346,7 +346,7 @@ ${allConvosText}
 
 Genera el reporte de INTELIGENCIA DE VENTAS siguiendo el formato especificado.`;
 
-    console.log(`🤖 Calling AI for sales intelligence analysis...`);
+    console.log(`🤖 Calling Lovable AI (GPT-5.2) for sales intelligence analysis...`);
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -355,13 +355,13 @@ Genera el reporte de INTELIGENCIA DE VENTAS siguiendo el formato especificado.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "openai/gpt-5.2",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
         ],
         max_tokens: 3000,
-        temperature: 0.7
+        temperature: 0.3
       }),
     });
 
@@ -373,6 +373,13 @@ Genera el reporte de INTELIGENCIA DE VENTAS siguiendo el formato especificado.`;
         return new Response(
           JSON.stringify({ error: "Límite de tasa excedido. Intenta en unos minutos." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      
+      if (aiResponse.status === 402) {
+        return new Response(
+          JSON.stringify({ error: "Pago requerido. Por favor agrega fondos a tu espacio de Lovable AI." }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
       
