@@ -11,7 +11,9 @@ import {
   CreditCard,
   FileText,
   Users,
-  StopCircle
+  StopCircle,
+  Skull,
+  AlertTriangle
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -21,6 +23,17 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import type { Json } from "@/integrations/supabase/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface SyncRun {
   id: string;
@@ -52,6 +65,7 @@ export function SyncResultsPanel() {
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSyncs, setActiveSyncs] = useState<SyncRun[]>([]);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isForceKilling, setIsForceKilling] = useState(false);
 
   const fetchRuns = async () => {
     // Active/running syncs
@@ -243,6 +257,48 @@ export function SyncResultsPanel() {
     }
   };
 
+  // ============= FORCE KILL ALL ZOMBIES (Emergency Kill Switch) =============
+  const handleForceKillAllZombies = async () => {
+    setIsForceKilling(true);
+    try {
+      // Directly update ALL running/continuing syncs to failed
+      const { data: killedSyncs, error } = await supabase
+        .from('sync_runs')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: '⚠️ Manual Kill - Forzado por Admin'
+        })
+        .in('status', ['running', 'continuing', 'paused'])
+        .select('id, source');
+      
+      if (error) {
+        console.error('Error killing zombies:', error);
+        toast.error('Error al desbloquear', {
+          description: error.message,
+        });
+        return;
+      }
+
+      const killedCount = killedSyncs?.length || 0;
+      
+      toast.success(`☠️ ${killedCount} proceso(s) eliminados`, {
+        description: 'Todos los syncs zombies han sido marcados como fallidos. Ahora puedes reiniciar.',
+      });
+
+      // Refresh the list
+      fetchRuns();
+      
+    } catch (error) {
+      console.error('Force kill error:', error);
+      toast.error('Error al forzar desbloqueo', {
+        description: error instanceof Error ? error.message : 'Error desconocido',
+      });
+    } finally {
+      setIsForceKilling(false);
+    }
+  };
+
   const formatDuration = (start: string, end: string | null) => {
     const startDate = new Date(start);
     const endDate = end ? new Date(end) : new Date();
@@ -254,6 +310,13 @@ export function SyncResultsPanel() {
   };
 
   const hasAnySyncs = activeSyncs.length > 0 || recentRuns.length > 0;
+  const hasErrors = recentRuns.some(r => r.error_message || r.status === 'failed');
+  const hasPotentialZombies = activeSyncs.some(sync => {
+    const startDate = new Date(sync.started_at);
+    const now = new Date();
+    const diffMinutes = (now.getTime() - startDate.getTime()) / (1000 * 60);
+    return diffMinutes > 10; // More than 10 minutes = potential zombie
+  });
 
   if (!hasAnySyncs) {
     return null;
@@ -276,6 +339,18 @@ export function SyncResultsPanel() {
               {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
             </Badge>
           )}
+          {hasPotentialZombies && (
+            <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/30 text-xs animate-pulse">
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              Posible zombie
+            </Badge>
+          )}
+          {hasErrors && (
+            <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30 text-xs">
+              <XCircle className="h-3 w-3 mr-1" />
+              Errores
+            </Badge>
+          )}
         </div>
         {isExpanded ? (
           <ChevronUp className="h-4 w-4 text-muted-foreground" />
@@ -289,9 +364,9 @@ export function SyncResultsPanel() {
           {/* Active syncs */}
           {activeSyncs.length > 0 && (
             <div className="p-4 space-y-3 bg-blue-500/5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
-                {activeSyncs.length > 0 && (
+                <div className="flex items-center gap-2">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -306,7 +381,53 @@ export function SyncResultsPanel() {
                     )}
                     Cancelar todo
                   </Button>
-                )}
+                  
+                  {/* KILL SWITCH - Emergency button */}
+                  {hasPotentialZombies && (
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={isForceKilling}
+                          className="h-7 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 border border-amber-500/30"
+                        >
+                          {isForceKilling ? (
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          ) : (
+                            <Skull className="h-3 w-3 mr-1" />
+                          )}
+                          ⚠️ Forzar Desbloqueo
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent className="bg-card border-border">
+                        <AlertDialogHeader>
+                          <AlertDialogTitle className="flex items-center gap-2 text-amber-400">
+                            <Skull className="h-5 w-5" />
+                            ¿Forzar desbloqueo de TODOS los syncs?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription className="text-muted-foreground">
+                            Esta acción marcará <strong>TODOS</strong> los procesos en estado "running" o "continuing" como <strong>fallidos</strong>.
+                            <br /><br />
+                            Usa esto solo si los syncs están realmente colgados y no responden al botón "Cancelar todo".
+                            <br /><br />
+                            <span className="text-amber-400">Después de esto podrás reiniciar los syncs normalmente.</span>
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+                          <AlertDialogAction 
+                            onClick={handleForceKillAllZombies}
+                            className="bg-amber-600 hover:bg-amber-700 text-white"
+                          >
+                            <Skull className="h-4 w-4 mr-2" />
+                            Sí, matar zombies
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  )}
+                </div>
               </div>
               {activeSyncs.map((sync) => {
                 const config = getSourceConfig(sync.source);
@@ -336,6 +457,52 @@ export function SyncResultsPanel() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* ALWAYS show kill switch if no active syncs but there might be zombies in DB */}
+          {activeSyncs.length === 0 && (
+            <div className="p-4 border-b border-border/30">
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isForceKilling}
+                    className="w-full text-xs text-muted-foreground hover:text-amber-400 hover:border-amber-500/30"
+                  >
+                    {isForceKilling ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Skull className="h-3 w-3 mr-1" />
+                    )}
+                    ¿Syncs bloqueados? Forzar desbloqueo
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent className="bg-card border-border">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle className="flex items-center gap-2 text-amber-400">
+                      <Skull className="h-5 w-5" />
+                      ¿Forzar desbloqueo de syncs zombies?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription className="text-muted-foreground">
+                      Si los syncs parecen colgados o no puedes iniciar uno nuevo, usa esto para limpiar todos los procesos que quedaron en estado "running".
+                      <br /><br />
+                      <span className="text-amber-400">Esto no afecta los datos ya sincronizados.</span>
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+                    <AlertDialogAction 
+                      onClick={handleForceKillAllZombies}
+                      className="bg-amber-600 hover:bg-amber-700 text-white"
+                    >
+                      <Skull className="h-4 w-4 mr-2" />
+                      Sí, desbloquear
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           )}
 
