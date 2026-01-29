@@ -2,96 +2,108 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+/* VRP Fonts: Barlow Condensed for headers (aggressive/condensed), Inter for body */
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 
 @layer base {
   :root {
-    --background: 229 84% 5%;
-    --foreground: 210 40% 98%;
+    /* ===== VRP CARBON & RED THEME ===== */
+    
+    /* Background: Carbon Deep Gray (not pure black) */
+    --background: 0 0% 7%; /* #121212 */
+    --foreground: 0 0% 100%; /* #FFFFFF - Pure white text */
 
-    --card: 232 47% 13%;
-    --card-foreground: 210 40% 98%;
+    /* Cards/Panels: Soft Dark Gray with subtle border */
+    --card: 0 0% 10%; /* #1A1A1A */
+    --card-foreground: 0 0% 100%;
 
-    --popover: 232 47% 13%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 100%;
 
-    --primary: 160 84% 39%;
-    --primary-foreground: 210 40% 98%;
+    /* Primary: VRP Red #AA0601 */
+    --primary: 1 99% 34%; /* #AA0601 in HSL */
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 232 33% 18%;
-    --secondary-foreground: 210 40% 98%;
+    /* Secondary: Darker gray for subtle elements */
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
 
-    --muted: 232 33% 18%;
-    --muted-foreground: 215 20% 55%;
+    /* Muted: For labels and subtitles */
+    --muted: 0 0% 15%;
+    --muted-foreground: 240 4% 65%; /* #A1A1AA */
 
-    --accent: 232 33% 18%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 210 40% 98%;
+    /* Destructive: Stays red but brighter for alerts */
+    --destructive: 1 99% 40%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 232 33% 20%;
-    --input: 232 33% 20%;
-    --ring: 160 84% 39%;
+    /* Borders: Subtle gray */
+    --border: 0 0% 20%; /* #333333 */
+    --input: 0 0% 20%;
+    --ring: 1 99% 34%; /* VRP Red */
 
-    --radius: 0.75rem;
+    /* Radius: Sharp/rectangular for aggressive look */
+    --radius: 0.25rem;
 
     /* Status colors */
-    --status-active: 160 84% 39%;
+    --status-active: 142 76% 36%;
     --status-pending: 43 96% 56%;
-    --status-inactive: 0 84% 60%;
+    --status-inactive: 1 99% 34%;
 
-    /* Chart colors */
-    --chart-1: 160 84% 39%;
-    --chart-2: 142 76% 36%;
-    --chart-3: 43 96% 56%;
-    --chart-4: 262 83% 58%;
-    --chart-5: 0 84% 60%;
+    /* Chart colors - VRP palette */
+    --chart-1: 1 99% 34%; /* VRP Red */
+    --chart-2: 1 70% 50%; /* Lighter red */
+    --chart-3: 0 0% 60%; /* Gray */
+    --chart-4: 0 0% 40%; /* Darker gray */
+    --chart-5: 142 76% 36%; /* Green for positive */
 
-    /* Sidebar - Stripe dark theme */
-    --sidebar-background: 229 84% 4%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 160 84% 39%;
-    --sidebar-primary-foreground: 210 40% 98%;
-    --sidebar-accent: 232 33% 12%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 232 33% 16%;
-    --sidebar-ring: 160 84% 39%;
+    /* Sidebar - Deep carbon with red accent */
+    --sidebar-background: 0 0% 4%; /* #0A0A0A - Almost black */
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 1 99% 34%; /* VRP Red */
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 1 50% 15%; /* Subtle red-tinted border */
+    --sidebar-ring: 1 99% 34%;
 
     /* Custom gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(160, 84%, 39%) 0%, hsl(152, 76%, 36%) 100%);
-    --gradient-card: linear-gradient(135deg, hsl(232, 47%, 15%) 0%, hsl(232, 47%, 13%) 100%);
-    --gradient-glow: radial-gradient(ellipse at top, hsl(160, 84%, 39%, 0.15) 0%, transparent 50%);
+    --gradient-primary: linear-gradient(135deg, hsl(1, 99%, 34%) 0%, hsl(1, 80%, 45%) 100%);
+    --gradient-card: linear-gradient(135deg, hsl(0, 0%, 12%) 0%, hsl(0, 0%, 10%) 100%);
+    --gradient-glow: radial-gradient(ellipse at top, hsl(1, 99%, 34%, 0.15) 0%, transparent 50%);
   }
 
+  /* Dark mode is the same as root for this theme */
   .dark {
-    --background: 224 71% 4%;
-    --foreground: 213 31% 91%;
-    --card: 224 71% 6%;
-    --card-foreground: 213 31% 91%;
-    --popover: 224 71% 6%;
-    --popover-foreground: 213 31% 91%;
-    --primary: 171 77% 64%;
-    --primary-foreground: 224 71% 4%;
-    --secondary: 215 28% 17%;
-    --secondary-foreground: 213 31% 91%;
-    --muted: 215 28% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 215 28% 17%;
-    --accent-foreground: 213 31% 91%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 215 28% 17%;
-    --input: 215 28% 17%;
-    --ring: 171 77% 64%;
-    --sidebar-background: 224 71% 5%;
-    --sidebar-foreground: 213 31% 91%;
-    --sidebar-primary: 171 77% 64%;
-    --sidebar-primary-foreground: 224 71% 4%;
-    --sidebar-accent: 215 28% 12%;
-    --sidebar-accent-foreground: 213 31% 91%;
-    --sidebar-border: 215 28% 14%;
-    --sidebar-ring: 171 77% 64%;
+    --background: 0 0% 7%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 10%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 1 99% 34%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 240 4% 65%;
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 1 99% 40%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 1 99% 34%;
+    --sidebar-background: 0 0% 4%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 1 99% 34%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 1 50% 15%;
+    --sidebar-ring: 1 99% 34%;
   }
 }
 
@@ -101,22 +113,40 @@
   }
 
   html {
-    /* iOS safe area support */
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Inter', sans-serif;
-    /* Prevent overscroll bounce on iOS */
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     overscroll-behavior: none;
-    /* Smooth scrolling */
     -webkit-overflow-scrolling: touch;
-    /* Prevent text selection on long press */
     -webkit-user-select: none;
     user-select: none;
-    /* Prevent callout on long press */
     -webkit-touch-callout: none;
+  }
+
+  /* VRP Typography: Condensed uppercase headers */
+  h1, h2, h3, .font-heading {
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  h1 {
+    @apply text-3xl md:text-4xl;
+    font-weight: 800;
+  }
+
+  h2 {
+    @apply text-xl md:text-2xl;
+    font-weight: 700;
+  }
+
+  h3 {
+    @apply text-lg;
+    font-weight: 600;
   }
 
   /* Allow text selection in inputs */
@@ -127,6 +157,7 @@
 }
 
 @layer utilities {
+  /* VRP Status badges */
   .status-active {
     @apply bg-emerald-500/15 text-emerald-400 border-emerald-500/30;
   }
@@ -136,19 +167,34 @@
   }
   
   .status-inactive {
-    @apply bg-red-500/15 text-red-400 border-red-500/30;
+    @apply bg-primary/15 text-primary border-primary/30;
   }
 
+  /* VRP Red glow effect */
   .glow-primary {
-    box-shadow: 0 0 40px -10px hsl(171, 77%, 64%, 0.4);
+    box-shadow: 0 0 40px -10px hsl(1, 99%, 34%, 0.5);
   }
 
   .card-hover {
-    @apply transition-all duration-300 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5;
+    @apply transition-all duration-300 hover:border-primary/50 hover:shadow-lg;
+    &:hover {
+      box-shadow: 0 4px 20px -5px hsl(1, 99%, 34%, 0.2);
+    }
   }
 
   .gradient-text {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-emerald-400;
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(1, 99%, 45%) 0%, hsl(1, 99%, 34%) 100%);
+  }
+
+  /* VRP Button styles */
+  .btn-vrp {
+    @apply bg-primary text-white font-semibold uppercase tracking-wide rounded-sm px-6 py-2.5;
+    font-family: 'Barlow Condensed', sans-serif;
+    transition: all 0.2s ease;
+    &:hover {
+      @apply bg-red-600;
+    }
   }
 
   /* iOS-style safe area utilities */
@@ -165,8 +211,23 @@
     @apply active:scale-[0.97] active:opacity-80 transition-transform duration-100;
   }
 
-  /* iOS-style blur header */
+  /* Glass header with VRP styling */
   .glass-header {
-    @apply backdrop-blur-xl bg-background/80 border-b border-border/50;
+    @apply backdrop-blur-xl bg-background/90 border-b border-border/50;
+  }
+
+  /* VRP Table styling */
+  .vrp-table-header {
+    @apply bg-card text-muted-foreground uppercase text-xs tracking-wider;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 600;
+  }
+
+  .vrp-table-row {
+    @apply border-b border-border/30 hover:bg-muted/20 transition-colors;
+  }
+
+  .vrp-table-row-alt:nth-child(even) {
+    @apply bg-muted/5;
   }
 }

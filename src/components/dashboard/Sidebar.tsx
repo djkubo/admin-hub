@@ -17,6 +17,7 @@ import {
   X,
   Activity
 } from "lucide-react";
+import vrpLogo from "@/assets/vrp-logo.png";
 
 interface SidebarProps {
   activeItem?: string;
@@ -41,7 +42,6 @@ const menuItems = [
 export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Close sidebar when clicking outside or on escape
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setIsOpen(false);
@@ -49,7 +49,6 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
     
     if (isOpen) {
       document.addEventListener('keydown', handleEscape);
-      // Prevent body scroll when sidebar is open
       document.body.style.overflow = 'hidden';
     }
     
@@ -66,20 +65,19 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
 
   return (
     <>
-      {/* Mobile Header - Glass effect */}
+      {/* Mobile Header - VRP Glass effect */}
       <header className="fixed top-0 left-0 right-0 z-50 md:hidden glass-header">
         <div className="flex items-center justify-between h-14 px-4 safe-area-top">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3">
             <img 
-              src="/pwa-192x192.png" 
-              alt="Logo" 
-              className="h-8 w-8 rounded-lg"
+              src={vrpLogo}
+              alt="VRP Logo" 
+              className="h-8 w-auto"
             />
-            <span className="text-sm font-semibold text-foreground">RevCommand</span>
           </div>
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="p-2.5 rounded-xl hover:bg-accent touch-feedback"
+            className="p-2.5 rounded-sm hover:bg-accent touch-feedback"
             aria-label="Toggle menu"
           >
             {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
@@ -87,18 +85,20 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
         </div>
       </header>
 
-      {/* Mobile Overlay with blur */}
+      {/* Mobile Overlay */}
       {isOpen && (
         <div 
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm md:hidden"
           onClick={() => setIsOpen(false)}
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar - VRP Carbon Style */}
       <aside 
         className={cn(
-          "fixed left-0 top-0 z-40 flex h-screen flex-col bg-sidebar-background border-r border-sidebar-border transition-transform duration-300 ease-out",
+          "fixed left-0 top-0 z-40 flex h-screen flex-col bg-sidebar border-r border-sidebar-border transition-transform duration-300 ease-out",
+          // Red accent border on right
+          "border-r-2 border-r-primary/20",
           // Responsive width
           "w-[280px] md:w-64",
           // Mobile: slide in/out
@@ -106,22 +106,23 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        {/* Logo - Desktop only */}
-        <div className="hidden md:flex h-16 items-center gap-3 border-b border-sidebar-border px-6">
+        {/* Logo - VRP Branding */}
+        <div className="hidden md:flex h-16 items-center gap-3 border-b border-sidebar-border px-5">
           <img 
-            src="/pwa-192x192.png" 
-            alt="Logo" 
-            className="h-9 w-9 rounded-lg"
+            src={vrpLogo}
+            alt="VRP Logo" 
+            className="h-10 w-auto"
           />
-          <span className="text-lg font-semibold text-sidebar-foreground">RevCommand</span>
         </div>
 
         {/* Mobile: spacer for header */}
         <div className="h-14 md:hidden safe-area-top border-b border-sidebar-border flex items-center px-4">
-          <span className="text-sm font-medium text-sidebar-foreground">Menú</span>
+          <span className="text-sm font-heading font-bold uppercase tracking-wider text-primary">
+            // MENU
+          </span>
         </div>
 
-        {/* Navigation - Scrollable */}
+        {/* Navigation - VRP Style */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 md:py-4">
           <div className="space-y-1">
             {menuItems.map((item) => {
@@ -133,16 +134,19 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
                   key={item.id}
                   onClick={() => handleItemClick(item.id)}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-medium transition-all duration-200 touch-feedback",
+                    "flex w-full items-center gap-3 rounded-sm px-3.5 py-3 text-sm font-medium transition-all duration-200 touch-feedback",
+                    // VRP styling: sharp corners, red accents
                     isActive
-                      ? "bg-primary/15 text-primary border border-primary/30"
-                      : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground border border-transparent"
+                      ? "bg-primary/15 text-white border-l-2 border-l-primary"
+                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-white border-l-2 border-l-transparent"
                   )}
                 >
                   <Icon className={cn("h-5 w-5 flex-shrink-0", isActive && "text-primary")} />
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate font-heading uppercase tracking-wide text-xs">
+                    {item.label}
+                  </span>
                   {isActive && (
-                    <div className="ml-auto h-2 w-2 rounded-full bg-primary" />
+                    <div className="ml-auto h-1.5 w-1.5 rounded-full bg-primary animate-pulse-red" />
                   )}
                 </button>
               );
@@ -150,17 +154,17 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
           </div>
         </nav>
 
-        {/* User section */}
+        {/* User section - VRP Style */}
         <div className="border-t border-sidebar-border p-4 safe-area-bottom">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-primary/30 to-primary/10 border border-primary/20">
-              <span className="text-sm font-medium text-primary">AD</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/20 border border-primary/30">
+              <span className="text-sm font-heading font-bold text-primary">VR</span>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-sidebar-foreground truncate">Admin User</p>
-              <p className="text-xs text-muted-foreground truncate">admin@saas.com</p>
+              <p className="text-sm font-medium text-white truncate">Admin</p>
+              <p className="text-xs text-muted-foreground truncate">V-Remixes Pack</p>
             </div>
-            <button className="rounded-xl p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors touch-feedback">
+            <button className="rounded-sm p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-white transition-colors touch-feedback">
               <LogOut className="h-4 w-4" />
             </button>
           </div>

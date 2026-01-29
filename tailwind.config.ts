@@ -13,6 +13,11 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        heading: ['Barlow Condensed', 'Arial Narrow', 'sans-serif'],
+        condensed: ['Barlow Condensed', 'Arial Narrow', 'sans-serif'],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -69,6 +74,14 @@ export default {
           "4": "hsl(var(--chart-4))",
           "5": "hsl(var(--chart-5))",
         },
+        // VRP Brand colors for direct use
+        vrp: {
+          red: "#AA0601",
+          "red-light": "#CC1A15",
+          carbon: "#121212",
+          panel: "#1A1A1A",
+          border: "#333333",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -92,10 +105,19 @@ export default {
             height: "0",
           },
         },
+        "pulse-red": {
+          "0%, 100%": {
+            opacity: "1",
+          },
+          "50%": {
+            opacity: "0.5",
+          },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "pulse-red": "pulse-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
       },
     },
   },
