@@ -759,13 +759,13 @@ export function SyncOrchestrator() {
     switch (status) {
       case 'running':
       case 'continuing':
-        return <Badge variant="default" className="bg-blue-500">En progreso</Badge>;
+        return <Badge variant="default" className="bg-primary">En progreso</Badge>;
       case 'completed':
-        return <Badge variant="default" className="bg-green-500">Completado</Badge>;
+        return <Badge variant="default" className="bg-emerald-600">Completado</Badge>;
       case 'error':
         return <Badge variant="destructive">Error</Badge>;
       case 'paused':
-        return <Badge variant="default" className="bg-orange-500">Pausado</Badge>;
+        return <Badge variant="default" className="bg-amber-600">Pausado</Badge>;
       default:
         return <Badge variant="secondary">Inactivo</Badge>;
     }
@@ -857,7 +857,7 @@ export function SyncOrchestrator() {
                 
                 {syncStatuses.stripe.status === 'paused' || syncStatuses.stripe.canResume ? (
                   <Button 
-                    className="w-full mt-2 bg-orange-500 hover:bg-orange-600" 
+                    className="w-full mt-2 bg-amber-600 hover:bg-amber-700" 
                     size="sm"
                     onClick={resumeStripe}
                   >
@@ -1038,7 +1038,7 @@ export function SyncOrchestrator() {
                     El proceso se pausó y puede reanudarse desde donde quedó.
                   </p>
                   <Button 
-                    className="w-full bg-orange-500 hover:bg-orange-600"
+                    className="w-full bg-amber-600 hover:bg-amber-700"
                     onClick={resumeUnification}
                   >
                     <Play className="h-4 w-4 mr-2" />

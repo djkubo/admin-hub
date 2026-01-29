@@ -812,14 +812,14 @@ export function APISyncPanel() {
       <CardContent className="space-y-4">
         {/* Stripe Progress indicator */}
         {stripeProgress && (
-          <div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-purple-400">
+          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-white">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>Stripe: {stripeProgress.current.toLocaleString()} transacciones sincronizadas</span>
             </div>
-            <div className="flex items-center gap-2 text-xs text-gray-400">
+            <div className="flex items-center gap-2 text-xs text-zinc-400">
               {stripeProgress.page && (
-                <Badge variant="outline" className="text-purple-300 border-purple-500/50">
+                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
                   Página {stripeProgress.page}
                 </Badge>
               )}
@@ -828,7 +828,7 @@ export function APISyncPanel() {
               value={stripeProgress.page ? Math.min(stripeProgress.page * 0.1, 95) : 50} 
               className="h-2"
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-zinc-500">
               Procesando en background... Actualizando cada 3s
             </p>
           </div>
@@ -836,19 +836,19 @@ export function APISyncPanel() {
 
         {/* PayPal Progress indicator */}
         {paypalProgress && (
-          <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-blue-400">
+          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-white">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>PayPal: {paypalProgress.current.toLocaleString()} transacciones sincronizadas</span>
             </div>
-            <div className="flex items-center gap-2 text-xs text-gray-400">
+            <div className="flex items-center gap-2 text-xs text-zinc-400">
               {paypalProgress.chunkIndex !== undefined && paypalProgress.totalChunks && (
-                <Badge variant="outline" className="text-blue-300 border-blue-500/50">
+                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
                   Chunk {paypalProgress.chunkIndex + 1}/{paypalProgress.totalChunks}
                 </Badge>
               )}
               {paypalProgress.page && (
-                <Badge variant="outline" className="text-blue-300 border-blue-500/50">
+                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
                   Página {paypalProgress.page}
                 </Badge>
               )}
@@ -857,7 +857,7 @@ export function APISyncPanel() {
               value={paypalProgress.totalChunks ? ((paypalProgress.chunkIndex || 0) + 1) / paypalProgress.totalChunks * 100 : 50} 
               className="h-2"
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-zinc-500">
               Procesando en background... Actualizando cada 3s
             </p>
           </div>
@@ -865,8 +865,8 @@ export function APISyncPanel() {
 
         {/* GHL Progress indicator */}
         {ghlProgress && (
-          <div className="p-3 bg-cyan-500/10 rounded-lg border border-cyan-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-cyan-400">
+          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-white">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>GoHighLevel: {ghlProgress.current.toLocaleString()} contactos descargados</span>
             </div>
@@ -874,7 +874,7 @@ export function APISyncPanel() {
               value={100} 
               className="h-2 animate-pulse"
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-zinc-500">
               Descargando a staging... Actualizando cada 3s
             </p>
           </div>
@@ -882,8 +882,8 @@ export function APISyncPanel() {
 
         {/* ManyChat Progress indicator */}
         {manychatProgress && (
-          <div className="p-3 bg-pink-500/10 rounded-lg border border-pink-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-pink-400">
+          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-white">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>ManyChat: {manychatProgress.current.toLocaleString()} contactos sincronizados</span>
             </div>
@@ -891,7 +891,7 @@ export function APISyncPanel() {
               value={100} 
               className="h-2 animate-pulse"
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-zinc-500">
               Procesando... Actualizando cada 3s
             </p>
           </div>
@@ -899,8 +899,8 @@ export function APISyncPanel() {
 
         {/* Invoices Progress indicator */}
         {invoicesProgress && (
-          <div className="p-3 bg-amber-500/10 rounded-lg border border-amber-500/30 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-amber-400">
+          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-white">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>Facturas: {invoicesProgress.current.toLocaleString()} sincronizadas</span>
             </div>
@@ -908,22 +908,22 @@ export function APISyncPanel() {
               value={100} 
               className="h-2 animate-pulse"
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-zinc-500">
               Procesando en background... Actualizando cada 3s
             </p>
           </div>
         )}
 
         {/* Stripe Sync */}
-        <div className="p-4 bg-background rounded-lg border border-border/50 space-y-3">
+        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                <span className="text-purple-400 font-bold text-sm">S</span>
+              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">S</span>
               </div>
               <div>
                 <h4 className="font-medium text-white">Stripe</h4>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-zinc-400">
                   {stripeResult?.success 
                     ? `${stripeResult.synced_transactions} transacciones (${stripeResult.paid_count} pagos, ${stripeResult.failed_count} fallidos)`
                     : 'Sincroniza desde Stripe API'
@@ -948,7 +948,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('last24h')}
               disabled={stripeSyncing}
-              className="gap-2 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimas 24h
@@ -958,7 +958,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('last31d')}
               disabled={stripeSyncing}
-              className="gap-2"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               31 días
@@ -968,7 +968,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('all6months')}
               disabled={stripeSyncing}
-              className="gap-2"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               6 Meses
@@ -977,7 +977,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('allHistory')}
               disabled={stripeSyncing}
-              className="gap-2 bg-purple-600 hover:bg-purple-700"
+              className="gap-2 bg-primary hover:bg-primary/90"
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
@@ -986,15 +986,15 @@ export function APISyncPanel() {
         </div>
 
         {/* PayPal Sync */}
-        <div className="p-4 bg-background rounded-lg border border-border/50 space-y-3">
+        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
-                <span className="text-yellow-400 font-bold text-sm">P</span>
+              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">P</span>
               </div>
               <div>
                 <h4 className="font-medium text-white">PayPal</h4>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-zinc-400">
                   {paypalResult?.success 
                     ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
                     : 'Sincroniza desde PayPal API'
@@ -1019,7 +1019,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('last24h')}
               disabled={paypalSyncing}
-              className="gap-2 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimas 24h
@@ -1029,7 +1029,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('last31d')}
               disabled={paypalSyncing}
-              className="gap-2"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               31 días
@@ -1039,7 +1039,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('all6months')}
               disabled={paypalSyncing}
-              className="gap-2"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               6 Meses
@@ -1048,7 +1048,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('allHistory')}
               disabled={paypalSyncing}
-              className="gap-2 bg-yellow-600 hover:bg-yellow-700"
+              className="gap-2 bg-primary hover:bg-primary/90"
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
@@ -1057,15 +1057,15 @@ export function APISyncPanel() {
         </div>
 
         {/* Invoices/Facturas Sync */}
-        <div className="p-4 bg-background rounded-lg border border-cyan-500/30 space-y-3">
+        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
-                <FileText className="h-5 w-5 text-cyan-400" />
+              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+                <FileText className="h-5 w-5 text-white" />
               </div>
               <div>
                 <h4 className="font-medium text-white">Facturas Stripe</h4>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-zinc-400">
                   {invoicesResult?.success 
                     ? invoicesResult.message
                     : 'Sincroniza todas las facturas (draft, open, paid, void)'
@@ -1091,7 +1091,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncInvoices('recent')}
               disabled={invoicesSyncing}
-              className="gap-2 border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/10"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimos 90 días
@@ -1100,27 +1100,27 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncInvoices('full')}
               disabled={invoicesSyncing}
-              className="gap-2 bg-cyan-600 hover:bg-cyan-700"
+              className="gap-2 bg-primary hover:bg-primary/90"
             >
               {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
             </Button>
           </div>
           
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-zinc-500">
             📄 Sincroniza facturas con status, paid_at, raw_data y client_id vinculado
           </p>
         </div>
 
-        <div className="p-4 bg-background rounded-lg border border-blue-500/30 space-y-3">
+        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                <MessageCircle className="h-5 w-5 text-blue-400" />
+              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+                <MessageCircle className="h-5 w-5 text-white" />
               </div>
               <div>
                 <h4 className="font-medium text-white">ManyChat</h4>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-zinc-400">
                   {manychatResult?.success 
                     ? `${manychatResult.total_fetched} contactos (${manychatResult.total_inserted} nuevos, ${manychatResult.total_updated} actualizados)`
                     : 'Sincroniza todos tus suscriptores de ManyChat'
@@ -1142,7 +1142,7 @@ export function APISyncPanel() {
           <Button
             onClick={syncManyChat}
             disabled={manychatSyncing}
-            className="w-full gap-2 bg-blue-600 hover:bg-blue-700"
+            className="w-full gap-2 bg-primary hover:bg-primary/90"
           >
             {manychatSyncing ? (
               <>
@@ -1157,21 +1157,21 @@ export function APISyncPanel() {
             )}
           </Button>
           
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-zinc-500">
             📱 Importa suscriptores de Instagram, Messenger y WhatsApp. Unifica por email/phone.
           </p>
         </div>
 
         {/* GoHighLevel Sync */}
-        <div className="p-4 bg-background rounded-lg border border-green-500/30 space-y-3">
+        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
-                <Users className="h-5 w-5 text-green-400" />
+              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+                <Users className="h-5 w-5 text-white" />
               </div>
               <div>
                 <h4 className="font-medium text-white">GoHighLevel</h4>
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-zinc-400">
                   {ghlResult?.success 
                     ? (ghlResult.message || `${ghlResult.total_fetched?.toLocaleString() || 0} contactos (${ghlResult.total_inserted?.toLocaleString() || 0} nuevos, ${ghlResult.total_updated?.toLocaleString() || 0} actualizados)`)
                     : ghlResult?.error
@@ -1195,7 +1195,7 @@ export function APISyncPanel() {
           <Button
             onClick={syncGHL}
             disabled={ghlSyncing}
-            className="w-full gap-2 bg-green-600 hover:bg-green-700"
+            className="w-full gap-2 bg-primary hover:bg-primary/90"
           >
             {ghlSyncing ? (
               <>
@@ -1210,7 +1210,7 @@ export function APISyncPanel() {
             )}
           </Button>
           
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-zinc-500">
             📋 Importa contactos de tu CRM GoHighLevel. Unifica por email/phone.
           </p>
         </div>
@@ -1219,7 +1219,7 @@ export function APISyncPanel() {
         <Button 
           onClick={syncAllHistory}
           disabled={stripeSyncing || paypalSyncing}
-          className="w-full bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"
+          className="w-full bg-primary hover:bg-primary/90"
         >
           {(stripeSyncing || paypalSyncing) ? (
             <>
@@ -1234,7 +1234,7 @@ export function APISyncPanel() {
           )}
         </Button>
 
-        <p className="text-xs text-gray-500 text-center">
+        <p className="text-xs text-zinc-500 text-center">
           💡 Backend procesa todo el historial automáticamente con paginación interna
         </p>
         

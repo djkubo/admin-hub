@@ -28,7 +28,7 @@ export function ImportSyncPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
           <h1 className="text-xl sm:text-3xl font-bold text-white flex items-center gap-2 sm:gap-3">
-            <Upload className="h-6 w-6 sm:h-8 sm:w-8 text-cyan-500" />
+            <Upload className="h-6 w-6 sm:h-8 sm:w-8 text-primary" />
             Importar / Sincronizar
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-1">
