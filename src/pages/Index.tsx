@@ -12,6 +12,7 @@ import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { CampaignControlCenter } from "@/components/dashboard/CampaignControlCenter";
 import { FlowsPage } from "@/components/dashboard/FlowsPage";
 import { BroadcastListsPage } from "@/components/broadcast/BroadcastListsPage";
+import { WhatsAppSettingsPage } from "@/components/dashboard/WhatsAppSettingsPage";
 import SyncCenter from "@/components/dashboard/SyncCenter";
 import DiagnosticsPanel from "@/components/dashboard/DiagnosticsPanel";
 import MessagesPageWrapper from "@/components/dashboard/MessagesPageWrapper";
@@ -105,6 +106,8 @@ const Index = () => {
         return <FlowsPage />;
       case "broadcast":
         return <BroadcastListsPage />;
+      case "whatsapp-direct":
+        return <WhatsAppSettingsPage />;
       case "sync-center":
         return <SyncCenter />;
       case "diagnostics":
