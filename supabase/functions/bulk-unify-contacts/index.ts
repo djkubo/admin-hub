@@ -1,6 +1,6 @@
-// Edge Function: bulk-unify-contacts v3
-// High-performance batch unification with AUTO-CHAINING for 800k+ contacts
-// OPTIMIZED: Auto-continuation, larger batches, 45s execution chunks
+// Edge Function: bulk-unify-contacts v4
+// High-performance batch unification with MICRO-BATCHES for 800k+ contacts
+// FIXED: Timeout issues resolved with smaller upserts and retry logic
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -31,16 +31,23 @@ interface UnifyRequest {
 // deno-lint-ignore no-explicit-any
 type SupabaseClient = ReturnType<typeof createClient<any>>;
 
-// ============ CONSTANTS ============
+// ============ CONSTANTS (FIXED FOR STABILITY) ============
 const MAX_EXECUTION_TIME_MS = 45_000; // 45 seconds max per chunk
-const BATCH_SIZE_DEFAULT = 2000; // Increased for throughput
-const BATCH_DELAY_MS = 5; // Reduced delay between batches
+const BATCH_SIZE_DEFAULT = 100; // REDUCED from 2000 to avoid timeouts
+const MICRO_BATCH_SIZE = 25; // Upsert in smaller chunks
+const BATCH_DELAY_MS = 50; // Slightly more delay for stability
 const MAX_RETRY_ATTEMPTS = 3;
+const UPSERT_RETRY_DELAY_MS = 500;
 
 // ============ LOGGING ============
 function log(level: 'info' | 'error' | 'warn', message: string, data?: unknown) {
   const timestamp = new Date().toISOString();
-  console[level](`[${timestamp}] [bulk-unify-v3] ${message}`, data ? JSON.stringify(data) : '');
+  console[level](`[${timestamp}] [bulk-unify-v4] ${message}`, data ? JSON.stringify(data) : '');
+}
+
+// ============ DELAY HELPER ============
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ============ VERIFY ADMIN ============
@@ -86,6 +93,66 @@ function normalizeEmail(email: string | null | undefined): string | null {
   return trimmed.includes('@') ? trimmed : null;
 }
 
+// ============ MICRO-BATCH UPSERT WITH RETRY ============
+async function upsertWithRetry(
+  supabase: SupabaseClient,
+  table: string,
+  records: Record<string, unknown>[],
+  onConflict: string,
+  ignoreDuplicates: boolean
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  const results = { success: 0, failed: 0, errors: [] as string[] };
+  
+  if (records.length === 0) return results;
+
+  // Split into micro-batches
+  for (let i = 0; i < records.length; i += MICRO_BATCH_SIZE) {
+    const microBatch = records.slice(i, i + MICRO_BATCH_SIZE);
+    let succeeded = false;
+    
+    // Try upsert with 1 retry
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { error } = await supabase
+          .from(table)
+          .upsert(microBatch, { onConflict, ignoreDuplicates });
+        
+        if (!error) {
+          results.success += microBatch.length;
+          succeeded = true;
+          break;
+        } else {
+          if (attempt === 0) {
+            log('warn', `Micro-batch ${i / MICRO_BATCH_SIZE} attempt 1 failed, retrying...`, error.message);
+            await delay(UPSERT_RETRY_DELAY_MS);
+          } else {
+            results.failed += microBatch.length;
+            results.errors.push(`Batch ${i / MICRO_BATCH_SIZE}: ${error.message}`);
+            log('error', `Micro-batch ${i / MICRO_BATCH_SIZE} failed after retry`, error.message);
+          }
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (attempt === 0) {
+          log('warn', `Micro-batch ${i / MICRO_BATCH_SIZE} exception, retrying...`, errMsg);
+          await delay(UPSERT_RETRY_DELAY_MS);
+        } else {
+          results.failed += microBatch.length;
+          results.errors.push(`Batch ${i / MICRO_BATCH_SIZE}: ${errMsg}`);
+          log('error', `Micro-batch ${i / MICRO_BATCH_SIZE} exception after retry`, errMsg);
+        }
+      }
+    }
+    
+    // Small delay between successful micro-batches to avoid overwhelming DB
+    if (succeeded && i + MICRO_BATCH_SIZE < records.length) {
+      await delay(10);
+    }
+  }
+  
+  return results;
+}
+
 // ============ GET PENDING COUNTS (using new accurate RPC) ============
 async function getPendingCounts(supabase: SupabaseClient): Promise<{
   ghl: number;
@@ -128,7 +195,7 @@ async function processGHLBatch(
   supabase: SupabaseClient, 
   batchSize: number,
   lastId?: string
-): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string }> {
+): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string; errors: number }> {
   let query = supabase
     .from('ghl_contacts_raw')
     .select('id, external_id, payload')
@@ -143,7 +210,7 @@ async function processGHLBatch(
   const { data: rawContacts, error } = await query;
 
   if (error || !rawContacts?.length) {
-    return { processed: 0, merged: 0, hasMore: false };
+    return { processed: 0, merged: 0, hasMore: false, errors: 0 };
   }
 
   const contacts = rawContacts as Array<{ id: string; external_id: string; payload: Record<string, unknown> }>;
@@ -200,28 +267,30 @@ async function processGHLBatch(
   }
 
   let merged = 0;
+  let totalErrors = 0;
   
+  // Use micro-batch upsert for email records
   const emailRecords = [...emailMap.values()];
   if (emailRecords.length > 0) {
-    const { error: upsertError } = await supabase
-      .from('clients')
-      .upsert(emailRecords, { onConflict: 'email', ignoreDuplicates: false });
-    
-    if (!upsertError) merged += emailRecords.length;
-    else log('error', 'GHL upsert error', upsertError.message);
+    const result = await upsertWithRetry(supabase, 'clients', emailRecords, 'email', false);
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Use micro-batch upsert for phone-only records
   if (phoneOnlyRecords.length > 0) {
-    const { error: insertError } = await supabase
-      .from('clients')
-      .upsert(phoneOnlyRecords.map(r => ({ ...r, email: null })), { 
-        onConflict: 'phone_e164',
-        ignoreDuplicates: true 
-      });
-    
-    if (!insertError) merged += phoneOnlyRecords.length;
+    const result = await upsertWithRetry(
+      supabase, 
+      'clients', 
+      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
+      'phone_e164',
+      true
+    );
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Mark as processed
   if (processedIds.length > 0) {
     await supabase
       .from('ghl_contacts_raw')
@@ -233,7 +302,8 @@ async function processGHLBatch(
     processed: contacts.length, 
     merged, 
     hasMore: contacts.length >= batchSize,
-    lastId: newLastId
+    lastId: newLastId,
+    errors: totalErrors
   };
 }
 
@@ -242,7 +312,7 @@ async function processManyChatBatch(
   supabase: SupabaseClient, 
   batchSize: number,
   lastId?: string
-): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string }> {
+): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string; errors: number }> {
   let query = supabase
     .from('manychat_contacts_raw')
     .select('id, subscriber_id, payload')
@@ -257,7 +327,7 @@ async function processManyChatBatch(
   const { data: rawContacts, error } = await query;
 
   if (error || !rawContacts?.length) {
-    return { processed: 0, merged: 0, hasMore: false };
+    return { processed: 0, merged: 0, hasMore: false, errors: 0 };
   }
 
   const contacts = rawContacts as Array<{ id: string; subscriber_id: string; payload: Record<string, unknown> }>;
@@ -310,27 +380,30 @@ async function processManyChatBatch(
   }
 
   let merged = 0;
+  let totalErrors = 0;
   
+  // Use micro-batch upsert for email records
   const emailRecords = [...emailMap.values()];
   if (emailRecords.length > 0) {
-    const { error: upsertError } = await supabase
-      .from('clients')
-      .upsert(emailRecords, { onConflict: 'email', ignoreDuplicates: false });
-    
-    if (!upsertError) merged += emailRecords.length;
+    const result = await upsertWithRetry(supabase, 'clients', emailRecords, 'email', false);
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Use micro-batch upsert for phone-only records
   if (phoneOnlyRecords.length > 0) {
-    const { error: insertError } = await supabase
-      .from('clients')
-      .upsert(phoneOnlyRecords.map(r => ({ ...r, email: null })), { 
-        onConflict: 'phone_e164',
-        ignoreDuplicates: true 
-      });
-    
-    if (!insertError) merged += phoneOnlyRecords.length;
+    const result = await upsertWithRetry(
+      supabase, 
+      'clients', 
+      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
+      'phone_e164',
+      true
+    );
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Mark as processed
   if (processedIds.length > 0) {
     await supabase
       .from('manychat_contacts_raw')
@@ -342,7 +415,8 @@ async function processManyChatBatch(
     processed: contacts.length, 
     merged, 
     hasMore: contacts.length >= batchSize,
-    lastId: newLastId
+    lastId: newLastId,
+    errors: totalErrors
   };
 }
 
@@ -351,7 +425,7 @@ async function processCSVBatch(
   supabase: SupabaseClient, 
   batchSize: number,
   lastId?: string
-): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string }> {
+): Promise<{ processed: number; merged: number; hasMore: boolean; lastId?: string; errors: number }> {
   let query = supabase
     .from('csv_imports_raw')
     .select('id, email, phone, full_name, raw_data, source_type')
@@ -366,7 +440,7 @@ async function processCSVBatch(
   const { data: rawContacts, error } = await query;
 
   if (error || !rawContacts?.length) {
-    return { processed: 0, merged: 0, hasMore: false };
+    return { processed: 0, merged: 0, hasMore: false, errors: 0 };
   }
 
   const contacts = rawContacts as Array<{
@@ -462,28 +536,30 @@ async function processCSVBatch(
   }
 
   let merged = 0;
+  let totalErrors = 0;
   
+  // Use micro-batch upsert for email records
   const emailRecords = [...emailMap.values()];
   if (emailRecords.length > 0) {
-    const { error: upsertError } = await supabase
-      .from('clients')
-      .upsert(emailRecords, { onConflict: 'email', ignoreDuplicates: false });
-    
-    if (!upsertError) merged += emailRecords.length;
-    else log('error', 'CSV upsert error', upsertError.message);
+    const result = await upsertWithRetry(supabase, 'clients', emailRecords, 'email', false);
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Use micro-batch upsert for phone-only records
   if (phoneOnlyRecords.length > 0) {
-    const { error: insertError } = await supabase
-      .from('clients')
-      .upsert(phoneOnlyRecords.map(r => ({ ...r, email: null })), { 
-        onConflict: 'phone_e164',
-        ignoreDuplicates: true 
-      });
-    
-    if (!insertError) merged += phoneOnlyRecords.length;
+    const result = await upsertWithRetry(
+      supabase, 
+      'clients', 
+      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
+      'phone_e164',
+      true
+    );
+    merged += result.success;
+    totalErrors += result.failed;
   }
 
+  // Mark as processed
   if (processedIds.length > 0) {
     await supabase
       .from('csv_imports_raw')
@@ -495,7 +571,8 @@ async function processCSVBatch(
     processed: contacts.length, 
     merged, 
     hasMore: contacts.length >= batchSize,
-    lastId: newLastId
+    lastId: newLastId,
+    errors: totalErrors
   };
 }
 
@@ -537,8 +614,8 @@ async function invokeNextChunk(
     
     if (retryCount < MAX_RETRY_ATTEMPTS) {
       // Exponential backoff
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
+      const delayMs = Math.pow(2, retryCount) * 1000;
+      await delay(delayMs);
       return invokeNextChunk(supabaseUrl, serviceRoleKey, syncRunId, sources, batchSize, cursor, chunkNumber, retryCount + 1);
     }
     
@@ -575,9 +652,11 @@ async function processChunk(
   const startTime = Date.now();
   let totalProcessed = 0;
   let totalMerged = 0;
+  let totalErrors = 0;
   let hasMoreWork = false;
   const currentCursor = { ...cursor };
   let iterations = 0;
+  let consecutiveZeroProcessed = 0;
 
   log('info', `Processing chunk ${chunkNumber}`, { cursor, batchSize });
 
@@ -609,16 +688,19 @@ async function processChunk(
             case 'csv': 
               return { source, ...await processCSVBatch(supabase, batchSize, currentCursor.csv_last_id) };
             default: 
-              return { source, processed: 0, merged: 0, hasMore: false };
+              return { source, processed: 0, merged: 0, hasMore: false, errors: 0 };
           }
         })
       );
 
       let batchProcessed = 0;
+      let batchErrors = 0;
       for (const result of results) {
         totalProcessed += result.processed;
         totalMerged += result.merged;
         batchProcessed += result.processed;
+        batchErrors += result.errors || 0;
+        totalErrors += result.errors || 0;
         
         if (result.hasMore) hasMoreWork = true;
         
@@ -651,6 +733,7 @@ async function processChunk(
           status: 'continuing',
           total_fetched: runningTotal,
           total_inserted: totalMerged,
+          total_skipped: totalErrors,
           checkpoint: {
             chunk: chunkNumber,
             cursor: currentCursor,
@@ -658,26 +741,62 @@ async function processChunk(
             progressPct: Math.round(progressPct * 10) / 10,
             rate: `${rate}/s`,
             estimatedRemainingSeconds: estimatedRemaining,
-            lastActivity: new Date().toISOString()
+            lastActivity: new Date().toISOString(),
+            errors: totalErrors
           }
         })
         .eq('id', syncRunId);
 
-      // No more work to do
+      // FIXED: Better detection of "no work" vs "errors"
       if (batchProcessed === 0) {
-        log('info', `No records processed in iteration ${iterations}, checking if done`);
-        break;
+        consecutiveZeroProcessed++;
+        
+        // If we get 0 processed twice in a row, double-check pending counts
+        if (consecutiveZeroProcessed >= 2) {
+          const freshCounts = await getPendingCounts(supabase);
+          log('info', `Zero processed ${consecutiveZeroProcessed}x, fresh counts:`, freshCounts);
+          
+          if (freshCounts.total === 0) {
+            // Truly done!
+            hasMoreWork = false;
+            break;
+          } else if (batchErrors > 0) {
+            // There are records but we're getting errors - pause for investigation
+            log('warn', `Stalled with ${freshCounts.total} pending and ${batchErrors} errors`);
+            await supabase
+              .from('sync_runs')
+              .update({
+                status: 'paused',
+                error_message: `Processing stalled: ${freshCounts.total} pending, ${batchErrors} errors this batch`,
+                checkpoint: {
+                  cursor: currentCursor,
+                  chunkNumber,
+                  canResume: true,
+                  pausedAt: new Date().toISOString(),
+                  pendingAtPause: freshCounts
+                }
+              })
+              .eq('id', syncRunId);
+            return;
+          } else {
+            // No errors but no progress - something weird, try one more chunk
+            hasMoreWork = freshCounts.total > 0;
+            break;
+          }
+        }
+      } else {
+        consecutiveZeroProcessed = 0;
       }
 
       // Small delay between batches
       if (hasMoreWork) {
-        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        await delay(BATCH_DELAY_MS);
       }
     }
 
     // Check if there's more work and we need to chain
     if (hasMoreWork) {
-      log('info', `Chunk ${chunkNumber} complete, chaining to next`, { totalProcessed, totalMerged });
+      log('info', `Chunk ${chunkNumber} complete, chaining to next`, { totalProcessed, totalMerged, totalErrors });
       
       // Auto-invoke next chunk in background
       EdgeRuntime.waitUntil(
@@ -695,7 +814,7 @@ async function processChunk(
       // All done!
       const { data: finalSync } = await supabase
         .from('sync_runs')
-        .select('total_fetched, total_inserted')
+        .select('total_fetched, total_inserted, total_skipped')
         .eq('id', syncRunId)
         .single();
 
@@ -708,12 +827,17 @@ async function processChunk(
             sources,
             finalChunk: chunkNumber,
             totalProcessed: (finalSync as { total_fetched: number } | null)?.total_fetched || 0,
-            totalMerged: (finalSync as { total_inserted: number } | null)?.total_inserted || 0
+            totalMerged: (finalSync as { total_inserted: number } | null)?.total_inserted || 0,
+            totalErrors: (finalSync as { total_skipped: number } | null)?.total_skipped || 0
           }
         })
         .eq('id', syncRunId);
 
-      log('info', 'Bulk unification completed!', { chunkNumber, totalProcessed: (finalSync as { total_fetched: number } | null)?.total_fetched });
+      log('info', 'Bulk unification completed!', { 
+        chunkNumber, 
+        totalProcessed: (finalSync as { total_fetched: number } | null)?.total_fetched,
+        totalErrors: (finalSync as { total_skipped: number } | null)?.total_skipped 
+      });
     }
 
   } catch (error) {
@@ -937,7 +1061,7 @@ Deno.serve(async (req) => {
     }
 
     const newSyncRunId = (syncRun as { id: string }).id;
-    log('info', 'Starting bulk unification v3', { syncRunId: newSyncRunId, pending: pendingCounts });
+    log('info', 'Starting bulk unification v4', { syncRunId: newSyncRunId, pending: pendingCounts, batchSize });
 
     // Start background processing
     EdgeRuntime.waitUntil(
@@ -954,14 +1078,14 @@ Deno.serve(async (req) => {
       )
     );
 
-    // Estimate: 2000 records per batch, 3 sources in parallel, chunks of 45s
-    const estimatedChunks = Math.ceil(pendingCounts.total / (batchSize * 3 * 20));
-    const estimatedMinutes = Math.ceil(estimatedChunks * 0.75);
+    // Estimate: 100 records per batch (reduced), ~100/s rate
+    const estimatedSeconds = Math.ceil(pendingCounts.total / 100);
+    const estimatedMinutes = Math.ceil(estimatedSeconds / 60);
 
     return new Response(
       JSON.stringify({
         ok: true,
-        message: 'Unification started',
+        message: 'Unification started (v4 with micro-batches)',
         syncRunId: newSyncRunId,
         pending: pendingCounts,
         estimatedTime: `~${estimatedMinutes} minutes`
