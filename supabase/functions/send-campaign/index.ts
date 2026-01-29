@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,6 +8,57 @@ const corsHeaders = {
 interface SendCampaignRequest {
   campaign_id: string;
   dry_run?: boolean;
+}
+
+interface DebtInfo {
+  totalDebt: number;
+  daysUntilDue: number | null;
+}
+
+// Helper function to get client's real debt information
+async function getClientDebtInfo(
+  supabase: SupabaseClient,
+  clientEmail: string | null
+): Promise<DebtInfo> {
+  if (!clientEmail) {
+    return { totalDebt: 0, daysUntilDue: null };
+  }
+
+  try {
+    // Fetch open invoices for the client
+    const { data: openInvoices, error } = await supabase
+      .from('invoices')
+      .select('amount_due, due_date')
+      .eq('customer_email', clientEmail)
+      .in('status', ['open', 'past_due', 'draft'])
+      .order('due_date', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching client debt info:', error);
+      return { totalDebt: 0, daysUntilDue: null };
+    }
+
+    // Calculate total debt amount
+    const totalDebt = (openInvoices || []).reduce(
+      (sum, inv) => sum + (inv.amount_due || 0),
+      0
+    );
+
+    // Calculate days until the earliest due date
+    let daysUntilDue: number | null = null;
+    if (openInvoices?.length && openInvoices[0].due_date) {
+      const dueDate = new Date(openInvoices[0].due_date);
+      const today = new Date();
+      daysUntilDue = Math.ceil(
+        (dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+      );
+    }
+
+    return { totalDebt, daysUntilDue };
+  } catch (err) {
+    console.error('Exception in getClientDebtInfo:', err);
+    return { totalDebt: 0, daysUntilDue: null };
+  }
 }
 
 Deno.serve(async (req) => {
@@ -61,11 +112,12 @@ Deno.serve(async (req) => {
     let excludedCount = 0;
     const results: Array<{ client_id: string; status: string; reason?: string }> = [];
 
-    // Get Twilio credentials
+    // Get provider credentials
     const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID');
     const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
     const TWILIO_PHONE_NUMBER = Deno.env.get('TWILIO_PHONE_NUMBER');
     const MANYCHAT_API_KEY = Deno.env.get('MANYCHAT_API_KEY');
+    const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY');
 
     for (const recipient of recipients || []) {
       const client = recipient.client;
@@ -93,7 +145,12 @@ Deno.serve(async (req) => {
         exclusionReason = 'no_phone';
       }
 
-      // 3. Dedupe check (24h by default)
+      // 3. No email check for email channel
+      if (!exclusionReason && campaign.channel === 'email' && !client.email) {
+        exclusionReason = 'no_email';
+      }
+
+      // 4. Dedupe check (24h by default)
       if (!exclusionReason && campaign.dedupe_hours > 0) {
         const { data: recentSends } = await supabase
           .from('campaign_recipients')
@@ -108,7 +165,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      // 4. Exclude refunds/negatives (check for negative transactions)
+      // 5. Exclude refunds/negatives (check for negative transactions)
       if (!exclusionReason && campaign.segment?.exclude_refunds) {
         const { data: refunds } = await supabase
           .from('transactions')
@@ -123,7 +180,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      // 5. Quiet hours check
+      // 6. Quiet hours check
       if (!exclusionReason && campaign.respect_quiet_hours) {
         const now = new Date();
         const currentHour = now.getHours();
@@ -161,12 +218,19 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Build message from template
+      // Get real debt information for this client
+      const debtInfo = await getClientDebtInfo(supabase, client.email);
+      const formattedAmount = `$${(debtInfo.totalDebt / 100).toFixed(2)}`;
+      const daysLeft = debtInfo.daysUntilDue !== null
+        ? Math.max(0, debtInfo.daysUntilDue).toString()
+        : 'N/A';
+
+      // Build message from template with REAL variables
       let message = campaign.template?.content || '';
       const clientName = client.full_name || 'Cliente';
       message = message.replace(/\{\{name\}\}/g, clientName);
-      message = message.replace(/\{\{amount\}\}/g, '$0.00'); // TODO: Get actual amount
-      message = message.replace(/\{\{days_left\}\}/g, '3'); // TODO: Calculate
+      message = message.replace(/\{\{amount\}\}/g, formattedAmount);
+      message = message.replace(/\{\{days_left\}\}/g, daysLeft);
 
       let externalMessageId: string | null = null;
       let sendSuccess = false;
@@ -198,6 +262,8 @@ Deno.serve(async (req) => {
           if (response.ok && result.sid) {
             sendSuccess = true;
             externalMessageId = result.sid;
+          } else {
+            console.error('WhatsApp send error:', result);
           }
         } else if (campaign.channel === 'sms' && client.phone && TWILIO_ACCOUNT_SID) {
           let phoneNumber = client.phone.replace(/[^\d+]/g, '');
@@ -224,6 +290,8 @@ Deno.serve(async (req) => {
           if (response.ok && result.sid) {
             sendSuccess = true;
             externalMessageId = result.sid;
+          } else {
+            console.error('SMS send error:', result);
           }
         } else if (campaign.channel === 'messenger' && MANYCHAT_API_KEY) {
           const searchField = client.email ? 'email' : 'phone';
@@ -254,6 +322,61 @@ Deno.serve(async (req) => {
             if (sendResult.status === 'success') {
               sendSuccess = true;
               externalMessageId = searchResult.data.id;
+            } else {
+              console.error('Messenger send error:', sendResult);
+            }
+          }
+        } else if (campaign.channel === 'email') {
+          // Check for email provider configuration
+          if (!RESEND_API_KEY) {
+            console.error('Email provider not configured: RESEND_API_KEY missing');
+            await supabase.from('campaign_recipients').update({
+              status: 'failed',
+              exclusion_reason: 'email_provider_not_configured',
+            }).eq('id', recipient.id);
+            failedCount++;
+            results.push({
+              client_id: client.id,
+              status: 'failed',
+              reason: 'Email provider not configured'
+            });
+            continue;
+          }
+
+          if (!client.email) {
+            exclusionReason = 'no_email';
+          } else {
+            // Build email subject from template or campaign name
+            const emailSubject = campaign.template?.subject || campaign.name || 'Mensaje importante';
+
+            // Send via Resend API
+            const resendResponse = await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${RESEND_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                from: 'Cobranza <onboarding@resend.dev>', // Use Resend test domain, replace with verified domain in production
+                to: [client.email],
+                subject: emailSubject,
+                html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                  <p style="font-size: 16px; line-height: 1.6; color: #333;">${message.replace(/\n/g, '<br>')}</p>
+                  <hr style="margin-top: 30px; border: none; border-top: 1px solid #eee;">
+                  <p style="font-size: 12px; color: #999; margin-top: 20px;">Este es un mensaje automatizado. Por favor no responda a este correo.</p>
+                </div>`,
+                text: message,
+              }),
+            });
+
+            const resendResult = await resendResponse.json();
+            console.log('Resend API response:', resendResponse.status, resendResult);
+
+            if (resendResponse.ok && resendResult.id) {
+              sendSuccess = true;
+              externalMessageId = resendResult.id;
+            } else {
+              console.error('Resend error:', resendResult);
             }
           }
         }
@@ -275,6 +398,8 @@ Deno.serve(async (req) => {
               campaign_id: campaign.id,
               campaign_name: campaign.name,
               message_id: externalMessageId,
+              amount_shown: formattedAmount,
+              days_left_shown: daysLeft,
             }
           });
 
