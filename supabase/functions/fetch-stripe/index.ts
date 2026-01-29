@@ -424,6 +424,17 @@ async function processChunk(
 
 // ============= SECURITY =============
 
+function decodeJwtPayload(token: string): { sub?: string; exp?: number; email?: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 async function verifyAdminOrServiceRole(req: Request): Promise<{ valid: boolean; isServiceRole: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
@@ -438,19 +449,33 @@ async function verifyAdminOrServiceRole(req: Request): Promise<{ valid: boolean;
     return { valid: true, isServiceRole: true };
   }
 
-  // Normal user auth
+  // First, decode JWT locally to check basic validity and expiration
+  const claims = decodeJwtPayload(token);
+  if (!claims || !claims.sub) {
+    return { valid: false, isServiceRole: false, error: 'Invalid token format' };
+  }
+
+  // Check expiration locally (faster than API call)
+  const now = Math.floor(Date.now() / 1000);
+  if (claims.exp && now >= claims.exp) {
+    return { valid: false, isServiceRole: false, error: 'Token expired' };
+  }
+
+  // Create Supabase client with the user's token
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) {
-    return { valid: false, isServiceRole: false, error: 'Invalid token' };
+  // Verify admin status - this also validates the token is accepted by Supabase
+  const { data: isAdmin, error: rpcError } = await supabase.rpc('is_admin');
+  
+  if (rpcError) {
+    logger.warn('is_admin RPC failed', { error: rpcError.message });
+    return { valid: false, isServiceRole: false, error: `Auth check failed: ${rpcError.message}` };
   }
-
-  const { data: isAdmin } = await supabase.rpc('is_admin');
+  
   if (!isAdmin) {
     return { valid: false, isServiceRole: false, error: 'Not an admin' };
   }

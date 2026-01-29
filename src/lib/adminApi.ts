@@ -22,12 +22,22 @@ export async function invokeWithAdminKey<
   try {
     console.log(`[AdminAPI] Invoking ${functionName}`, body ? 'with body' : 'without body');
     
-    // Get current session - the SDK automatically includes the JWT in requests
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    // Refresh session to ensure we have a valid token
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
     
-    if (sessionError) {
-      console.error('[AdminAPI] Session error:', sessionError);
-      return { success: false, error: `Session error: ${sessionError.message}` } as T;
+    // If refresh fails, try to get existing session
+    let session = refreshData?.session;
+    
+    if (refreshError || !session) {
+      console.warn('[AdminAPI] Refresh failed, trying existing session:', refreshError?.message);
+      const { data: { session: existingSession }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error('[AdminAPI] Session error:', sessionError);
+        return { success: false, error: `Session error: ${sessionError.message}` } as T;
+      }
+      
+      session = existingSession;
     }
     
     if (!session) {
@@ -35,8 +45,18 @@ export async function invokeWithAdminKey<
       return { success: false, error: 'No active session. Please log in again.' } as T;
     }
 
-    // SOLUCIÓN: Pasar explícitamente el Authorization header
-    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}`);
+    // Check if token is about to expire (within 60 seconds)
+    const expiresAt = session.expires_at ? session.expires_at * 1000 : 0;
+    const now = Date.now();
+    if (expiresAt > 0 && expiresAt - now < 60000) {
+      console.warn('[AdminAPI] Token expiring soon, forcing refresh');
+      const { data: forceRefresh } = await supabase.auth.refreshSession();
+      if (forceRefresh?.session) {
+        session = forceRefresh.session;
+      }
+    }
+
+    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}, expires: ${new Date(expiresAt).toISOString()}`);
     
     const { data, error } = await supabase.functions.invoke(functionName, {
       body,
