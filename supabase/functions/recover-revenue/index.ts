@@ -278,6 +278,30 @@ Deno.serve(async (req: Request) => {
     const supabaseService = createClient(supabaseUrl, serviceRoleKey);
     const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
 
+    // ============= KILL SWITCH: Check if auto-dunning is enabled =============
+    const { data: autoDunningConfig } = await supabaseService
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'auto_dunning_enabled')
+      .single();
+
+    const autoDunningEnabled = autoDunningConfig?.value !== 'false'; // Default: enabled
+    
+    if (!autoDunningEnabled) {
+      console.log(`[${requestId}] ⏸️ Auto-dunning disabled globally, skipping revenue recovery`);
+      return new Response(
+        JSON.stringify({ 
+          ok: true, 
+          success: true, 
+          status: 'skipped', 
+          skipped: true, 
+          reason: 'Feature disabled: auto_dunning_enabled is OFF' 
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    // ===========================================================================
+
     // For continuation calls, skip auth check (we use service role)
     if (!_continuation) {
       const supabaseUser = createClient(

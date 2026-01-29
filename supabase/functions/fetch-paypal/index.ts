@@ -308,6 +308,29 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // ============= KILL SWITCH: Check if sync is paused =============
+    const { data: syncPausedConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'sync_paused')
+      .single();
+
+    const syncPaused = syncPausedConfig?.value === 'true';
+    
+    if (syncPaused) {
+      logger.info('⏸️ Sync paused globally, skipping execution');
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'skipped', 
+          skipped: true, 
+          reason: 'Feature disabled: sync_paused is ON' 
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    // ================================================================
+
     // Parse request
     let originalStartDate: string;
     let originalEndDate: string;

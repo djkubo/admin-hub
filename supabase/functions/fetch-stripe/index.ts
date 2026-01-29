@@ -487,9 +487,32 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Parse body
+    // Parse body first to check for _continuation flag
     let body: any = {};
     try { body = await req.json(); } catch { /* empty body */ }
+
+    // ============= KILL SWITCH: Check if sync is paused =============
+    const { data: syncPausedConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'sync_paused')
+      .single();
+
+    const syncPaused = syncPausedConfig?.value === 'true';
+    
+    if (syncPaused) {
+      logger.info('⏸️ Sync paused globally, skipping execution');
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'skipped', 
+          skipped: true, 
+          reason: 'Feature disabled: sync_paused is ON' 
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    // ================================================================
 
     // ========== CONTINUATION (AUTO-CHAIN) ==========
     if (body._continuation && authCheck.isServiceRole) {
