@@ -17,7 +17,8 @@ import {
   X,
   Activity,
   Workflow,
-  Radio
+  Radio,
+  Smartphone
 } from "lucide-react";
 import vrpLogo from "@/assets/vrp-logo.png";
 
@@ -40,6 +41,7 @@ const menuItems = [
   { id: "campaigns", label: "Campañas", icon: Send },
   { id: "flows", label: "Automatizaciones", icon: Workflow },
   { id: "broadcast", label: "Difusión", icon: Radio },
+  { id: "whatsapp-direct", label: "WhatsApp Directo", icon: Smartphone },
   { id: "settings", label: "Ajustes", icon: Settings },
 ];
 
