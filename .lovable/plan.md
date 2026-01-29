@@ -1,170 +1,145 @@
 
-# Plan de Reparación: Fix "Unificar Todos" que no Procesa
+# Plan: Conectar los Toggles de Configuración a las Edge Functions
 
-## Diagnóstico Confirmado
+## Resumen Ejecutivo
+Implementaremos "Kill Switches" reales en las Edge Functions críticas para que respeten la configuración guardada en la tabla `system_settings`. Actualmente, los toggles del panel de configuración son puramente visuales y no afectan el comportamiento del sistema.
 
-### El Problema
-Los upserts a la tabla `clients` están fallando por **timeout de Postgres (2 minutos)**. Cuando se intentan insertar 2,000 registros de golpe, la operación excede el límite de tiempo y es cancelada por la base de datos.
+## Funciones a Modificar
 
-### Por qué marcó "completed" sin procesar:
-El código actual interpreta `batchProcessed === 0` como "no hay más trabajo" cuando en realidad los upserts fallaron silenciosamente.
+### 1. `automated-dunning/index.ts` - Kill Switch para Auto-Dunning
+**Ubicación**: `supabase/functions/automated-dunning/index.ts`
 
----
+**Cambio**: Al inicio de la función (después de crear el cliente Supabase), consultar la tabla `system_settings` buscando la key `auto_dunning_enabled`. Si el valor es `false`, detener la ejecución inmediatamente.
 
-## Solución en 3 Partes
-
-### Parte 1: Reducir Batch Size Drásticamente
-Cambiar de 2,000 → **100 registros por upsert** para completar cada operación en segundos en lugar de minutos.
-
+**Lógica**:
 ```text
-ANTES: 2,000 registros → timeout después de 2min
-AHORA: 100 registros → ~3-5 segundos por upsert
+1. Consultar: SELECT value FROM system_settings WHERE key = 'auto_dunning_enabled'
+2. Si value === 'false' → retornar JSON: { skipped: true, reason: "Auto-dunning is disabled globally" }
+3. Registrar en logs: "⏸️ Auto-dunning disabled globally, skipping execution"
 ```
 
-### Parte 2: Usar Upserts Individuales con Reintentos
-En lugar de un mega-upsert de 100 registros, procesar en micro-batches de 25 con manejo de errores granular.
+---
 
+### 2. `fetch-stripe/index.ts` - Kill Switch para Sync Pausado
+**Ubicación**: `supabase/functions/fetch-stripe/index.ts`
+
+**Cambio**: Después de la verificación de autenticación y antes de iniciar el sync, consultar `sync_paused`. Si es `true`, detener la ejecución.
+
+**Lógica**:
 ```text
-┌─────────────────────────────────────────────────────────┐
-│              ESTRATEGIA DE MICRO-BATCHES                │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  Batch de 100 registros:                                │
-│  ├─ Micro-batch 1: 25 registros → Upsert → OK ✓        │
-│  ├─ Micro-batch 2: 25 registros → Upsert → OK ✓        │
-│  ├─ Micro-batch 3: 25 registros → Upsert → OK ✓        │
-│  └─ Micro-batch 4: 25 registros → Upsert → OK ✓        │
-│                                                         │
-│  Si un micro-batch falla:                               │
-│  ├─ Reintentar 1 vez después de 500ms                  │
-│  └─ Si falla de nuevo, registrar y continuar           │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Parte 3: Lógica de "hasMoreWork" Corregida
-El código actual marca "completed" cuando `batchProcessed === 0`, pero esto es incorrecto si hubo errores. 
-
-Nueva lógica:
-- Si hay timeouts → Marcar como "paused" con cursor de reanudación
-- Si `batchProcessed === 0` Y no hubo errores → Marcar como "completed"
-
----
-
-## Cambios en el Código
-
-### Archivo: `supabase/functions/bulk-unify-contacts/index.ts`
-
-**1. Constantes actualizadas:**
-```typescript
-// ANTES
-const BATCH_SIZE_DEFAULT = 2000;
-const BATCH_DELAY_MS = 5;
-
-// AHORA
-const BATCH_SIZE_DEFAULT = 100;    // Reduced for stability
-const MICRO_BATCH_SIZE = 25;       // Upsert in smaller chunks
-const BATCH_DELAY_MS = 50;         // Slightly more delay
-```
-
-**2. Nueva función de micro-upsert:**
-```typescript
-async function upsertWithRetry(
-  supabase: SupabaseClient,
-  table: string,
-  records: Record<string, unknown>[],
-  onConflict: string,
-  ignoreDuplicates: boolean
-): Promise<{ success: number; failed: number }> {
-  const results = { success: 0, failed: 0 };
-  
-  // Split into micro-batches of 25
-  for (let i = 0; i < records.length; i += MICRO_BATCH_SIZE) {
-    const microBatch = records.slice(i, i + MICRO_BATCH_SIZE);
-    
-    // Try upsert with 1 retry
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const { error } = await supabase
-        .from(table)
-        .upsert(microBatch, { onConflict, ignoreDuplicates });
-      
-      if (!error) {
-        results.success += microBatch.length;
-        break;
-      } else if (attempt === 0) {
-        await delay(500); // Wait before retry
-      } else {
-        results.failed += microBatch.length;
-        log('warn', `Micro-batch failed: ${error.message}`);
-      }
-    }
-  }
-  
-  return results;
-}
-```
-
-**3. Actualizar processGHLBatch, processManyChatBatch, processCSVBatch:**
-Reemplazar los upserts directos con llamadas a `upsertWithRetry()`.
-
-**4. Lógica de "hasMoreWork" mejorada:**
-```typescript
-// ANTES (incorrecto)
-if (batchProcessed === 0) {
-  break; // Assumes no more work
-}
-
-// DESPUÉS (correcto)
-if (batchProcessed === 0) {
-  // Double-check: are there really no pending records?
-  const freshCounts = await getPendingCounts(supabase);
-  if (freshCounts.total === 0) {
-    break; // Confirmed: no more work
-  } else {
-    // There are still records but we couldn't process them
-    // Mark as paused so we can retry
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: 'paused',
-        error_message: 'Batch processing stalled, check for DB timeouts',
-        checkpoint: { cursor: currentCursor, canResume: true }
-      })
-      .eq('id', syncRunId);
-    return; // Exit and wait for manual resume
-  }
-}
+1. Consultar: SELECT value FROM system_settings WHERE key = 'sync_paused'
+2. Si value === 'true' → retornar JSON: { success: false, status: 'skipped', reason: "Sync is paused globally" }
+3. Para continuaciones automáticas (_continuation=true), también verificar el toggle
 ```
 
 ---
 
-## Estimaciones de Rendimiento
+### 3. `fetch-paypal/index.ts` - Kill Switch para Sync Pausado
+**Ubicación**: `supabase/functions/fetch-paypal/index.ts`
 
-| Configuración | Batch | Velocidad Esperada | Tiempo para 800k |
-|---------------|-------|-------------------|------------------|
-| **Antes (roto)** | 2,000 | 0/s (timeouts) | ∞ |
-| **Después (fix)** | 100 (25 micro) | ~100-150/s | ~90-120 min |
+**Cambio**: Misma lógica que fetch-stripe, verificar `sync_paused` antes de iniciar.
 
-Aunque es más lento que el diseño teórico, es **estable y confiable**.
+---
+
+### 4. `recover-revenue/index.ts` - Kill Switch para Auto-Dunning
+**Ubicación**: `supabase/functions/recover-revenue/index.ts`
+
+**Cambio**: Esta función intenta cobrar facturas automáticamente. Debe respetar `auto_dunning_enabled` ya que es parte del sistema de dunning.
+
+---
+
+### 5. `sync-command-center/index.ts` - Kill Switch para Sync Pausado
+**Ubicación**: `supabase/functions/sync-command-center/index.ts`
+
+**Cambio**: El orquestador maestro debe verificar `sync_paused` antes de invocar cualquier sync.
+
+---
+
+## Implementación Técnica
+
+### Helper Function Reutilizable
+Crearemos una función helper que puede ser copiada en cada Edge Function:
+
+```typescript
+async function getSystemSetting(
+  supabase: SupabaseClient, 
+  key: string
+): Promise<string | null> {
+  const { data } = await supabase
+    .from('system_settings')
+    .select('value')
+    .eq('key', key)
+    .single();
+  return data?.value ?? null;
+}
+
+async function isFeatureEnabled(
+  supabase: SupabaseClient, 
+  key: string, 
+  defaultValue: boolean = true
+): Promise<boolean> {
+  const value = await getSystemSetting(supabase, key);
+  if (value === null) return defaultValue;
+  return value === 'true';
+}
+```
+
+### Patrón de Respuesta para Funciones Deshabilitadas
+Todas las funciones deshabilitadas retornarán un JSON consistente:
+
+```json
+{
+  "success": true,
+  "status": "skipped",
+  "skipped": true,
+  "reason": "Feature disabled: auto_dunning_enabled is OFF"
+}
+```
+
+Esto permite que el frontend detecte que la función no falló, sino que fue omitida intencionalmente.
 
 ---
 
 ## Archivos a Modificar
 
-1. **`supabase/functions/bulk-unify-contacts/index.ts`**
-   - Reducir `BATCH_SIZE_DEFAULT` de 2,000 → 100
-   - Añadir `MICRO_BATCH_SIZE = 25`
-   - Crear función `upsertWithRetry()`
-   - Actualizar las 3 funciones de proceso (GHL, ManyChat, CSV)
-   - Corregir lógica de "hasMoreWork"
+| Archivo | Toggle que Respeta | Línea de Inserción |
+|---------|-------------------|-------------------|
+| `automated-dunning/index.ts` | `auto_dunning_enabled` | ~Línea 48 (después de crear supabase client) |
+| `fetch-stripe/index.ts` | `sync_paused` | ~Línea 488 (después de crear supabase client) |
+| `fetch-paypal/index.ts` | `sync_paused` | ~Línea 309 (después de crear supabase client) |
+| `recover-revenue/index.ts` | `auto_dunning_enabled` | ~Línea 278 (después de crear supabase client) |
+| `sync-command-center/index.ts` | `sync_paused` | ~Línea 167 (después de autenticación) |
 
 ---
 
-## Resultado Esperado
+## Comportamiento Esperado Post-Implementación
 
-### Antes:
-- Botón "Unificar" → Timeouts → Marca "completed" falsamente → 0 registros procesados
+### Escenario: Usuario desactiva "Auto-Dunning" en el Panel
+1. Toggle se guarda en `system_settings` como `auto_dunning_enabled = 'false'`
+2. `automated-dunning` Edge Function es invocada (vía cron o manualmente)
+3. Función consulta `system_settings` → detecta que está deshabilitada
+4. Retorna `{ skipped: true, reason: "Auto-dunning is disabled globally" }`
+5. No se envían mensajes de cobro automático
 
-### Después:
-- Botón "Unificar" → Micro-batches de 25 → Progreso real → ~100/s estable → 800k en ~2 horas
-- Si hay problemas → Marca "paused" → Permite "Reanudar"
+### Escenario: Usuario activa "Pausar Sincronización"
+1. Toggle se guarda como `sync_paused = 'true'`
+2. Usuario intenta sincronizar Stripe desde el UI
+3. `fetch-stripe` consulta `system_settings` → detecta pausa activa
+4. Retorna `{ status: 'skipped', reason: "Sync is paused globally" }`
+5. UI muestra mensaje informativo en lugar de error
+
+---
+
+## Consideraciones de Seguridad
+
+- Los toggles solo pueden ser modificados por usuarios autenticados con permisos de admin
+- Las Edge Functions usan `SUPABASE_SERVICE_ROLE_KEY` para leer la configuración, garantizando acceso
+- El patrón es "fail-open" por defecto (si no existe la configuración, se asume habilitado) para evitar bloquear funcionalidad crítica
+
+---
+
+## Testing Post-Implementación
+
+1. **Test Manual**: Desactivar cada toggle y verificar que las funciones retornen `skipped: true`
+2. **Test de Logs**: Verificar que los logs de Edge Functions muestren el mensaje de "Feature disabled"
+3. **Test de UI**: Confirmar que el UI maneja correctamente las respuestas `skipped`
