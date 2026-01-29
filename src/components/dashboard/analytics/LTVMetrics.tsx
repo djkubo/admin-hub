@@ -144,6 +144,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
       </div>
 
       <div className="grid grid-cols-2 gap-2 sm:gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* VRP Style: Neutral zinc cards with primary accent for icons */}
         <MetricCard
           icon={DollarSign}
           label="MRR"
@@ -152,7 +153,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
             maximumFractionDigits: 0,
           })}`}
           subtext={`${metrics.activeSubscriptionCount} suscripciones activas`}
-          color="bg-emerald-500/20 text-emerald-400"
+          color="bg-zinc-800 text-primary"
         />
 
         <MetricCard
@@ -163,7 +164,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
             maximumFractionDigits: 0,
           })}`}
           subtext="Valor por cliente"
-          color="bg-indigo-500/20 text-indigo-400"
+          color="bg-zinc-800 text-primary"
         />
 
         <MetricCard
@@ -174,7 +175,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
             maximumFractionDigits: 2,
           })}`}
           subtext={`${metrics.activeCustomers} activos`}
-          color="bg-purple-500/20 text-purple-400"
+          color="bg-zinc-800 text-primary"
         />
 
         <MetricCard
@@ -182,7 +183,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
           label="Churn"
           value={`${metrics.churnRate.toFixed(1)}%`}
           subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m vida`}
-          color="bg-rose-500/20 text-rose-400"
+          color="bg-red-500/20 text-red-400"
         />
       </div>
 

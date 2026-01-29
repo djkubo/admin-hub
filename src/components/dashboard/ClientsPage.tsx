@@ -158,7 +158,7 @@ export function ClientsPage() {
             variant={statusFilter === 'customer' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('customer')}
-            className="gap-1.5 text-xs border-emerald-500/30 hover:bg-emerald-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
             Clientes
@@ -168,9 +168,9 @@ export function ClientsPage() {
             variant={statusFilter === 'lead' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('lead')}
-            className="gap-1.5 text-xs border-gray-500/30 hover:bg-gray-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
-            <span className="h-2 w-2 rounded-full bg-gray-400" />
+            <span className="h-2 w-2 rounded-full bg-zinc-500" />
             Leads
             <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.lead}</Badge>
           </Button>
@@ -178,9 +178,9 @@ export function ClientsPage() {
             variant={statusFilter === 'trial' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('trial')}
-            className="gap-1.5 text-xs border-purple-500/30 hover:bg-purple-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
-            <span className="h-2 w-2 rounded-full bg-purple-500" />
+            <span className="h-2 w-2 rounded-full bg-zinc-400" />
             Trial
             <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.trial}</Badge>
           </Button>
@@ -188,9 +188,9 @@ export function ClientsPage() {
             variant={statusFilter === 'past_due' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('past_due')}
-            className="gap-1.5 text-xs border-orange-500/30 hover:bg-orange-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
-            <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
             Morosos
             <Badge variant="secondary" className="ml-1 text-[10px] h-5 px-1.5">{filterCounts.past_due}</Badge>
           </Button>
@@ -198,7 +198,7 @@ export function ClientsPage() {
             variant={statusFilter === 'churn' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('churn')}
-            className="gap-1.5 text-xs border-red-500/30 hover:bg-red-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <LogOut className="h-3.5 w-3.5 text-red-500" />
             Cancel
@@ -208,7 +208,7 @@ export function ClientsPage() {
             variant={statusFilter === 'vip' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('vip')}
-            className="gap-1.5 text-xs border-yellow-500/30 hover:bg-yellow-500/10 touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <Crown className="h-3.5 w-3.5 text-yellow-500" />
             VIP
@@ -218,7 +218,7 @@ export function ClientsPage() {
             variant={statusFilter === 'no_phone' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setStatusFilter('no_phone')}
-            className="gap-1.5 text-xs touch-feedback shrink-0"
+            className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <Phone className="h-3.5 w-3.5 text-muted-foreground" />
             Sin tel

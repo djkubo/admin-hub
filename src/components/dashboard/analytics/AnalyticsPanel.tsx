@@ -82,7 +82,8 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* AI Analysis Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-primary/20 bg-gradient-to-r from-primary/5 to-transparent">
+      {/* VRP Style: Neutral card without gradient */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-zinc-800 bg-card">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
             <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />

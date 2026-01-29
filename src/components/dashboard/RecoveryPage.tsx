@@ -50,9 +50,10 @@ const messageTemplatesWithLink = {
     `🚨 Último aviso: ${name || 'usuario'}, tu cuenta será suspendida en 24h por falta de pago ($${amount.toFixed(2)}). ${link ? `Actualiza tu tarjeta ahora: ${link}` : 'Contáctanos urgentemente.'}`,
 };
 
+// VRP Style: Semantic colors for stages (amber/green/red allowed for status meaning)
 const stageConfig: Record<RecoveryStage, { label: string; color: string; icon: typeof Clock }> = {
   pending: { label: 'Pendiente', color: 'bg-amber-500/10 text-amber-400 border-amber-500/30', icon: Clock },
-  contacted: { label: 'Contactado', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30', icon: Send },
+  contacted: { label: 'Contactado', color: 'bg-zinc-800 text-white border-zinc-700', icon: Send },
   paid: { label: 'Pagó', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', icon: CheckCircle },
   lost: { label: 'Perdido', color: 'bg-red-500/10 text-red-400 border-red-500/30', icon: XCircle },
 };
@@ -362,7 +363,7 @@ export function RecoveryPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
-            <AlertTriangle className="h-6 w-6 md:h-8 md:w-8 text-amber-500" />
+            <AlertTriangle className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Recuperación
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">
@@ -373,7 +374,7 @@ export function RecoveryPage() {
           <Button
             onClick={handleRunDunning}
             disabled={runningDunning}
-            className="gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white"
+            className="gap-2 bg-primary hover:bg-primary/90 text-white"
           >
             {runningDunning ? (
               <Loader2 className="h-4 w-4 animate-spin" />

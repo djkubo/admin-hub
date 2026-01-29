@@ -399,18 +399,17 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     },
   ];
 
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string; border: string }> = {
-      primary: { bg: 'bg-primary/10', text: 'text-primary', icon: 'text-primary', border: 'border-primary/30' },
-      emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', icon: 'text-emerald-500', border: 'border-emerald-500/30' },
-      cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', icon: 'text-cyan-500', border: 'border-cyan-500/30' },
-      blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', icon: 'text-blue-500', border: 'border-blue-500/30' },
-      green: { bg: 'bg-green-500/10', text: 'text-green-400', icon: 'text-green-500', border: 'border-green-500/30' },
-      purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', icon: 'text-purple-500', border: 'border-purple-500/30' },
-      amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', icon: 'text-amber-500', border: 'border-amber-500/30' },
-      red: { bg: 'bg-red-500/10', text: 'text-red-400', icon: 'text-red-500', border: 'border-red-500/30' },
-    };
-    return colors[color] || colors.emerald;
+  // VRP Style: Neutral zinc palette with semantic exceptions only
+  const getColorClasses = (color: string, isNegative?: boolean) => {
+    // Semantic colors for negative/warning states
+    if (color === 'red' || isNegative) {
+      return { bg: 'bg-red-500/10', text: 'text-red-400', icon: 'text-red-500', border: 'border-red-500/30' };
+    }
+    if (color === 'amber') {
+      return { bg: 'bg-amber-500/10', text: 'text-amber-400', icon: 'text-amber-500', border: 'border-amber-500/30' };
+    }
+    // All other KPIs use neutral zinc + primary accent
+    return { bg: 'bg-zinc-800', text: 'text-foreground', icon: 'text-primary', border: 'border-zinc-700' };
   };
 
   return (

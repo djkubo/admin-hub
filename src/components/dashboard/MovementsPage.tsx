@@ -125,12 +125,14 @@ const getStatusConfig = (status: string) => {
   return configs[status] || { label: status, icon: AlertCircle, className: "bg-muted text-muted-foreground" };
 };
 
+// VRP Style: Neutral zinc palette for all sources
 const getSourceConfig = (source: string | null) => {
+  const baseClassName = "bg-zinc-800 text-white border-zinc-700";
   const configs: Record<string, { label: string; icon: typeof CreditCard; className: string }> = {
-    stripe: { label: "Stripe", icon: CreditCard, className: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20" },
-    paypal: { label: "PayPal", icon: Wallet, className: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
-    web: { label: "Web", icon: Globe, className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
-    dispute: { label: "Disputa", icon: AlertTriangle, className: "bg-orange-500/10 text-orange-400 border-orange-500/20" },
+    stripe: { label: "Stripe", icon: CreditCard, className: baseClassName },
+    paypal: { label: "PayPal", icon: Wallet, className: baseClassName },
+    web: { label: "Web", icon: Globe, className: baseClassName },
+    dispute: { label: "Disputa", icon: AlertTriangle, className: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
   };
   return configs[source || 'stripe'] || configs.stripe;
 };

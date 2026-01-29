@@ -63,15 +63,15 @@ export function SubscriptionsPage() {
     { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'gray' },
   ];
 
+  // VRP Style: Neutral zinc + semantic colors only (emerald=ok, red=risk, amber=warning)
   const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; border: string }> = {
-      purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/30' },
-      amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
+    const semanticColors: Record<string, { bg: string; text: string; border: string }> = {
       emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', border: 'border-emerald-500/30' },
       red: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
-      gray: { bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
+      amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
     };
-    return colors[color] || colors.purple;
+    // Return semantic color if exists, otherwise neutral zinc
+    return semanticColors[color] || { bg: 'bg-zinc-800', text: 'text-foreground', border: 'border-zinc-700' };
   };
 
   return (
@@ -80,7 +80,7 @@ export function SubscriptionsPage() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2">
-            <CreditCard className="h-5 w-5 md:h-8 md:w-8 text-purple-500" />
+            <CreditCard className="h-5 w-5 md:h-8 md:w-8 text-primary" />
             Suscripciones
           </h1>
           <p className="text-[10px] md:text-sm text-muted-foreground mt-0.5">

@@ -29,23 +29,24 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { sendNativeSms, supportsNativeSms, isNativeApp, getPlatform } from "@/lib/nativeSms";
 
+// VRP Style: Neutral zinc palette for all channels
 const channelConfig = {
   sms: { 
     icon: Phone, 
-    color: "bg-blue-500", 
-    textColor: "text-blue-600",
+    color: "bg-zinc-700", 
+    textColor: "text-white",
     label: "SMS" 
   },
   whatsapp: { 
     icon: MessageSquare, 
-    color: "bg-green-500", 
-    textColor: "text-green-600",
+    color: "bg-zinc-700", 
+    textColor: "text-white",
     label: "WhatsApp" 
   },
   email: { 
     icon: Mail, 
-    color: "bg-orange-500", 
-    textColor: "text-orange-600",
+    color: "bg-zinc-700", 
+    textColor: "text-white",
     label: "Email" 
   },
 };

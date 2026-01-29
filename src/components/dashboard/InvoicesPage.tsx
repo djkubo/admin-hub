@@ -201,19 +201,12 @@ export function InvoicesPage() {
     );
   };
 
+  // VRP Style: Neutral badges for all sources
   const getSourceBadge = (source: 'stripe' | 'paypal') => {
-    if (source === 'paypal') {
-      return (
-        <Badge variant="outline" className="bg-[#0070ba]/10 text-[#0070ba] border-[#0070ba]/30 gap-1">
-          <PayPalIcon />
-          PayPal
-        </Badge>
-      );
-    }
     return (
-      <Badge variant="outline" className="bg-[#635bff]/10 text-[#635bff] border-[#635bff]/30 gap-1">
-        <StripeIcon />
-        Stripe
+      <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700 gap-1">
+        {source === 'paypal' ? <PayPalIcon /> : <StripeIcon />}
+        {source === 'paypal' ? 'PayPal' : 'Stripe'}
       </Badge>
     );
   };
@@ -264,7 +257,7 @@ export function InvoicesPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
-            <FileText className="h-6 w-6 md:h-8 md:w-8 text-blue-500" />
+            <FileText className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Facturas
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">

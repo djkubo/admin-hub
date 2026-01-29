@@ -111,11 +111,12 @@ const channelIcons: Record<string, typeof MessageCircle> = {
   messenger: Facebook,
 };
 
+// VRP Style: Neutral zinc palette for all channels
 const channelColors: Record<string, string> = {
-  whatsapp: 'bg-[#25D366]/10 text-[#25D366] border-[#25D366]/30',
-  sms: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-  email: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-  messenger: 'bg-[#0084FF]/10 text-[#0084FF] border-[#0084FF]/30',
+  whatsapp: 'bg-zinc-800 text-white border-zinc-700',
+  sms: 'bg-zinc-800 text-white border-zinc-700',
+  email: 'bg-zinc-800 text-white border-zinc-700',
+  messenger: 'bg-zinc-800 text-white border-zinc-700',
 };
 
 export function CampaignControlCenter() {
