@@ -1,91 +1,152 @@
-# VRP Admin - Plan de Implementación
 
-## Estado General: ✅ 100%+ PARIDAD FUNCIONAL CON FUNNELCHAT COMPLETADA
 
----
+# Plan: Actualización del Motor de IA a GPT-5.2 / Lovable AI
 
-## Fase 1: Recovery Revenue Pipeline ✅ COMPLETADA
-- Dashboard con métricas de pagos fallidos
-- Sistema de notificaciones multi-canal
-- Cola de recuperación con seguimiento
+## Resumen del Análisis
 
-## Fase 2: Sincronización Multi-Fuente ✅ COMPLETADA  
-- GHL, ManyChat, Stripe, PayPal integrados
-- Importación CSV masiva
-- Unificación de identidades
+Se escanearon todas las Edge Functions en `supabase/functions/`. Se identificaron **2 funciones que usan IA**:
 
-## Fase 3: Sistema de Mensajería ✅ COMPLETADA
-- Chat en tiempo real multi-plataforma
-- Programación de mensajes
-- Plantillas con variables dinámicas
+| Función | Motor Actual | API Actual | Temperatura | Estado |
+|---------|-------------|------------|-------------|--------|
+| `analyze-business` | `gpt-4o` | OpenAI directo | 0.7 | Requiere migración |
+| `generate-chat-summary` | `gemini-2.5-flash` | Lovable AI Gateway | 0.7 | Ya modernizado |
 
-## Fase 4: Constructor de Flujos Visual ✅ COMPLETADA
-- Editor drag-and-drop con React Flow
-- 7 tipos de nodos: Trigger, Message, Delay, Condition, Tag, Webhook, End
-- Motor de ejecución en Edge Function
-- Estadísticas de ejecución por flujo
-
-## Fase 5: Listas de Difusión (Broadcast) ✅ COMPLETADA
-- Gestión de listas de contactos
-- Envío masivo personalizado con variables {{name}}, {{email}}, {{phone}}
-- Programación de envíos
-- Historial con progreso en tiempo real
-- Rate limiting (1 msg/seg) para evitar bloqueos
+Las demás funciones (`vrp-brain-api`, `execute-flow`, `automated-dunning`, `recover-revenue`, `send-broadcast`, etc.) **no usan modelos de IA** - son funciones de integración, procesamiento de datos o webhooks.
 
 ---
 
-## Resumen de Implementación Fase 5
+## Cambios a Implementar
 
-### Base de Datos
-- `broadcast_lists`: Listas con nombre, descripción, conteo de miembros
-- `broadcast_list_members`: Relación many-to-many con clients
-- `broadcast_messages`: Historial de envíos con status y métricas
+### 1. Migrar `analyze-business` a Lovable AI + GPT-5.2
 
-### Componentes UI
-- `BroadcastListsPage.tsx`: Página principal con grid de listas
-- `BroadcastListEditor.tsx`: Sheet para crear/editar listas y agregar miembros
-- `BroadcastComposer.tsx`: Dialog para componer y enviar mensajes
-- `BroadcastHistoryPanel.tsx`: Panel de historial con progreso
+Cambios en el archivo `supabase/functions/analyze-business/index.ts`:
 
-### Backend
-- `send-broadcast`: Edge function con rate limiting y fallback GHL→Twilio
-- `useBroadcastLists.ts`: Hook con queries y mutations
+**Antes:**
+```typescript
+const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
+// ...
+const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+  headers: { 'Authorization': `Bearer ${openaiApiKey}` },
+  body: JSON.stringify({
+    model: 'gpt-4o',
+    temperature: 0.7,
+    // ...
+  })
+});
+```
 
-### Integración
-- Menú "Difusión" agregado al Sidebar con icono Radio
-- Ruta integrada en Index.tsx
+**Después:**
+```typescript
+const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
+// ...
+const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+  headers: { 'Authorization': `Bearer ${lovableApiKey}` },
+  body: JSON.stringify({
+    model: 'openai/gpt-5.2',
+    temperature: 0.2,  // Más preciso para análisis de datos
+    // ...
+  })
+});
+```
+
+### 2. Actualizar `generate-chat-summary` a GPT-5.2
+
+Esta función ya usa Lovable AI Gateway. Solo cambiaremos el modelo:
+
+**Antes:**
+```typescript
+model: "google/gemini-2.5-flash"
+```
+
+**Después:**
+```typescript
+model: "openai/gpt-5.2"
+```
+
+### 3. Ajustar Temperaturas según Función
+
+| Función | Propósito | Temperatura Recomendada |
+|---------|-----------|------------------------|
+| `analyze-business` | Análisis de datos/métricas | 0.2 (preciso) |
+| `generate-chat-summary` | Inteligencia de ventas | 0.3 (balance precisión/creatividad) |
+
+### 4. Eliminar instrucciones manuales de CoT
+
+El modelo GPT-5.2 razona mejor de forma nativa. Se eliminarán instrucciones como:
+- "piensa paso a paso"
+- "analiza primero... luego..."
+
+Los prompts se simplificarán manteniendo solo las instrucciones esenciales.
 
 ---
 
-## Funcionalidades Totales Implementadas
+## Detalle Técnico de Cambios por Archivo
 
-| Módulo | Features | Estado |
-|--------|----------|--------|
-| Dashboard | KPIs, Gráficos, Revenue Cards | ✅ |
-| Clientes | CRUD, Búsqueda, Tags, Timeline | ✅ |
-| Facturas | Listado, Filtros, Estados | ✅ |
-| Suscripciones | Listado, Métricas | ✅ |
-| Recovery | Pipeline, Acciones, Notificaciones | ✅ |
-| Mensajes | Chat tiempo real, Templates | ✅ |
-| Campañas | Gestión, Segmentos | ✅ |
-| Automatizaciones | Flow Builder Visual | ✅ |
-| Difusión | Listas, Broadcast, Programación | ✅ |
-| Analytics | LTV, MRR, Cohortes | ✅ |
-| Import/Sync | GHL, ManyChat, CSV | ✅ |
-| Diagnósticos | Logs, Estado APIs | ✅ |
+### `supabase/functions/analyze-business/index.ts`
 
----
+| Línea | Cambio |
+|-------|--------|
+| 75 | Cambiar `OPENAI_API_KEY` → `LOVABLE_API_KEY` |
+| 77-79 | Actualizar mensaje de error |
+| 337 | Cambiar URL de API a Lovable Gateway |
+| 340 | Cambiar header de autorización |
+| 344 | Cambiar modelo a `openai/gpt-5.2` |
+| 352 | Cambiar temperatura a `0.2` |
+| 357-371 | Agregar manejo de errores 402 (Payment Required) |
 
-## Próximos Pasos Opcionales
+### `supabase/functions/generate-chat-summary/index.ts`
 
-1. **Reportes PDF**: Generación de informes exportables
-2. **Multi-idioma**: i18n para español/inglés
-3. **Roles y Permisos**: Usuarios con diferentes accesos
-4. **App Móvil**: Wrapper nativo con Capacitor (ya configurado)
-5. **Webhooks Entrantes**: Recibir eventos de otras plataformas
-6. **API Pública**: Endpoints para integraciones externas
+| Línea | Cambio |
+|-------|--------|
+| 358 | Cambiar modelo a `openai/gpt-5.2` |
+| 365 | Cambiar temperatura a `0.3` |
+| 368-375 | Agregar manejo de error 402 |
 
 ---
 
-**Última actualización:** 2026-01-29
-**Paridad Funnelchat:** 100%+ (incluye features adicionales)
+## Beneficios Esperados
+
+1. **Análisis más profundo**: GPT-5.2 tiene razonamiento superior para métricas complejas
+2. **Mejor detección de patrones**: En análisis de ventas y objeciones
+3. **Respuestas más estructuradas**: Mejor formato JSON sin errores
+4. **Consistencia**: Ambas funciones usarán el mismo proveedor (Lovable AI)
+5. **Sin costo adicional de API key**: LOVABLE_API_KEY ya está configurado
+
+---
+
+## Verificación de Secretos
+
+| Secret | Estado | Uso |
+|--------|--------|-----|
+| `LOVABLE_API_KEY` | Configurado | Será usado para ambas funciones |
+| `OPENAI_API_KEY` | Configurado | Ya no será necesario para IA (puede eliminarse) |
+
+---
+
+## Funciones Sin IA (No requieren cambios)
+
+Las siguientes funciones fueron analizadas y NO contienen llamadas a modelos de IA:
+
+- `vrp-brain-api` - API Gateway para Python backend
+- `execute-flow` - Ejecutor de flujos de automatización
+- `automated-dunning` - Cobranza automática
+- `recover-revenue` - Recuperación de pagos
+- `send-broadcast` - Envío de difusiones
+- `notify-ghl` - Notificaciones GoHighLevel
+- `send-sms` - Envío de SMS
+- Todas las demás funciones de sync, webhooks e integraciones
+
+---
+
+## Archivos a Modificar
+
+```text
+supabase/functions/
+├── analyze-business/
+│   └── index.ts         (migrar OpenAI → Lovable AI + gpt-5.2)
+└── generate-chat-summary/
+    └── index.ts         (actualizar modelo a gpt-5.2)
+```
+
+**Total: 2 archivos a modificar**
+
