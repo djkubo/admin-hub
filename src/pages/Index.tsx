@@ -11,6 +11,7 @@ import { SettingsPage } from "@/components/dashboard/SettingsPage";
 import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { CampaignControlCenter } from "@/components/dashboard/CampaignControlCenter";
 import { FlowsPage } from "@/components/dashboard/FlowsPage";
+import { BroadcastListsPage } from "@/components/broadcast/BroadcastListsPage";
 import SyncCenter from "@/components/dashboard/SyncCenter";
 import DiagnosticsPanel from "@/components/dashboard/DiagnosticsPanel";
 import MessagesPageWrapper from "@/components/dashboard/MessagesPageWrapper";
@@ -102,6 +103,8 @@ const Index = () => {
         return <CampaignControlCenter />;
       case "flows":
         return <FlowsPage />;
+      case "broadcast":
+        return <BroadcastListsPage />;
       case "sync-center":
         return <SyncCenter />;
       case "diagnostics":

@@ -16,7 +16,8 @@ import {
   Menu,
   X,
   Activity,
-  Workflow
+  Workflow,
+  Radio
 } from "lucide-react";
 import vrpLogo from "@/assets/vrp-logo.png";
 
@@ -38,6 +39,7 @@ const menuItems = [
   { id: "diagnostics", label: "Diagnostics", icon: Shield },
   { id: "campaigns", label: "Campañas", icon: Send },
   { id: "flows", label: "Automatizaciones", icon: Workflow },
+  { id: "broadcast", label: "Difusión", icon: Radio },
   { id: "settings", label: "Ajustes", icon: Settings },
 ];
 
