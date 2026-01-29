@@ -35,9 +35,10 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const lovableApiKey = Deno.env.get("LOVABLE_API_KEY");
+    const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
 
-    if (!lovableApiKey) {
-      console.error("LOVABLE_API_KEY not configured");
+    if (!lovableApiKey && !openaiApiKey) {
+      console.error("No AI API keys configured");
       return new Response(
         JSON.stringify({ error: "AI service not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -346,51 +347,82 @@ ${allConvosText}
 
 Genera el reporte de INTELIGENCIA DE VENTAS siguiendo el formato especificado.`;
 
-    console.log(`🤖 Calling Lovable AI (GPT-5.2) for sales intelligence analysis...`);
+    // Helper function to call AI with fallback
+    async function callAIWithFallback(): Promise<{ content: string; provider: string }> {
+      // Try Lovable AI first (if available)
+      if (lovableApiKey) {
+        console.log('🤖 Trying Lovable AI (GPT-5.2)...');
+        try {
+          const lovableResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${lovableApiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "openai/gpt-5.2",
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userPrompt }
+              ],
+              max_tokens: 3000,
+              temperature: 0.3
+            }),
+          });
 
-    const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${lovableApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-5.2",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        max_tokens: 3000,
-        temperature: 0.3
-      }),
-    });
+          if (lovableResponse.ok) {
+            const data = await lovableResponse.json();
+            console.log('✅ Lovable AI response received');
+            return { content: data.choices?.[0]?.message?.content || '', provider: 'lovable' };
+          }
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("AI API error:", aiResponse.status, errorText);
-      
-      if (aiResponse.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Límite de tasa excedido. Intenta en unos minutos." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+          // Check for rate limit or payment required - fallback to OpenAI
+          if (lovableResponse.status === 429 || lovableResponse.status === 402) {
+            console.warn(`⚠️ Lovable AI limit (${lovableResponse.status}), falling back to OpenAI...`);
+          } else {
+            const errorText = await lovableResponse.text();
+            console.error('Lovable AI error:', lovableResponse.status, errorText);
+          }
+        } catch (err) {
+          console.error('Lovable AI fetch error:', err);
+        }
       }
-      
-      if (aiResponse.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "Pago requerido. Por favor agrega fondos a tu espacio de Lovable AI." }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+
+      // Fallback to OpenAI
+      if (openaiApiKey) {
+        console.log('🔄 Using OpenAI fallback (gpt-4o)...');
+        const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            max_tokens: 3000,
+            temperature: 0.3,
+          }),
+        });
+
+        if (!openaiResponse.ok) {
+          const errorText = await openaiResponse.text();
+          throw new Error(`OpenAI API error: ${openaiResponse.status} - ${errorText}`);
+        }
+
+        const data = await openaiResponse.json();
+        console.log('✅ OpenAI fallback response received');
+        return { content: data.choices?.[0]?.message?.content || '', provider: 'openai' };
       }
-      
-      return new Response(
-        JSON.stringify({ error: "Error al generar análisis" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+
+      throw new Error('No AI provider available');
     }
 
-    const aiData = await aiResponse.json();
-    const summary = aiData.choices?.[0]?.message?.content || "No se pudo generar el resumen.";
+    const { content: summary, provider } = await callAIWithFallback();
+    console.log(`🎯 Sales intelligence completed via: ${provider}`);
 
     console.log("✅ Sales intelligence report generated successfully");
 

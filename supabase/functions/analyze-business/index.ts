@@ -73,9 +73,10 @@ Deno.serve(async (req: Request) => {
 
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
+    const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
 
-    if (!lovableApiKey) {
-      console.error("LOVABLE_API_KEY not configured");
+    if (!lovableApiKey && !openaiApiKey) {
+      console.error("No AI API keys configured");
       return new Response(JSON.stringify({ error: "AI service not configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -297,8 +298,6 @@ Deno.serve(async (req: Request) => {
       segments,
     };
 
-    console.log('🤖 Calling Lovable AI (GPT-5.2) for strategic analysis...');
-
     const aiPrompt = `Analiza estos datos del día y genera un reporte ejecutivo accionable.
 
 MÉTRICAS DEL DÍA:
@@ -338,57 +337,84 @@ Responde en JSON:
   ]
 }`;
 
-    const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-5.2',
-        messages: [
-          { 
-            role: 'system', 
-            content: 'Eres un consultor de negocios SaaS experto para DJs y productores musicales. Respondes siempre en JSON válido y en español.' 
-          },
-          { role: 'user', content: aiPrompt }
-        ],
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-      }),
-    });
+    const systemMessage = 'Eres un consultor de negocios SaaS experto para DJs y productores musicales. Respondes siempre en JSON válido y en español.';
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error('Lovable AI API error:', aiResponse.status, errorText);
-      
-      if (aiResponse.status === 429) {
-        return new Response(JSON.stringify({ 
-          error: 'Rate limit exceeded. Please try again later.',
-          metrics: dailyMetrics,
-        }), {
-          status: 429,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+    // Helper function to call AI with fallback
+    async function callAIWithFallback(): Promise<{ content: string; provider: string }> {
+      // Try Lovable AI first (if available)
+      if (lovableApiKey) {
+        console.log('🤖 Trying Lovable AI (GPT-5.2)...');
+        try {
+          const lovableResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${lovableApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'openai/gpt-5.2',
+              messages: [
+                { role: 'system', content: systemMessage },
+                { role: 'user', content: aiPrompt }
+              ],
+              temperature: 0.2,
+              response_format: { type: "json_object" },
+            }),
+          });
+
+          if (lovableResponse.ok) {
+            const data = await lovableResponse.json();
+            console.log('✅ Lovable AI response received');
+            return { content: data.choices?.[0]?.message?.content || '', provider: 'lovable' };
+          }
+
+          // Check for rate limit or payment required - fallback to OpenAI
+          if (lovableResponse.status === 429 || lovableResponse.status === 402) {
+            console.warn(`⚠️ Lovable AI limit (${lovableResponse.status}), falling back to OpenAI...`);
+          } else {
+            const errorText = await lovableResponse.text();
+            console.error('Lovable AI error:', lovableResponse.status, errorText);
+          }
+        } catch (err) {
+          console.error('Lovable AI fetch error:', err);
+        }
       }
-      
-      if (aiResponse.status === 402) {
-        return new Response(JSON.stringify({ 
-          error: 'Payment required. Please add funds to your Lovable AI workspace.',
-          metrics: dailyMetrics,
-        }), {
-          status: 402,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+
+      // Fallback to OpenAI
+      if (openaiApiKey) {
+        console.log('🔄 Using OpenAI fallback (gpt-4o)...');
+        const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o',
+            messages: [
+              { role: 'system', content: systemMessage },
+              { role: 'user', content: aiPrompt }
+            ],
+            temperature: 0.2,
+            response_format: { type: "json_object" },
+          }),
         });
+
+        if (!openaiResponse.ok) {
+          const errorText = await openaiResponse.text();
+          throw new Error(`OpenAI API error: ${openaiResponse.status} - ${errorText}`);
+        }
+
+        const data = await openaiResponse.json();
+        console.log('✅ OpenAI fallback response received');
+        return { content: data.choices?.[0]?.message?.content || '', provider: 'openai' };
       }
-      
-      throw new Error(`Lovable AI API error: ${aiResponse.status}`);
+
+      throw new Error('No AI provider available');
     }
 
-    const aiData = await aiResponse.json();
-    const aiContent = aiData.choices?.[0]?.message?.content || '';
-
-    console.log('✅ Lovable AI (GPT-5.2) response received');
+    const { content: aiContent, provider } = await callAIWithFallback();
+    console.log(`🎯 AI analysis completed via: ${provider}`);
 
     let parsedInsights;
     try {
