@@ -35,6 +35,9 @@ import { AgentStatusPanel } from "./AgentStatusPanel";
 import { ConversationFilters, type ConversationFilter, type ConversationStatusFilter } from "./ConversationFilters";
 import { MediaAttachmentButton, MediaPreview, type MediaAttachment } from "./MediaAttachmentButton";
 import { ChatMediaBubble } from "./ChatMediaBubble";
+import { ScheduleMessageDialog } from "./ScheduleMessageDialog";
+import { ScheduledMessagesPanel } from "./ScheduledMessagesPanel";
+import { useCreateScheduledMessage } from "@/hooks/useScheduledMessages";
 
 // Sentiment analysis helper - analyze last messages to determine mood
 function analyzeSentiment(messages: ChatEvent[]): "positive" | "negative" | "neutral" {
@@ -112,6 +115,7 @@ export default function BotChatPage() {
   const { data: currentAgent } = useCurrentAgent();
   const { data: contacts, isLoading: loadingContacts } = useChatContacts();
   const { data: messages, isLoading: loadingMessages } = useChatMessages(selectedContact?.contact_id);
+  const createScheduledMessage = useCreateScheduledMessage();
 
   // Calculate sentiment for each contact (memoized)
   const contactSentiments = new Map<string, "positive" | "negative" | "neutral">();
@@ -188,6 +192,31 @@ export default function BotChatPage() {
     };
     const filledContent = fillTemplateVariables(template.content, variables);
     setReplyMessage(filledContent);
+  };
+
+  // Handle scheduling a message
+  const handleScheduleMessage = (scheduledAt: Date) => {
+    if ((!replyMessage.trim() && !mediaAttachment) || !selectedContact) {
+      toast({
+        title: "Mensaje vacío",
+        description: "Escribe un mensaje o adjunta un archivo antes de programar",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    createScheduledMessage.mutate({
+      contact_id: selectedContact.contact_id,
+      message: replyMessage || undefined,
+      media_url: mediaAttachment?.url,
+      media_type: mediaAttachment?.type,
+      media_filename: mediaAttachment?.filename,
+      scheduled_at: scheduledAt,
+    });
+
+    // Clear the composer
+    setReplyMessage("");
+    setMediaAttachment(null);
   };
 
   // Handle sending reply via Python server -> GoHighLevel
@@ -533,6 +562,10 @@ export default function BotChatPage() {
                     onAttach={setMediaAttachment}
                     disabled={sendingReply}
                   />
+                  <ScheduleMessageDialog
+                    onSchedule={handleScheduleMessage}
+                    disabled={sendingReply || (!replyMessage.trim() && !mediaAttachment)}
+                  />
                   <Input
                     placeholder="Responder como humano..."
                     value={replyMessage}
@@ -585,6 +618,16 @@ export default function BotChatPage() {
                 clientPhone={null}
               />
             </CardContent>
+
+            {/* Scheduled Messages Section */}
+            <div className="border-t">
+              <CardHeader className="pb-2 pt-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  🕐 Mensajes Programados
+                </CardTitle>
+              </CardHeader>
+              <ScheduledMessagesPanel contactId={selectedContact.contact_id} />
+            </div>
 
             {/* Agent Status at bottom */}
             <AgentStatusPanel />
