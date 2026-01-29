@@ -75,7 +75,7 @@ export function IncomingRevenueCard({
             </div>
           </div>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-xs bg-[#1a1f36] border-amber-500/30">
+        <TooltipContent side="bottom" className="max-w-xs bg-card border-amber-500/30">
           <div className="space-y-2 p-1">
             <p className="font-medium text-amber-300">💰 Dinero en Camino</p>
             <p className="text-sm text-muted-foreground">

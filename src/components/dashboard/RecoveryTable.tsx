@@ -69,7 +69,7 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
 
   if (clients.length === 0) {
     return (
-      <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-8">
+      <div className="rounded-xl border border-border/50 bg-card p-8">
         <div className="flex items-center gap-3 mb-6">
           <div className="p-2 rounded-lg bg-yellow-500/10">
             <AlertTriangle className="h-5 w-5 text-yellow-500" />
@@ -91,8 +91,8 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
   const totalDebt = clients.reduce((sum, c) => sum + c.amount, 0);
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] overflow-hidden">
-      <div className="p-6 border-b border-gray-700/50">
+    <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+      <div className="p-6 border-b border-border/50">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-yellow-500/10">
@@ -113,19 +113,19 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
       <div className="overflow-x-auto">
         <Table>
           <TableHeader>
-            <TableRow className="border-gray-700/50 hover:bg-transparent">
-              <TableHead className="text-gray-400">Nombre</TableHead>
-              <TableHead className="text-gray-400">Email</TableHead>
-              <TableHead className="text-gray-400">Monto Deuda</TableHead>
-              <TableHead className="text-gray-400">Fuente</TableHead>
-              <TableHead className="text-right text-gray-400">Acción</TableHead>
+            <TableRow className="border-border/50 hover:bg-transparent">
+              <TableHead className="text-muted-foreground">Nombre</TableHead>
+              <TableHead className="text-muted-foreground">Email</TableHead>
+              <TableHead className="text-muted-foreground">Monto Deuda</TableHead>
+              <TableHead className="text-muted-foreground">Fuente</TableHead>
+              <TableHead className="text-right text-muted-foreground">Acción</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {clients.map((client, index) => (
-              <TableRow key={index} className="border-gray-700/50 hover:bg-gray-800/30">
-                <TableCell className="font-medium text-white">
-                  {client.full_name || <span className="text-gray-500 italic">Sin nombre</span>}
+              <TableRow key={index} className="border-border/50 hover:bg-muted/20">
+                <TableCell className="font-medium text-foreground">
+                  {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
                 </TableCell>
                 <TableCell className="text-gray-400">
                   {client.email}

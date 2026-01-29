@@ -914,7 +914,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0, ghlContacts: 0, manychatContacts: 0 });
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
+    <div className="rounded-xl border border-border/50 bg-card p-6">
       <div className="flex items-center gap-3 mb-4">
         <div className="p-2 rounded-lg bg-primary/10">
           <Upload className="h-5 w-5 text-primary" />
@@ -926,7 +926,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       </div>
 
       <div 
-        className="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer bg-[#0f1225]/50"
+        className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer bg-background/50"
         onClick={() => fileInputRef.current?.click()}
       >
         <input
@@ -967,7 +967,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       {files.length > 0 && (
         <div className="mt-4 space-y-2">
           {files.map((file, index) => (
-            <div key={index} className="flex items-center justify-between p-3 bg-[#0f1225] rounded-lg border border-gray-700/50">
+            <div key={index} className="flex items-center justify-between p-3 bg-background rounded-lg border border-border/50">
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 {getStatusIcon(file.status)}
                 <div className="flex-1 min-w-0">
@@ -987,7 +987,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                   value={file.type}
                   onChange={(e) => updateFileType(index, e.target.value as CSVFileType)}
                   disabled={file.status !== 'pending'}
-                  className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
+                  className="text-xs border border-border rounded px-2 py-1 bg-card text-foreground"
                 >
                   <option value="master">🗂️ Master CSV</option>
                   <option value="ghl">GoHighLevel</option>

@@ -475,7 +475,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               <Button
                 disabled
                 size="sm"
-                className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
+                className="gap-2 bg-primary/80 text-xs md:text-sm"
               >
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
@@ -485,7 +485,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                 <DropdownMenuTrigger asChild>
                   <Button
                     size="sm"
-                    className="gap-1.5 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 text-xs md:text-sm touch-feedback"
+                    className="gap-1.5 bg-primary hover:bg-primary/90 text-xs md:text-sm touch-feedback"
                   >
                     <RefreshCw className="h-4 w-4" />
                     <span className="hidden sm:inline">Sync All</span>

@@ -135,8 +135,9 @@ const Index = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f1225]">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/5 via-transparent to-transparent pointer-events-none" />
+    <div className="min-h-screen bg-background">
+      {/* VRP Red glow effect at top */}
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_hsl(1_99%_34%_/_0.08)_0%,_transparent_50%)] pointer-events-none" />
       
       <Sidebar activeItem={activeMenuItem} onItemClick={setActiveMenuItem} />
       

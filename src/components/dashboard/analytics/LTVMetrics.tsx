@@ -118,14 +118,14 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
     subtext?: string;
     color: string;
   }) => (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-5 hover:border-primary/30 transition-all">
+    <div className="rounded-xl border border-border/50 bg-card p-3 sm:p-5 hover:border-primary/30 transition-all">
       <div className="flex items-start justify-between mb-2 sm:mb-3">
         <div className={`p-1.5 sm:p-2.5 rounded-lg ${color}`}>
           <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
         </div>
       </div>
-      <p className="text-lg sm:text-2xl font-bold text-white mb-0.5 sm:mb-1">{value}</p>
-      <p className="text-xs sm:text-sm text-gray-400">{label}</p>
+      <p className="text-lg sm:text-2xl font-bold text-foreground mb-0.5 sm:mb-1">{value}</p>
+      <p className="text-xs sm:text-sm text-muted-foreground">{label}</p>
       {subtext && (
         <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1">{subtext}</p>
       )}
@@ -136,7 +136,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
     <div className="space-y-3 sm:space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-0">
         <div>
-          <h3 className="text-base sm:text-lg font-semibold text-white">Métricas de LTV</h3>
+          <h3 className="text-base sm:text-lg font-semibold text-foreground">Métricas de LTV</h3>
           <p className="text-xs sm:text-sm text-muted-foreground">
             MRR = Suma de suscripciones activas | LTV = ARPU / Churn
           </p>

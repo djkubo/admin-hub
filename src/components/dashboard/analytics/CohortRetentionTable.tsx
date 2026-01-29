@@ -124,9 +124,9 @@ export function CohortRetentionTable({ transactions, monthsToShow = 6 }: CohortR
   const maxRetentionColumns = Math.min(12, monthsToShow);
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
+    <div className="rounded-xl border border-border/50 bg-card p-3 sm:p-6">
       <div className="mb-4 sm:mb-6">
-        <h3 className="text-sm sm:text-lg font-semibold text-white">Análisis de Cohortes</h3>
+        <h3 className="text-sm sm:text-lg font-semibold text-foreground">Análisis de Cohortes</h3>
         <p className="text-xs sm:text-sm text-muted-foreground">
           Retención por mes de adquisición ({monthsToShow} meses)
         </p>
@@ -136,7 +136,7 @@ export function CohortRetentionTable({ transactions, monthsToShow = 6 }: CohortR
         <table className="w-full text-xs sm:text-sm min-w-[600px]">
           <thead>
             <tr>
-              <th className="text-left py-2 sm:py-3 px-1 sm:px-2 text-gray-400 font-medium sticky left-0 bg-[#1a1f36] z-10">
+              <th className="text-left py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium sticky left-0 bg-card z-10">
                 Cohorte
               </th>
               <th className="text-center py-2 sm:py-3 px-1 sm:px-2 text-gray-400 font-medium">
@@ -154,8 +154,8 @@ export function CohortRetentionTable({ transactions, monthsToShow = 6 }: CohortR
           </thead>
           <tbody>
             {cohortData.map((cohort, idx) => (
-              <tr key={idx} className="border-t border-gray-700/30">
-                <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-white font-medium sticky left-0 bg-[#1a1f36] z-10 text-xs sm:text-sm">
+              <tr key={idx} className="border-t border-border/30">
+                <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-foreground font-medium sticky left-0 bg-card z-10 text-xs sm:text-sm">
                   {cohort.cohortMonth}
                 </td>
                 <td className="py-1.5 sm:py-2 px-1 sm:px-2 text-center text-gray-300 text-xs sm:text-sm">

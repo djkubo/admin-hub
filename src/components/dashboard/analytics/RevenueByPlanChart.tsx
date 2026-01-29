@@ -44,14 +44,14 @@ export function RevenueByPlanChart() {
   }));
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
+    <div className="rounded-xl border border-border/50 bg-card p-3 sm:p-6">
       <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/20 shrink-0">
             <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm sm:text-lg font-semibold text-white">Ingresos por Plan</h3>
+            <h3 className="text-sm sm:text-lg font-semibold text-foreground">Ingresos por Plan</h3>
             <p className="text-[10px] sm:text-sm text-muted-foreground truncate">
               Pareto: {paretoPercentage}% genera 80% ingresos
             </p>

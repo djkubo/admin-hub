@@ -795,7 +795,7 @@ export function APISyncPanel() {
 
   // Each sync can run independently - no global blocking
   return (
-    <Card className="bg-[#1a1f36] border-border/50">
+    <Card className="bg-card border-border/50">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-primary/10">
@@ -915,7 +915,7 @@ export function APISyncPanel() {
         )}
 
         {/* Stripe Sync */}
-        <div className="p-4 bg-[#0f1225] rounded-lg border border-gray-700/50 space-y-3">
+        <div className="p-4 bg-background rounded-lg border border-border/50 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
@@ -986,7 +986,7 @@ export function APISyncPanel() {
         </div>
 
         {/* PayPal Sync */}
-        <div className="p-4 bg-[#0f1225] rounded-lg border border-gray-700/50 space-y-3">
+        <div className="p-4 bg-background rounded-lg border border-border/50 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
@@ -1057,7 +1057,7 @@ export function APISyncPanel() {
         </div>
 
         {/* Invoices/Facturas Sync */}
-        <div className="p-4 bg-[#0f1225] rounded-lg border border-cyan-500/30 space-y-3">
+        <div className="p-4 bg-background rounded-lg border border-cyan-500/30 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
@@ -1112,7 +1112,7 @@ export function APISyncPanel() {
           </p>
         </div>
 
-        <div className="p-4 bg-[#0f1225] rounded-lg border border-blue-500/30 space-y-3">
+        <div className="p-4 bg-background rounded-lg border border-blue-500/30 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
@@ -1163,7 +1163,7 @@ export function APISyncPanel() {
         </div>
 
         {/* GoHighLevel Sync */}
-        <div className="p-4 bg-[#0f1225] rounded-lg border border-green-500/30 space-y-3">
+        <div className="p-4 bg-background rounded-lg border border-green-500/30 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">

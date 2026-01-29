@@ -49,7 +49,7 @@ export function UncollectibleAlertCard({
             </div>
           </div>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-xs bg-[#1a1f36] border-red-500/30">
+        <TooltipContent side="bottom" className="max-w-xs bg-card border-red-500/30">
           <div className="space-y-2 p-1">
             <p className="font-medium text-red-300">⚠️ Ingresos Perdidos</p>
             <p className="text-sm text-muted-foreground">

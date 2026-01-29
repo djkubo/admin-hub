@@ -75,7 +75,7 @@ export function ClientEventsTimeline({ clientId, clientName, open, onOpenChange 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg bg-[#1a1f36] border-border/50">
+      <DialogContent className="sm:max-w-lg bg-card border-border/50">
         <DialogHeader>
           <DialogTitle className="text-white flex items-center gap-2">
             <Activity className="h-5 w-5 text-primary" />
