@@ -2241,6 +2241,7 @@ export type Database = {
           status: string
         }[]
       }
+      get_staging_counts_accurate: { Args: never; Returns: Json }
       get_staging_counts_fast: { Args: never; Returns: Json }
       get_system_timezone: { Args: never; Returns: string }
       is_admin: { Args: never; Returns: boolean }
