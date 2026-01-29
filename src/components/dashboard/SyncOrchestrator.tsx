@@ -626,27 +626,54 @@ export function SyncOrchestrator() {
 
   // Unify All Sources (using bulk-unify-contacts v3)
   const unifyAll = async () => {
+    console.log('[SyncOrchestrator] Starting unifyAll...');
     setIsUnifying(true);
     setUnifyProgress(0);
     setUnifyStats({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false });
+    
+    // Show immediate feedback
+    toast.info('Iniciando unificación masiva...');
 
     try {
+      console.log('[SyncOrchestrator] Invoking bulk-unify-contacts...');
       const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
         body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 2000 }
       });
 
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || 'Unknown error');
+      console.log('[SyncOrchestrator] Response:', { data, error });
 
-      toast.success(`Unificación masiva iniciada (ETA: ${data.estimatedTime || '~30 min'})`);
+      if (error) {
+        console.error('[SyncOrchestrator] Function invoke error:', error);
+        throw error;
+      }
+      
+      if (!data?.ok) {
+        console.error('[SyncOrchestrator] Response not ok:', data);
+        throw new Error(data?.error || data?.message || 'La función retornó un error desconocido');
+      }
+
+      toast.success(`✅ Unificación iniciada (ETA: ${data.estimatedTime || '~30 min'})`, {
+        duration: 8000,
+        description: `${(data.pending?.total || 0).toLocaleString()} registros pendientes`
+      });
       
       if (data?.syncRunId) {
+        console.log('[SyncOrchestrator] Starting polling for syncRunId:', data.syncRunId);
         setUnifyStats(prev => ({ ...prev, syncRunId: data.syncRunId }));
         startUnifyPolling(data.syncRunId, data.pending?.total || pendingCounts.total);
+      } else {
+        console.warn('[SyncOrchestrator] No syncRunId returned');
+        setIsUnifying(false);
       }
     } catch (error) {
+      console.error('[SyncOrchestrator] unifyAll failed:', error);
       setIsUnifying(false);
-      toast.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      toast.error(`❌ Error al iniciar unificación`, {
+        duration: 10000,
+        description: errorMessage
+      });
     }
   };
 

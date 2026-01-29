@@ -44,6 +44,7 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; co
   ghl: { label: "GoHighLevel", icon: Users, color: "text-cyan-400" },
   manychat: { label: "ManyChat", icon: Users, color: "text-pink-400" },
   "command-center": { label: "Command Center", icon: RefreshCw, color: "text-yellow-400" },
+  bulk_unify: { label: "Unificación Masiva", icon: Users, color: "text-emerald-400" },
 };
 
 export function SyncResultsPanel() {
