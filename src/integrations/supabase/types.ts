@@ -461,6 +461,9 @@ export type Database = {
           contact_id: string
           created_at: string
           id: number
+          media_filename: string | null
+          media_type: string | null
+          media_url: string | null
           message: string | null
           meta: Json | null
           platform: string
@@ -470,6 +473,9 @@ export type Database = {
           contact_id: string
           created_at?: string
           id?: number
+          media_filename?: string | null
+          media_type?: string | null
+          media_url?: string | null
           message?: string | null
           meta?: Json | null
           platform: string
@@ -479,6 +485,9 @@ export type Database = {
           contact_id?: string
           created_at?: string
           id?: number
+          media_filename?: string | null
+          media_type?: string | null
+          media_url?: string | null
           message?: string | null
           meta?: Json | null
           platform?: string

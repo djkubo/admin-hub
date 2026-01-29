@@ -1,6 +1,6 @@
 # Funnelchat Clone - Plan de Implementación
 
-## Estado Actual: FASE 1 COMPLETADA ✅
+## Estado Actual: FASE 2 COMPLETADA ✅
 
 ---
 
@@ -32,11 +32,12 @@
 
 ## 🔄 Próximas Fases
 
-### Fase 2: Mensajes Multimedia (3-5 días)
-- [ ] Botones de adjuntos en el composer (📷 🎤 📎)
-- [ ] Bucket de storage `chat-media`
-- [ ] Modificar edge functions para enviar media vía GHL
-- [ ] Renderizar imágenes/audios/videos en burbujas
+### ✅ Fase 2: Mensajes Multimedia (COMPLETADO)
+- ✅ Bucket de storage `chat-media` con políticas RLS
+- ✅ Columnas media_url, media_type, media_filename en chat_events
+- ✅ `MediaAttachmentButton.tsx` - botones 📷 🎤 📎 📹
+- ✅ `ChatMediaBubble.tsx` - renderizado de imágenes/audio/video
+- ✅ Integración en BotChatPage con preview y envío
 
 ### Fase 3: Programación de Mensajes (2-3 días)
 - [ ] Botón de reloj ⏰ en composer
