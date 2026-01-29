@@ -66,8 +66,25 @@ export function RecoveryPage() {
   const [portalLinks, setPortalLinks] = useState<Record<string, string>>({});
   const [generatingLink, setGeneratingLink] = useState<string | null>(null);
   const [runningDunning, setRunningDunning] = useState(false);
+  const [savingStage, setSavingStage] = useState<string | null>(null);
 
   const getStage = (email: string): RecoveryStage => stages[email] || 'pending';
+
+  // Initialize stages from saved recovery_status in database
+  useEffect(() => {
+    if (metrics.recoveryList?.length) {
+      const savedStages: Record<string, RecoveryStage> = {};
+      for (const client of metrics.recoveryList) {
+        if (client.recovery_status) {
+          savedStages[client.email] = client.recovery_status;
+        }
+      }
+      // Only update if we have saved stages to prevent overwriting local changes
+      if (Object.keys(savedStages).length > 0) {
+        setStages(prev => ({ ...savedStages, ...prev }));
+      }
+    }
+  }, [metrics.recoveryList]);
 
   // Fetch last contact dates for all recovery clients
   useEffect(() => {
@@ -103,27 +120,58 @@ export function RecoveryPage() {
   }, [metrics.recoveryList]);
 
   const setStage = async (email: string, stage: RecoveryStage) => {
+    // Optimistic update
     setStages(prev => ({ ...prev, [email]: stage }));
+    setSavingStage(email);
     
     try {
+      // Fetch client and current metadata
       const { data: client } = await supabase
         .from('clients')
-        .select('id')
+        .select('id, customer_metadata')
         .eq('email', email)
         .single();
       
       if (client) {
+        // Merge recovery_status into existing metadata
+        const currentMetadata = (client.customer_metadata as Record<string, unknown>) || {};
+        const updatedMetadata = {
+          ...currentMetadata,
+          recovery_status: stage,
+          recovery_status_updated_at: new Date().toISOString(),
+        };
+        
+        // Save to database
+        const { error } = await supabase
+          .from('clients')
+          .update({ customer_metadata: updatedMetadata })
+          .eq('id', client.id);
+        
+        if (error) throw error;
+        
+        // Log event
         await supabase.from('client_events').insert({
           client_id: client.id,
           event_type: 'custom',
           metadata: { action: 'recovery_stage_change', stage, timestamp: new Date().toISOString() },
         });
+        
+        toast.success(`Estado guardado: ${stageConfig[stage].label}`);
+      } else {
+        toast.warning('Cliente no encontrado en la base de datos');
       }
     } catch (e) {
-      console.error('Error logging event:', e);
+      console.error('Error saving recovery status:', e);
+      // Revert optimistic update on error
+      setStages(prev => {
+        const newStages = { ...prev };
+        delete newStages[email];
+        return newStages;
+      });
+      toast.error('Error guardando el estado');
+    } finally {
+      setSavingStage(null);
     }
-    
-    toast.success(`Estado actualizado a: ${stageConfig[stage].label}`);
   };
 
   // Generate portal link for a client
@@ -421,7 +469,11 @@ export function RecoveryPage() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Badge variant="outline" className={`cursor-pointer text-[10px] px-1 h-4 shrink-0 ${config.color}`}>
-                          <StageIcon className="h-2 w-2 mr-0.5" />
+                          {savingStage === client.email ? (
+                            <Loader2 className="h-2 w-2 mr-0.5 animate-spin" />
+                          ) : (
+                            <StageIcon className="h-2 w-2 mr-0.5" />
+                          )}
                           {config.label}
                         </Badge>
                       </DropdownMenuTrigger>
@@ -560,7 +612,11 @@ export function RecoveryPage() {
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Badge variant="outline" className={`cursor-pointer ${config.color}`}>
-                                <StageIcon className="h-3 w-3 mr-1" />
+                                {savingStage === client.email ? (
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                ) : (
+                                  <StageIcon className="h-3 w-3 mr-1" />
+                                )}
                                 {config.label}
                               </Badge>
                             </DropdownMenuTrigger>

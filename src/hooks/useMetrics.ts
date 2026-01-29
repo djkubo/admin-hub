@@ -27,6 +27,7 @@ export interface DashboardMetrics {
     phone: string | null;
     amount: number;
     source: string;
+    recovery_status?: 'pending' | 'contacted' | 'paid' | 'lost';
   }>;
   // New lifecycle counts
   leadCount: number;
@@ -158,19 +159,24 @@ export function useMetrics() {
       if (failedEmails.length > 0) {
         const { data: clients } = await supabase
           .from('clients')
-          .select('email, full_name, phone')
+          .select('email, full_name, phone, customer_metadata')
           .in('email', failedEmails.slice(0, 100));
 
         for (const client of clients || []) {
           if (client.email) {
             const failed = failedByEmail.get(client.email);
             if (failed) {
+              // Extract recovery_status from customer_metadata JSONB
+              const metadata = client.customer_metadata as Record<string, unknown> | null;
+              const recovery_status = metadata?.recovery_status as 'pending' | 'contacted' | 'paid' | 'lost' | undefined;
+              
               recoveryList.push({
                 email: client.email,
                 full_name: client.full_name,
                 phone: client.phone,
                 amount: failed.amount,
-                source: failed.source
+                source: failed.source,
+                recovery_status
               });
             }
           }
