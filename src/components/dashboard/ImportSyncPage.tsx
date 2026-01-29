@@ -7,6 +7,7 @@ import { CSVUploader } from './CSVUploader';
 import { APISyncPanel } from './APISyncPanel';
 import { SmartRecoveryCard } from './SmartRecoveryCard';
 import { SyncOrchestrator } from './SyncOrchestrator';
+import { SyncResultsPanel } from './SyncResultsPanel';
 import { useQueryClient } from '@tanstack/react-query';
 
 export function ImportSyncPage() {
@@ -35,6 +36,9 @@ export function ImportSyncPage() {
           </p>
         </div>
       </div>
+
+      {/* Sync Status Panel - Shows active and recent syncs */}
+      <SyncResultsPanel />
 
       <Tabs defaultValue="api" className="space-y-4 sm:space-y-6">
         <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
