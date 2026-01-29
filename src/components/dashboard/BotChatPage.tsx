@@ -33,6 +33,8 @@ import { ChatCustomerPanel } from "./ChatCustomerPanel";
 import { ChatQuickTemplates, fillTemplateVariables, type ChatTemplate } from "./ChatQuickTemplates";
 import { AgentStatusPanel } from "./AgentStatusPanel";
 import { ConversationFilters, type ConversationFilter, type ConversationStatusFilter } from "./ConversationFilters";
+import { MediaAttachmentButton, MediaPreview, type MediaAttachment } from "./MediaAttachmentButton";
+import { ChatMediaBubble } from "./ChatMediaBubble";
 
 // Sentiment analysis helper - analyze last messages to determine mood
 function analyzeSentiment(messages: ChatEvent[]): "positive" | "negative" | "neutral" {
@@ -100,6 +102,7 @@ export default function BotChatPage() {
   const [showCustomerPanel, setShowCustomerPanel] = useState(true);
   const [agentFilter, setAgentFilter] = useState<ConversationFilter>("all");
   const [statusFilter, setStatusFilter] = useState<ConversationStatusFilter>("all");
+  const [mediaAttachment, setMediaAttachment] = useState<MediaAttachment | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -189,20 +192,29 @@ export default function BotChatPage() {
 
   // Handle sending reply via Python server -> GoHighLevel
   const handleSendReply = async () => {
-    if (!replyMessage.trim() || !selectedContact) return;
+    if ((!replyMessage.trim() && !mediaAttachment) || !selectedContact) return;
     
     setSendingReply(true);
     try {
+      const payload: Record<string, any> = {
+        contact_id: selectedContact.contact_id,
+        message: replyMessage || "",
+        channel: "WhatsApp",
+      };
+
+      // Add media if attached
+      if (mediaAttachment) {
+        payload.media_url = mediaAttachment.url;
+        payload.media_type = mediaAttachment.type;
+        payload.media_filename = mediaAttachment.filename;
+      }
+
       const response = await fetch("https://vrp-bot-2.onrender.com/send/ghl", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          contact_id: selectedContact.contact_id,
-          message: replyMessage,
-          channel: "WhatsApp",
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -211,10 +223,11 @@ export default function BotChatPage() {
       }
 
       toast({
-        title: "Mensaje enviado",
+        title: mediaAttachment ? "Mensaje con adjunto enviado" : "Mensaje enviado",
         description: "El mensaje fue enviado por WhatsApp al contacto",
       });
       setReplyMessage("");
+      setMediaAttachment(null);
     } catch (error) {
       console.error("Error sending reply:", error);
       toast({
@@ -458,9 +471,22 @@ export default function BotChatPage() {
                                       : "bg-primary text-primary-foreground rounded-tr-sm"
                                   )}
                                 >
-                                  <p className="text-sm whitespace-pre-wrap break-words">
-                                    {msg.message}
-                                  </p>
+                                  {/* Render media if present */}
+                                  {(msg as any).media_url && (
+                                    <div className="mb-2">
+                                      <ChatMediaBubble
+                                        mediaUrl={(msg as any).media_url}
+                                        mediaType={(msg as any).media_type || "image"}
+                                        filename={(msg as any).media_filename}
+                                        isOutgoing={!isUser}
+                                      />
+                                    </div>
+                                  )}
+                                  {msg.message && (
+                                    <p className="text-sm whitespace-pre-wrap break-words">
+                                      {msg.message}
+                                    </p>
+                                  )}
                                   <p className={cn(
                                     "text-[10px] mt-1",
                                     isUser ? "text-muted-foreground" : "text-primary-foreground/70"
@@ -491,7 +517,22 @@ export default function BotChatPage() {
                 <div className="flex gap-2 mb-2">
                   <ChatQuickTemplates onSelectTemplate={handleTemplateSelect} />
                 </div>
-                <div className="flex gap-2">
+                
+                {/* Media preview */}
+                {mediaAttachment && (
+                  <div className="mb-3">
+                    <MediaPreview 
+                      attachment={mediaAttachment} 
+                      onRemove={() => setMediaAttachment(null)} 
+                    />
+                  </div>
+                )}
+
+                <div className="flex gap-2 items-center">
+                  <MediaAttachmentButton 
+                    onAttach={setMediaAttachment}
+                    disabled={sendingReply}
+                  />
                   <Input
                     placeholder="Responder como humano..."
                     value={replyMessage}
@@ -507,7 +548,7 @@ export default function BotChatPage() {
                   />
                   <Button 
                     onClick={handleSendReply} 
-                    disabled={!replyMessage.trim() || sendingReply}
+                    disabled={(!replyMessage.trim() && !mediaAttachment) || sendingReply}
                     size="icon"
                   >
                     <Send className="h-4 w-4" />
