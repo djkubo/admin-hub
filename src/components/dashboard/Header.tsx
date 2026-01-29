@@ -22,25 +22,25 @@ export function Header({
   onSearchChange 
 }: HeaderProps) {
   return (
-    <header className="flex flex-col gap-3 md:gap-4">
-      {/* Title row - VRP Style */}
+    <header className="flex flex-col gap-4">
+      {/* Title row */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl md:text-2xl font-heading font-bold text-foreground uppercase tracking-wide">
+          <h1 className="text-xl md:text-2xl font-display text-foreground uppercase tracking-wide">
             {title}
           </h1>
           {subtitle && (
-            <p className="mt-0.5 md:mt-1 text-xs md:text-sm text-muted-foreground">
+            <p className="mt-1 text-sm text-muted-foreground">
               {subtitle}
             </p>
           )}
         </div>
         
-        {/* Action buttons - VRP Style */}
+        {/* Action buttons */}
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" className="relative h-9 w-9 touch-feedback rounded-sm">
+          <Button variant="ghost" size="icon" className="relative h-9 w-9 touch-feedback">
             <Bell className="h-4 w-4 md:h-5 md:w-5" />
-            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary animate-pulse-red" />
+            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
           </Button>
 
           {onSyncData && (
@@ -49,7 +49,7 @@ export function Header({
               disabled={isSyncing}
               variant="outline"
               size="sm"
-              className="gap-1.5 text-xs touch-feedback rounded-sm font-heading uppercase tracking-wide"
+              className="gap-1.5 touch-feedback"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Sync</span>
@@ -60,7 +60,7 @@ export function Header({
             <Button 
               onClick={onAddClient} 
               size="sm"
-              className="gap-1.5 bg-primary text-primary-foreground hover:bg-red-600 text-xs touch-feedback rounded-sm font-heading uppercase tracking-wide"
+              className="gap-1.5 touch-feedback"
             >
               <Plus className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Nuevo</span>
@@ -69,7 +69,7 @@ export function Header({
         </div>
       </div>
       
-      {/* Search row - VRP Style */}
+      {/* Search row */}
       {onSearchChange && (
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -77,7 +77,7 @@ export function Header({
             placeholder="Buscar..."
             value={searchValue}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="w-full md:w-64 pl-9 bg-card border-border text-sm rounded-sm"
+            className="w-full md:w-64 pl-9"
           />
         </div>
       )}

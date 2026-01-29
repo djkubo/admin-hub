@@ -15,8 +15,7 @@ export default {
     extend: {
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-        heading: ['Barlow Condensed', 'Arial Narrow', 'sans-serif'],
-        condensed: ['Barlow Condensed', 'Arial Narrow', 'sans-serif'],
+        display: ['Barlow Condensed', 'Arial Narrow', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -74,50 +73,30 @@ export default {
           "4": "hsl(var(--chart-4))",
           "5": "hsl(var(--chart-5))",
         },
-        // VRP Brand colors for direct use
-        vrp: {
-          red: "#AA0601",
-          "red-light": "#CC1A15",
-          carbon: "#121212",
-          panel: "#1A1A1A",
-          border: "#333333",
-        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
+      boxShadow: {
+        'soft': '0 2px 8px -2px rgba(0, 0, 0, 0.3)',
+        'elevated': '0 4px 16px -4px rgba(0, 0, 0, 0.4)',
+        'glow': '0 0 20px -5px rgba(170, 6, 1, 0.3)',
+      },
       keyframes: {
         "accordion-down": {
-          from: {
-            height: "0",
-          },
-          to: {
-            height: "var(--radix-accordion-content-height)",
-          },
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
         },
         "accordion-up": {
-          from: {
-            height: "var(--radix-accordion-content-height)",
-          },
-          to: {
-            height: "0",
-          },
-        },
-        "pulse-red": {
-          "0%, 100%": {
-            opacity: "1",
-          },
-          "50%": {
-            opacity: "0.5",
-          },
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
         },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "pulse-red": "pulse-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
       },
     },
   },

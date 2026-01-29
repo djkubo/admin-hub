@@ -87,23 +87,15 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
-      {/* VRP Red glow at top */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_hsl(1_99%_34%_/_0.12)_0%,_transparent_60%)] pointer-events-none" />
-      
-      {/* Subtle grid pattern */}
-      <div className="absolute inset-0 opacity-[0.02]" style={{
-        backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
-      }} />
-      
-      <Card className="w-full max-w-md bg-card/80 backdrop-blur-sm border-border/50 shadow-2xl relative z-10">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <Card className="w-full max-w-md bg-card border-border shadow-elevated">
         <CardHeader className="text-center pb-2">
           {/* VRP Logo */}
-          <div className="flex justify-center mb-4">
+          <div className="flex justify-center mb-6">
             <img src={vrpLogo} alt="VRP System" className="h-12 object-contain" />
           </div>
           
-          <CardTitle className="font-heading text-2xl tracking-wide text-foreground">
+          <CardTitle className="font-display text-2xl tracking-wide text-foreground">
             COMMAND CENTER
           </CardTitle>
           <CardDescription className="text-muted-foreground">
@@ -111,7 +103,7 @@ export default function Login() {
           </CardDescription>
         </CardHeader>
         
-        <CardContent className="pt-4">
+        <CardContent className="pt-6">
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="email" className="text-sm font-medium text-foreground">
@@ -124,7 +116,6 @@ export default function Login() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="admin@vrp.com"
                 required
-                className="bg-background/50 border-border focus:border-primary focus:ring-primary/30"
                 disabled={isLoading}
               />
             </div>
@@ -141,14 +132,13 @@ export default function Login() {
                 placeholder="••••••••"
                 required
                 minLength={6}
-                className="bg-background/50 border-border focus:border-primary focus:ring-primary/30"
                 disabled={isLoading}
               />
             </div>
             
             <Button 
               type="submit" 
-              className="w-full h-11 font-heading text-sm tracking-wider uppercase bg-primary hover:bg-primary/90 transition-all duration-200" 
+              className="w-full h-11 font-medium" 
               disabled={isLoading}
             >
               {isLoading ? (
@@ -169,9 +159,9 @@ export default function Login() {
           </form>
           
           {/* Footer branding */}
-          <div className="mt-6 pt-4 border-t border-border/30 text-center">
-            <p className="text-[10px] text-muted-foreground/60 font-heading tracking-widest uppercase">
-              VRP // Revenue Operations System
+          <div className="mt-8 pt-6 border-t border-border text-center">
+            <p className="text-xs text-muted-foreground">
+              VRP Revenue Operations System
             </p>
           </div>
         </CardContent>

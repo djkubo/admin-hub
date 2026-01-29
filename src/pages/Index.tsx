@@ -108,11 +108,11 @@ const Index = () => {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                  <BarChart3 className="h-8 w-8 text-primary" />
-                  Analytics
+                <h1 className="text-2xl md:text-3xl font-display text-foreground flex items-center gap-3">
+                  <BarChart3 className="h-7 w-7 text-primary" />
+                  ANALYTICS
                 </h1>
-                <p className="text-muted-foreground mt-1">
+                <p className="text-muted-foreground mt-1 text-sm">
                   Métricas avanzadas: LTV, MRR, Cohortes
                 </p>
               </div>
@@ -136,9 +136,6 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* VRP Red glow effect at top */}
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_hsl(1_99%_34%_/_0.08)_0%,_transparent_50%)] pointer-events-none" />
-      
       <Sidebar activeItem={activeMenuItem} onItemClick={setActiveMenuItem} />
       
       {/* Main content with responsive padding */}

@@ -414,20 +414,19 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   };
 
   return (
-    <div className="space-y-4 md:space-y-6">
-      {/* A) Top Bar - Responsive */}
-      <div className="bg-card rounded-xl border border-border/50 p-3 md:p-4">
-        {/* Mobile: Stack vertically */}
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div className="space-y-6">
+      {/* A) Top Bar - Premium clean style */}
+      <div className="bg-card rounded-lg border border-border p-4 md:p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           {/* Title + Filters */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center</h1>
+              <h1 className="text-lg md:text-xl font-display uppercase tracking-wide text-foreground">Command Center</h1>
             </div>
             
-            {/* Time filter - scrollable on mobile */}
-            <div className="flex rounded-lg border border-border/50 overflow-x-auto">
+            {/* Time filter - clean pill style */}
+            <div className="flex rounded-md border border-border overflow-hidden">
               {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
                 <button
                   key={f}
@@ -435,7 +434,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                   className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${
                     filter === f
                       ? 'bg-primary text-primary-foreground'
-                      : 'bg-card text-muted-foreground hover:text-foreground'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-accent'
                   }`}
                 >
                   {filterLabels[f]}
@@ -453,7 +452,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                 {lastSync ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es }) : 'Sin sync'}
               </span>
               {syncStatus && (
-                <Badge variant="outline" className={`text-xs ${syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
+                <Badge variant="outline" className={`text-xs ${syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
                   {syncStatus === 'ok' ? <CheckCircle className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
                 </Badge>
               )}
@@ -464,7 +463,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               size="sm"
               variant="outline"
               onClick={() => onNavigate?.('campaigns')}
-              className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10 text-xs md:text-sm touch-feedback"
+              className="gap-1.5 text-xs md:text-sm touch-feedback"
             >
               <Megaphone className="h-4 w-4" />
               <span className="hidden sm:inline">Broadcast</span>
@@ -516,16 +515,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         </div>
       </div>
 
-      {/* B) 8 KPI Cards - All Clickable with Navigation */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 md:gap-3">
+      {/* B) 8 KPI Cards - Clean, minimal */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         {cards.map((card, index) => {
           const colors = getColorClasses(card.color);
           const Icon = card.icon;
 
           if (isLoading) {
             return (
-              <div key={index} className="rounded-xl border border-border/50 bg-card p-4 animate-pulse">
-                <div className="h-8 w-8 rounded-lg bg-muted mb-2" />
+              <div key={index} className="rounded-lg border border-border bg-card p-4 animate-pulse">
+                <div className="h-8 w-8 rounded-md bg-muted mb-2" />
                 <div className="h-4 w-16 bg-muted rounded mb-1" />
                 <div className="h-6 w-12 bg-muted rounded" />
               </div>
@@ -539,22 +538,22 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             <div
               key={index}
               onClick={() => card.navigateTo && onNavigate?.(card.navigateTo)}
-              className={`rounded-xl border ${
+              className={`rounded-lg border ${
                 isWarningCard 
-                  ? 'border-red-500/50 bg-red-500/5 ring-1 ring-red-500/20' 
+                  ? 'border-red-500/30 bg-red-500/5' 
                   : isHighlightCard
-                  ? 'border-primary/50 bg-primary/5'
-                  : `${colors.border} bg-card`
-              } p-3 md:p-4 transition-all hover:shadow-lg cursor-pointer hover:ring-2 hover:ring-primary/30 touch-feedback group`}
+                  ? 'border-primary/30 bg-primary/5'
+                  : 'border-border bg-card'
+              } p-4 transition-all hover:bg-accent/50 cursor-pointer touch-feedback group`}
             >
-              <div className={`inline-flex p-1.5 md:p-2 rounded-lg ${colors.bg} mb-1.5 md:mb-2`}>
-                <Icon className={`h-3.5 w-3.5 md:h-4 md:w-4 ${colors.icon}`} />
+              <div className={`inline-flex p-2 rounded-md ${colors.bg} mb-2`}>
+                <Icon className={`h-4 w-4 ${colors.icon}`} />
               </div>
-              <p className="text-[10px] md:text-xs text-muted-foreground flex items-center gap-1">
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
                 {card.title}
                 <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
               </p>
-              <p className={`text-base md:text-xl font-bold ${
+              <p className={`text-lg md:text-xl font-semibold ${
                 card.isNegative 
                   ? 'text-red-400' 
                   : isHighlightCard 
@@ -563,7 +562,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               }`}>
                 {card.value}
               </p>
-              <p className={`text-[9px] md:text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
+              <p className={`text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
             </div>
           );
         })}
@@ -572,36 +571,36 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       {/* Sync Results Panel - Shows sync status and recent results */}
       <SyncResultsPanel />
 
-      {/* C) 3 Short Lists with CTAs - Stack on mobile */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+      {/* C) 3 Short Lists with CTAs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Top 10 Failures with Phone */}
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-amber-500" />
-              <h3 className="text-sm md:text-base font-semibold text-foreground">Fallos con Tel</h3>
+              <h3 className="text-sm font-medium text-foreground">Fallos con Tel</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
             {top10Failures.length === 0 ? (
-              <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin fallos
               </div>
             ) : (
               top10Failures.map((client, i) => (
-                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
-                    <p className="text-[10px] md:text-xs text-red-400">${client.amount.toFixed(2)}</p>
+                    <p className="text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
+                    <p className="text-xs text-red-400">${client.amount.toFixed(2)}</p>
                   </div>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="text-[#25D366] hover:bg-[#25D366]/10 h-8 w-8 p-0"
+                    className="text-emerald-400 hover:bg-emerald-500/10 h-8 w-8 p-0"
                     onClick={() => openWhatsApp(client.phone!, client.full_name || '', getRecoveryMessage(client.full_name || '', client.amount))}
                   >
                     <MessageCircle className="h-4 w-4" />
@@ -613,28 +612,28 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         </div>
 
         {/* Top 10 Invoices to Collect */}
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-blue-500" />
-              <h3 className="text-sm md:text-base font-semibold text-foreground">Por Cobrar</h3>
+              <h3 className="text-sm font-medium text-foreground">Por Cobrar</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
             {top10Invoices.length === 0 ? (
-              <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin pendientes
               </div>
             ) : (
               top10Invoices.map((invoice, i) => (
-                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">
+                    <p className="text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
+                    <p className="text-xs text-muted-foreground">
                       ${(invoice.amount_due / 100).toFixed(2)}
                     </p>
                   </div>
@@ -655,32 +654,32 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         </div>
 
         {/* Top 10 Trials Expiring */}
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden md:col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between p-3 md:p-4 border-b border-border/50">
+        <div className="rounded-lg border border-border bg-card overflow-hidden md:col-span-2 lg:col-span-1">
+          <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <CreditCard className="h-4 w-4 text-purple-500" />
-              <h3 className="text-sm md:text-base font-semibold text-foreground">Trials por Vencer</h3>
+              <h3 className="text-sm font-medium text-foreground">Trials por Vencer</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
-          <div className="divide-y divide-border/30 max-h-[250px] md:max-h-[300px] overflow-y-auto">
+          <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
             {top10ExpiringTrials.length === 0 ? (
-              <div className="p-4 text-center text-muted-foreground text-sm">
-                <CheckCircle className="h-6 w-6 md:h-8 md:w-8 mx-auto mb-2 text-emerald-500/50" />
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin trials
               </div>
             ) : (
               top10ExpiringTrials.map((sub, i) => (
-                <div key={i} className="flex items-center justify-between p-2.5 md:p-3 hover:bg-muted/20 touch-feedback">
+                <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs md:text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">
+                    <p className="text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
+                    <p className="text-xs text-muted-foreground">
                       {sub.plan_name}
                     </p>
                   </div>
-                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] md:text-xs">
+                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/20 text-xs">
                     {formatDistanceToNow(new Date(sub.trial_end!), { locale: es })}
                   </Badge>
                 </div>
@@ -692,8 +691,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
       {/* Failure reasons inline */}
       {kpis.failureReasons.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
-          <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
+        <div className="flex items-center gap-2 flex-wrap p-4 bg-card rounded-lg border border-border">
+          <span className="text-xs text-amber-400 flex items-center gap-1">
             <AlertTriangle className="h-3 w-3" />
             Razones:
           </span>
@@ -701,7 +700,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             <Badge
               key={i}
               variant="outline"
-              className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
+              className="text-xs border-amber-500/20 text-amber-400 bg-amber-500/10"
             >
               {reason.reason}: {reason.count}
             </Badge>
