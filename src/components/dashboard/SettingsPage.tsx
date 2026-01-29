@@ -1,6 +1,8 @@
 import { Settings, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { GHLSettingsPanel } from './GHLSettingsPanel';
+import { IntegrationsStatusPanel } from './IntegrationsStatusPanel';
+import { SystemTogglesPanel } from './SystemTogglesPanel';
 import { useAuth } from '@/hooks/useAuth';
 
 interface SettingsPageProps {
@@ -35,7 +37,13 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         )}
       </div>
 
-      {/* GHL Integration */}
+      {/* System Toggles - New */}
+      <SystemTogglesPanel />
+
+      {/* Integrations Status - New */}
+      <IntegrationsStatusPanel />
+
+      {/* GHL Integration - Existing */}
       <GHLSettingsPanel />
     </div>
   );

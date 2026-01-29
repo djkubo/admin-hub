@@ -337,11 +337,13 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       isHighlight: true,
     },
     {
-      title: 'Ventas',
-      value: `$${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      title: 'Ventas Netas',
+      value: `$${metrics.netRevenueMonthTotal.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: DollarSign,
       color: 'emerald',
-      subtitle: filterLabels[filter],
+      subtitle: metrics.refundsMonthTotal > 0 
+        ? `-$${metrics.refundsMonthTotal.toFixed(0)} refunds` 
+        : filterLabels[filter],
       navigateTo: 'movements',
     },
     {

@@ -6,10 +6,17 @@ export interface DashboardMetrics {
   salesTodayUSD: number;
   salesTodayMXN: number;
   salesTodayTotal: number;
-  // Month's sales
+  // Month's sales (GROSS)
   salesMonthUSD: number;
   salesMonthMXN: number;
   salesMonthTotal: number;
+  // NET Revenue (after refunds)
+  refundsMonthUSD: number;
+  refundsMonthMXN: number;
+  refundsMonthTotal: number;
+  netRevenueMonthUSD: number;
+  netRevenueMonthMXN: number;
+  netRevenueMonthTotal: number;
   conversionRate: number;
   trialCount: number;
   convertedCount: number;
@@ -33,6 +40,12 @@ const defaultMetrics: DashboardMetrics = {
   salesMonthUSD: 0,
   salesMonthMXN: 0,
   salesMonthTotal: 0,
+  refundsMonthUSD: 0,
+  refundsMonthMXN: 0,
+  refundsMonthTotal: 0,
+  netRevenueMonthUSD: 0,
+  netRevenueMonthMXN: 0,
+  netRevenueMonthTotal: 0,
   conversionRate: 0,
   trialCount: 0,
   convertedCount: 0,
@@ -65,13 +78,13 @@ export function useMetrics() {
       // Convert back to UTC for database query
       const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetHours * 3600000);
       
-      // Fetch monthly sales - ONLY count 'succeeded' and 'paid' status
+      // Fetch monthly transactions - include refunded for NET calculation
       // OPTIMIZATION: Limit to 5000 rows max to prevent statement timeout
       const { data: monthlyTransactions } = await supabase
         .from('transactions')
         .select('amount, currency, status, stripe_created_at')
         .gte('stripe_created_at', firstDayOfMonth.toISOString())
-        .in('status', ['succeeded', 'paid'])
+        .in('status', ['succeeded', 'paid', 'refunded'])
         .order('stripe_created_at', { ascending: false })
         .limit(5000); // Safety limit
 
@@ -79,25 +92,42 @@ export function useMetrics() {
       let salesMonthMXN = 0;
       let salesTodayUSD = 0;
       let salesTodayMXN = 0;
+      let refundsMonthUSD = 0;
+      let refundsMonthMXN = 0;
 
       // All amounts stored in CENTS, divide by 100 for display
       for (const tx of monthlyTransactions || []) {
         const amountInCurrency = tx.amount / 100;
         const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
         const isToday = txDate && txDate >= startOfTodayUTC;
+        const isRefund = tx.status === 'refunded';
         
         if (tx.currency?.toLowerCase() === 'mxn') {
-          salesMonthMXN += amountInCurrency;
-          if (isToday) salesTodayMXN += amountInCurrency;
+          if (isRefund) {
+            refundsMonthMXN += amountInCurrency;
+          } else {
+            salesMonthMXN += amountInCurrency;
+            if (isToday) salesTodayMXN += amountInCurrency;
+          }
         } else {
-          salesMonthUSD += amountInCurrency;
-          if (isToday) salesTodayUSD += amountInCurrency;
+          if (isRefund) {
+            refundsMonthUSD += amountInCurrency;
+          } else {
+            salesMonthUSD += amountInCurrency;
+            if (isToday) salesTodayUSD += amountInCurrency;
+          }
         }
       }
 
       const MXN_TO_USD = 0.05;
       const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
       const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
+      const refundsMonthTotal = refundsMonthUSD + (refundsMonthMXN * MXN_TO_USD);
+      
+      // NET Revenue = Gross - Refunds
+      const netRevenueMonthUSD = salesMonthUSD - refundsMonthUSD;
+      const netRevenueMonthMXN = salesMonthMXN - refundsMonthMXN;
+      const netRevenueMonthTotal = salesMonthTotal - refundsMonthTotal;
 
       // Fetch failed transactions for recovery list (EXCLUDE paid/succeeded)
       // OPTIMIZATION: Limit to 500 to prevent timeout
@@ -194,6 +224,12 @@ export function useMetrics() {
         salesMonthUSD,
         salesMonthMXN,
         salesMonthTotal,
+        refundsMonthUSD,
+        refundsMonthMXN,
+        refundsMonthTotal,
+        netRevenueMonthUSD,
+        netRevenueMonthMXN,
+        netRevenueMonthTotal,
         conversionRate,
         trialCount: finalTrialCount,
         convertedCount: finalConvertedCount,
