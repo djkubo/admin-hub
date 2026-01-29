@@ -153,6 +153,78 @@ async function upsertWithRetry(
   return results;
 }
 
+// ============ INSERT PHONE-ONLY RECORDS (no unique constraint on phone) ============
+async function insertPhoneOnlyRecords(
+  supabase: SupabaseClient,
+  records: Record<string, unknown>[]
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  const results = { success: 0, failed: 0, errors: [] as string[] };
+  
+  if (records.length === 0) return results;
+
+  // For phone-only records, check if phone already exists and skip if so
+  for (let i = 0; i < records.length; i += MICRO_BATCH_SIZE) {
+    const microBatch = records.slice(i, i + MICRO_BATCH_SIZE);
+    
+    // Get phones that already exist
+    const phones = microBatch.map(r => r.phone_e164 as string).filter(Boolean);
+    const { data: existingClients } = await supabase
+      .from('clients')
+      .select('phone_e164')
+      .in('phone_e164', phones);
+    
+    const existingPhones = new Set((existingClients || []).map(c => c.phone_e164));
+    
+    // Filter out records with existing phones
+    const newRecords = microBatch.filter(r => !existingPhones.has(r.phone_e164 as string));
+    
+    if (newRecords.length === 0) {
+      results.success += microBatch.length; // Count as "processed" even if skipped
+      continue;
+    }
+    
+    // Insert only new records
+    try {
+      const { error } = await supabase
+        .from('clients')
+        .insert(newRecords);
+      
+      if (!error) {
+        results.success += microBatch.length;
+      } else {
+        // If insert fails due to conflict, try one by one
+        log('warn', `Phone-only batch insert failed, trying individual inserts...`, error.message);
+        for (const record of newRecords) {
+          const { error: singleError } = await supabase
+            .from('clients')
+            .insert(record);
+          
+          if (!singleError) {
+            results.success++;
+          } else {
+            // Skip duplicates silently
+            if (!singleError.message.includes('duplicate')) {
+              results.failed++;
+              results.errors.push(singleError.message);
+            } else {
+              results.success++; // Count duplicates as processed
+            }
+          }
+        }
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      results.failed += newRecords.length;
+      results.errors.push(`Phone batch ${i / MICRO_BATCH_SIZE}: ${errMsg}`);
+      log('error', `Phone-only batch exception`, errMsg);
+    }
+    
+    await delay(10);
+  }
+  
+  return results;
+}
+
 // ============ GET PENDING COUNTS (using new accurate RPC) ============
 async function getPendingCounts(supabase: SupabaseClient): Promise<{
   ghl: number;
@@ -277,14 +349,11 @@ async function processGHLBatch(
     totalErrors += result.failed;
   }
 
-  // Use micro-batch upsert for phone-only records
+  // Insert phone-only records (no unique constraint on phone_e164)
   if (phoneOnlyRecords.length > 0) {
-    const result = await upsertWithRetry(
+    const result = await insertPhoneOnlyRecords(
       supabase, 
-      'clients', 
-      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
-      'phone_e164',
-      true
+      phoneOnlyRecords.map(r => ({ ...r, email: null }))
     );
     merged += result.success;
     totalErrors += result.failed;
@@ -390,14 +459,11 @@ async function processManyChatBatch(
     totalErrors += result.failed;
   }
 
-  // Use micro-batch upsert for phone-only records
+  // Insert phone-only records (no unique constraint on phone_e164)
   if (phoneOnlyRecords.length > 0) {
-    const result = await upsertWithRetry(
+    const result = await insertPhoneOnlyRecords(
       supabase, 
-      'clients', 
-      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
-      'phone_e164',
-      true
+      phoneOnlyRecords.map(r => ({ ...r, email: null }))
     );
     merged += result.success;
     totalErrors += result.failed;
@@ -546,14 +612,11 @@ async function processCSVBatch(
     totalErrors += result.failed;
   }
 
-  // Use micro-batch upsert for phone-only records
+  // Insert phone-only records (no unique constraint on phone_e164)
   if (phoneOnlyRecords.length > 0) {
-    const result = await upsertWithRetry(
+    const result = await insertPhoneOnlyRecords(
       supabase, 
-      'clients', 
-      phoneOnlyRecords.map(r => ({ ...r, email: null })), 
-      'phone_e164',
-      true
+      phoneOnlyRecords.map(r => ({ ...r, email: null }))
     );
     merged += result.success;
     totalErrors += result.failed;
