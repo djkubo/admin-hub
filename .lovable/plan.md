@@ -1,207 +1,209 @@
 
-# Plan de Reparación: Rendimiento del Botón "Unificar Todos"
+# Plan de Reparación: Prioridades 2 y 3
 
-## Resumen Ejecutivo
+## Resumen de Estado
 
-El botón "Unificar Todos" no congela la aplicación en el sentido técnico, pero presenta una **experiencia de usuario degradada** debido a:
-1. Progreso que no avanza (0% por mucho tiempo)
-2. Tiempos de procesamiento extremos (~18 horas teóricas para 800k registros)
-3. Falta de feedback visual significativo
-4. Sin capacidad de reanudar procesos fallidos
+### Prioridad 1 (Estabilidad): COMPLETADA
+El botón "Unificar Todos" ya cuenta con:
+- Edge Function v3 con auto-encadenamiento (chunks de 45s)
+- Batch size aumentado de 500 → 2,000
+- RPC `get_staging_counts_accurate` con índices parciales
+- UI con polling adaptativo (5s/15s) y capacidad de resume
 
 ---
 
-## Arquitectura Actual vs Propuesta
+## Prioridad 2: Verdad Financiera (PayPal + Reembolsos)
+
+### Hallazgos del Diagnóstico
+
+**Datos actuales en la BD (desde 2024):**
+| Fuente | Status | Total USD | Registros |
+|--------|--------|-----------|-----------|
+| PayPal | paid | $793,338 | 22,671 |
+| Stripe | paid | $735,432 | 26,671 |
+| Stripe | succeeded | $258,961 | 9,572 |
+| Stripe | refunded | $1,777 | 40 |
+| Web | succeeded | $103,421 | 2,033 |
+
+**Problemas identificados:**
+1. **Facturas** (`InvoicesPage.tsx`): Solo muestra `invoices` de Stripe, ignora los $793k de PayPal
+2. **useMetrics.ts**: Calcula ventas BRUTAS sin descontar reembolsos
+3. **MovementsPage.tsx**: YA TIENE el cálculo correcto de Net Revenue
+
+### Solución 2A: Vista Unificada de Facturas/Recibos
+
+**Archivos a modificar:**
+- `src/hooks/useInvoices.ts` - Añadir query que incluya transacciones PayPal como "recibos"
+- `src/components/dashboard/InvoicesPage.tsx` - Añadir toggle para ver "Stripe Invoices" vs "Todas las Transacciones"
+
+**Lógica propuesta:**
+```text
+┌─────────────────────────────────────────────────────────┐
+│                    FACTURAS UNIFICADAS                  │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  [Stripe Invoices]  [PayPal Recibos]  [Todos]          │
+│                                                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
+│  │ $xxx,xxx    │  │ $793,338    │  │ $1.5M+      │     │
+│  │ pendiente   │  │ cobrado     │  │ total       │     │
+│  └─────────────┘  └─────────────┘  └─────────────┘     │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Nuevo hook `useUnifiedReceipts.ts`:**
+- Query paralela a `invoices` (Stripe) y `transactions WHERE source='paypal' AND status='paid'`
+- Normaliza ambos a un formato común: fecha, email, monto, fuente, status
+- Calcula totales separados y combinados
+
+### Solución 2B: Net Revenue en Analytics
+
+**Archivo a modificar:**
+- `src/hooks/useMetrics.ts`
+
+**Cambio en lógica de cálculo:**
+```typescript
+// ANTES (línea ~84-96): Solo suma transacciones exitosas
+for (const tx of monthlyTransactions || []) {
+  const amountInCurrency = tx.amount / 100;
+  // ... suma todo
+}
+
+// DESPUÉS: Resta reembolsos
+const refundedAmount = monthlyTransactions
+  .filter(tx => tx.status === 'refunded')
+  .reduce((sum, tx) => sum + tx.amount, 0) / 100;
+
+const netMonthUSD = salesMonthUSD - refundedAmount;
+```
+
+**Nuevo campo en `DashboardMetrics`:**
+- `refundsMonthTotal: number`
+- `netRevenueMonth: number`
+
+**Actualización en `DashboardHome.tsx`:**
+- Mostrar "Ventas Netas" en lugar de solo "Ventas"
+- Opcionalmente: badge pequeño mostrando reembolsos
+
+---
+
+## Prioridad 3: Gobernanza (Settings)
+
+### Hallazgos del Diagnóstico
+
+**Secretos actuales (15 total):**
+- Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
+- PayPal: `PAYPAL_CLIENT_ID`, `PAYPAL_SECRET`, `PAYPAL_WEBHOOK_ID`
+- Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `TWILIO_WHATSAPP_NUMBER`
+- GHL: `GHL_API_KEY`, `GHL_LOCATION_ID`
+- ManyChat: `MANYCHAT_API_KEY`
+- AI: `OPENAI_API_KEY`
+- Admin: `ADMIN_API_KEY`, `LOVABLE_API_KEY`
+
+**Problema:** Estos secretos solo se pueden gestionar desde Lovable Cloud, no desde la UI de la app.
+
+### Solución 3A: Panel de Estado de Integraciones
+
+**Nuevo archivo:**
+- `src/components/dashboard/IntegrationsStatusPanel.tsx`
+
+**Funcionalidad:**
+- Muestra el estado de cada integración (Conectado/Desconectado)
+- Indica cuáles secretos están configurados (sin mostrar valores)
+- Link a Lovable Cloud para rotación de claves
+- Botón de "Test Connection" para verificar cada API
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    ARQUITECTURA ACTUAL                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  [Botón Unificar]                                               │
-│        │                                                        │
-│        ▼                                                        │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ Edge Function   │────▶│ Background Task │                    │
-│  │ bulk-unify      │     │ (waitUntil)     │                    │
-│  └────────┬────────┘     └────────┬────────┘                    │
-│           │                       │                             │
-│           ▼                       ▼                             │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ Respuesta       │     │ Procesa 500/    │                    │
-│  │ Inmediata       │     │ iteración       │────▶ TIMEOUT       │
-│  └─────────────────┘     └─────────────────┘      después de    │
-│                                                   ~2 horas      │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                 ESTADO DE INTEGRACIONES                 │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Stripe          🟢 Conectado    [Test] [Rotar ↗]      │
+│  ├─ API Key      ✅ sk_live_••••                       │
+│  └─ Webhook      ✅ whsec_••••                         │
+│                                                         │
+│  PayPal          🟢 Conectado    [Test] [Rotar ↗]      │
+│  ├─ Client ID    ✅ ••••                               │
+│  └─ Secret       ✅ ••••                               │
+│                                                         │
+│  Twilio          🟢 Conectado    [Test] [Rotar ↗]      │
+│  ├─ Account SID  ✅ AC••••                             │
+│  └─ Auth Token   ✅ ••••                               │
+│                                                         │
+│  ⚠️ Para rotar claves, usa Lovable Cloud Settings      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
 
-┌─────────────────────────────────────────────────────────────────┐
-│                    ARQUITECTURA PROPUESTA                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  [Botón Unificar]                                               │
-│        │                                                        │
-│        ▼                                                        │
-│  ┌─────────────────┐                                            │
-│  │ Edge Function   │──┐                                         │
-│  │ (Chunk 1)       │  │    Auto-encadenamiento                  │
-│  └─────────────────┘  │                                         │
-│                       ▼                                         │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │ Chunk 2         │─▶│ Chunk 3         │─▶│ Chunk N         │  │
-│  │ 10,000 records  │  │ 10,000 records  │  │ (hasta fin)     │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
-│                                                                 │
-│  Cada chunk:                                                    │
-│  - Persiste checkpoint en sync_runs                             │
-│  - Auto-invoca siguiente chunk via fetch()                      │
-│  - Se ejecuta en <50 segundos para evitar timeout               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+### Solución 3B: Toggles de Sistema
+
+**Nuevo archivo:**
+- `src/components/dashboard/SystemTogglesPanel.tsx`
+
+**Tabla `system_settings` - Nuevas claves:**
+- `auto_dunning_enabled` (boolean) - Activar/desactivar dunning automático
+- `sync_paused` (boolean) - Pausar todas las sincronizaciones
+- `quiet_hours_start` (string) - Hora de inicio de horario silencioso
+- `quiet_hours_end` (string) - Hora de fin de horario silencioso
+- `company_name` (string) - Nombre de la empresa
+- `timezone` (string) - Zona horaria por defecto
+
+**UI:**
+```text
+┌─────────────────────────────────────────────────────────┐
+│              CONFIGURACIÓN DEL SISTEMA                  │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Auto-Dunning          [====ON====]                     │
+│  Envía recordatorios automáticos de pago               │
+│                                                         │
+│  Pausar Sincronización [====OFF===]                     │
+│  Detiene todas las sincronizaciones                    │
+│                                                         │
+│  Horario Silencioso    [21:00] - [08:00]               │
+│  No enviar mensajes en este rango                      │
+│                                                         │
+│  Zona Horaria          [America/Mexico_City ▼]         │
+│                                                         │
+│                                    [Guardar Cambios]    │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Fases de Implementación
+## Archivos a Crear/Modificar
 
-### Fase 1: Arreglo Inmediato del RPC (5 min)
+### Prioridad 2 (Verdad Financiera)
+1. **Nuevo:** `src/hooks/useUnifiedReceipts.ts` - Query combinada de invoices + PayPal transactions
+2. **Modificar:** `src/components/dashboard/InvoicesPage.tsx` - Toggle de vista Stripe/PayPal/Todos
+3. **Modificar:** `src/hooks/useMetrics.ts` - Restar reembolsos del total
+4. **Modificar:** `src/components/dashboard/DashboardHome.tsx` - Mostrar Net Revenue
 
-**Problema**: `get_staging_counts_fast()` no distingue entre procesados y no-procesados.
-
-**Solución**: Crear nueva función que haga conteos exactos pero con límites de tiempo.
-
-```sql
-CREATE OR REPLACE FUNCTION public.get_staging_counts_accurate()
-RETURNS JSON
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET statement_timeout = '5s'
-AS $$
-  SELECT json_build_object(
-    'ghl_total', (SELECT COUNT(*) FROM ghl_contacts_raw),
-    'ghl_unprocessed', (SELECT COUNT(*) FROM ghl_contacts_raw WHERE processed_at IS NULL),
-    'manychat_total', (SELECT COUNT(*) FROM manychat_contacts_raw),
-    'manychat_unprocessed', (SELECT COUNT(*) FROM manychat_contacts_raw WHERE processed_at IS NULL),
-    'csv_total', (SELECT COUNT(*) FROM csv_imports_raw),
-    'csv_staged', (SELECT COUNT(*) FROM csv_imports_raw WHERE processing_status IN ('staged', 'pending')),
-    'clients_total', (SELECT COUNT(*) FROM clients),
-    'transactions_total', (SELECT COUNT(*) FROM transactions)
-  );
-$$;
-```
+### Prioridad 3 (Gobernanza)
+5. **Nuevo:** `src/components/dashboard/IntegrationsStatusPanel.tsx` - Estado de APIs
+6. **Nuevo:** `src/components/dashboard/SystemTogglesPanel.tsx` - Toggles de sistema
+7. **Modificar:** `src/components/dashboard/SettingsPage.tsx` - Integrar nuevos paneles
+8. **Nueva migración SQL:** Insertar claves por defecto en `system_settings`
 
 ---
 
-### Fase 2: Optimización del Edge Function (20 min)
+## Orden de Implementación
 
-**Cambios en `bulk-unify-contacts/index.ts`**:
-
-1. **Aumentar batch size** de 500 → 2,000 por fuente
-2. **Implementar auto-encadenamiento** (como ya existe en `fetch-stripe`)
-3. **Reducir delay entre batches** de 20ms → 5ms
-4. **Añadir tiempo máximo por invocación** de 45 segundos
-5. **Guardar cursor de progreso** para permitir resume
-
-```typescript
-// Patrón de auto-encadenamiento
-const MAX_EXECUTION_TIME_MS = 45_000; // 45 segundos max
-
-while (hasMoreWork && (Date.now() - startTime) < MAX_EXECUTION_TIME_MS) {
-  // Procesar batches...
-}
-
-if (hasMoreWork) {
-  // Auto-invoke next chunk
-  EdgeRuntime.waitUntil(
-    fetch(`${supabaseUrl}/functions/v1/bulk-unify-contacts`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${supabaseServiceKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ 
-        syncRunId, 
-        cursor: lastProcessedId,
-        sources,
-        batchSize 
-      })
-    })
-  );
-}
-```
-
----
-
-### Fase 3: UI de Progreso Mejorada (15 min)
-
-**Cambios en `SyncOrchestrator.tsx`**:
-
-1. **Mostrar ETA realista** basado en velocidad actual
-2. **Polling adaptativo**: 5s cuando hay actividad, 15s cuando está estancado
-3. **Botón "Reanudar"** visible si el último sync falló pero hay progreso guardado
-4. **Indicador de chunks**: "Procesando chunk 4 de ~80"
-
-```tsx
-// Polling adaptativo
-const pollInterval = unifyStats.rate.includes('0/s') ? 15000 : 5000;
-setTimeout(pollProgress, pollInterval);
-
-// Botón de Resume
-{lastFailedSync && (
-  <Button onClick={resumeUnification}>
-    <Play className="h-4 w-4 mr-2" />
-    Reanudar desde {lastFailedSync.total_fetched.toLocaleString()}
-  </Button>
-)}
-```
-
----
-
-### Fase 4: Índices de Base de Datos (10 min)
-
-**Crear índices parciales** para acelerar las queries de conteo:
-
-```sql
--- Índice parcial para GHL sin procesar (más rápido que escaneo completo)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ghl_raw_unprocessed 
-ON ghl_contacts_raw (id) 
-WHERE processed_at IS NULL;
-
--- Índice parcial para CSV pendientes
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_csv_raw_staged 
-ON csv_imports_raw (id) 
-WHERE processing_status IN ('staged', 'pending');
-```
-
----
-
-## Estimaciones de Tiempo con Optimizaciones
-
-| Escenario | Batch Size | Velocidad | Tiempo para 800k |
-|-----------|------------|-----------|------------------|
-| **Actual** | 500 | ~50/s | ~4.5 horas |
-| **Optimizado** | 2,000 | ~200/s | ~1.1 horas |
-| **Con índices** | 2,000 | ~400/s | ~35 min |
-
----
-
-## Sección Técnica: Archivos a Modificar
-
-1. **Nueva migración SQL**:
-   - `supabase/migrations/XXX_fix_staging_counts_accurate.sql`
-   - Crea RPC con conteos exactos + índices parciales
-
-2. **Edge Function**:
-   - `supabase/functions/bulk-unify-contacts/index.ts`
-   - Auto-encadenamiento + batch size aumentado
-
-3. **Frontend**:
-   - `src/components/dashboard/SyncOrchestrator.tsx`
-   - Polling adaptativo + botón resume + ETA mejorado
+1. **Fase 2A** (15 min): Hook `useUnifiedReceipts` + Vista unificada en Facturas
+2. **Fase 2B** (10 min): Net Revenue en useMetrics + DashboardHome
+3. **Fase 3A** (10 min): Panel de estado de integraciones
+4. **Fase 3B** (10 min): Toggles de sistema + migración SQL
+5. **Fase 3C** (5 min): Integración en SettingsPage
 
 ---
 
 ## Resultado Esperado
 
-- **Antes**: "Unificar Todos" → UI parece congelada → Falla después de 2h
-- **Después**: "Unificar Todos" → Progreso visible cada 5s → Completa en ~35-60 min → Si falla, puede reanudar
+### Prioridad 2 - Antes vs Después
+- **Antes:** Facturas muestra solo Stripe ($735k), Analytics ignora reembolsos
+- **Después:** Vista unificada con $1.5M+ (Stripe + PayPal), Net Revenue = Gross - Refunds
+
+### Prioridad 3 - Antes vs Después
+- **Antes:** Settings solo tiene GHL webhook, sin control de API keys ni toggles
+- **Después:** Panel completo con estado de 5 integraciones, toggles de sistema, y links a Cloud para rotación
