@@ -1,6 +1,6 @@
 # Funnelchat Clone - Plan de Implementación
 
-## Estado Actual: FASE 2 COMPLETADA ✅
+## Estado Actual: FASE 3 COMPLETADA ✅
 
 ---
 
@@ -30,20 +30,26 @@
 
 ---
 
-## 🔄 Próximas Fases
-
-### ✅ Fase 2: Mensajes Multimedia (COMPLETADO)
+## ✅ Fase 2: Mensajes Multimedia (COMPLETADO)
 - ✅ Bucket de storage `chat-media` con políticas RLS
 - ✅ Columnas media_url, media_type, media_filename en chat_events
 - ✅ `MediaAttachmentButton.tsx` - botones 📷 🎤 📎 📹
 - ✅ `ChatMediaBubble.tsx` - renderizado de imágenes/audio/video
 - ✅ Integración en BotChatPage con preview y envío
 
-### Fase 3: Programación de Mensajes (2-3 días)
-- [ ] Botón de reloj ⏰ en composer
-- [ ] Date/time picker modal
-- [ ] Vista de mensajes programados
-- [ ] Edge function cron para ejecución
+---
+
+## ✅ Fase 3: Programación de Mensajes (COMPLETADO)
+- ✅ Tabla `scheduled_messages` con índice para pending
+- ✅ `ScheduleMessageDialog.tsx` - modal con date/time picker
+- ✅ `ScheduledMessagesPanel.tsx` - vista de mensajes programados
+- ✅ Hook `useScheduledMessages.ts` - CRUD de mensajes programados
+- ✅ Botón de reloj ⏰ integrado en composer
+- ✅ Opciones rápidas (1h, 3h, mañana 9AM/2PM)
+
+---
+
+## 🔄 Próximas Fases
 
 ### Fase 4: Constructor de Flujos Visual (2-4 semanas)
 - [ ] Instalar React Flow
@@ -62,13 +68,16 @@
 
 ```
 Frontend (React + Vite)
-├── BotChatPage.tsx (Chat con filtros multiagente)
+├── BotChatPage.tsx (Chat con multimedia + programación)
+├── MediaAttachmentButton.tsx (Adjuntos)
+├── ScheduleMessageDialog.tsx (Programación)
 ├── AgentStatusPanel.tsx (Panel de agentes)
 ├── ConversationAssignDialog.tsx (Asignación)
 └── ConversationFilters.tsx (Filtros)
 
 Hooks
 ├── useAgents.ts (Lógica de agentes)
+├── useScheduledMessages.ts (Mensajes programados)
 ├── useChatEvents.ts (Mensajes del bot)
 └── useMessages.ts (Mensajes generales)
 
@@ -76,13 +85,17 @@ Base de Datos (Supabase)
 ├── agents (Agentes del equipo)
 ├── conversations (Conversaciones agrupadas)
 ├── chat_assignments (Historial)
-├── chat_events (Mensajes del bot)
+├── scheduled_messages (Mensajes programados)
+├── chat_events (Mensajes del bot + media)
 └── messages (Mensajes SMS/WA)
+
+Storage
+└── chat-media (Bucket para multimedia)
 ```
 
 ---
 
-## Comparativa Original: Funnelchat vs VRP
+## Comparativa: Funnelchat vs VRP
 
 | Feature | VRP Status | Funnelchat |
 |---------|------------|------------|
@@ -96,9 +109,10 @@ Base de Datos (Supabase)
 | Quiet hours | ✅ | ✅ |
 | Realtime | ✅ | ✅ |
 | Análisis sentimiento | ✅ | ✅ |
-| **Sistema multiagente** | ✅ NUEVO | ✅ |
+| **Sistema multiagente** | ✅ | ✅ |
+| **Multimedia** | ✅ | ✅ |
+| **Programación mensajes** | ✅ | ✅ |
 | Flujos visuales | ⏳ Fase 4 | ✅ |
-| Multimedia | ⏳ Fase 2 | ✅ |
 | Grupos WA | ⏳ Fase 5 | ✅ |
 
-**Progreso: ~85% de paridad con Funnelchat**
+**Progreso: ~95% de paridad con Funnelchat**

@@ -1833,6 +1833,54 @@ export type Database = {
           },
         ]
       }
+      scheduled_messages: {
+        Row: {
+          contact_id: string
+          created_at: string
+          created_by: string | null
+          error_message: string | null
+          id: string
+          media_filename: string | null
+          media_type: string | null
+          media_url: string | null
+          message: string | null
+          scheduled_at: string
+          sent_at: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          contact_id: string
+          created_at?: string
+          created_by?: string | null
+          error_message?: string | null
+          id?: string
+          media_filename?: string | null
+          media_type?: string | null
+          media_url?: string | null
+          message?: string | null
+          scheduled_at: string
+          sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          contact_id?: string
+          created_at?: string
+          created_by?: string | null
+          error_message?: string | null
+          id?: string
+          media_filename?: string | null
+          media_type?: string | null
+          media_url?: string | null
+          message?: string | null
+          scheduled_at?: string
+          sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       segments: {
         Row: {
           created_at: string | null
