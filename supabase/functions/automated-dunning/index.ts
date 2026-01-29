@@ -48,6 +48,29 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' });
 
+    // ============= KILL SWITCH: Check if auto-dunning is enabled =============
+    const { data: autoDunningConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'auto_dunning_enabled')
+      .single();
+
+    const autoDunningEnabled = autoDunningConfig?.value !== 'false'; // Default: enabled
+    
+    if (!autoDunningEnabled) {
+      console.log('⏸️ Auto-dunning disabled globally, skipping execution');
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'skipped', 
+          skipped: true, 
+          reason: 'Feature disabled: auto_dunning_enabled is OFF' 
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    // ===========================================================================
+
     // Parse optional dry_run parameter
     let dryRun = false;
     try {

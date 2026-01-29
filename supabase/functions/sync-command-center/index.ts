@@ -169,6 +169,29 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: authHeader } }
     });
 
+    // ============= KILL SWITCH: Check if sync is paused =============
+    const { data: syncPausedConfig } = await dbClient
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'sync_paused')
+      .single();
+
+    const syncPaused = syncPausedConfig?.value === 'true';
+    
+    if (syncPaused) {
+      console.log('⏸️ Sync paused globally, skipping command-center execution');
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          status: 'skipped', 
+          skipped: true, 
+          reason: 'Feature disabled: sync_paused is ON' 
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    // ================================================================
+
     // ============ PARSE CONFIG ============
     let config: SyncConfig & { forceCancel?: boolean } = { mode: 'today' };
     try {
