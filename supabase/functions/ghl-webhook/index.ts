@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createLogger, LogLevel } from "../_shared/logger.ts";
 
 const logger = createLogger("ghl-webhook", LogLevel.INFO);
@@ -7,6 +7,47 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-wh-signature",
 };
+
+// ============================================================================
+// CIRCUIT BREAKER - Protección contra saturación de base de datos
+// ============================================================================
+// Si la base de datos está saturada, respondemos 200 OK inmediatamente
+// sin intentar ninguna operación. Esto rompe el ciclo de retries de GHL.
+// ============================================================================
+
+const DB_HEALTH_TIMEOUT_MS = 2000; // 2 segundos max para health check
+
+async function checkDatabaseHealth(supabase: SupabaseClient): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DB_HEALTH_TIMEOUT_MS);
+    
+    // Simple ping: SELECT 1 es la query más rápida posible
+    const { error } = await supabase
+      .from('clients')
+      .select('id')
+      .limit(1)
+      .abortSignal(controller.signal);
+    
+    clearTimeout(timeoutId);
+    
+    if (error) {
+      logger.warn("DB health check failed", { error: error.message });
+      return false;
+    }
+    
+    return true;
+  } catch (e) {
+    const err = e as Error;
+    // AbortError significa timeout
+    if (err.name === 'AbortError') {
+      logger.warn("DB health check timed out", { timeoutMs: DB_HEALTH_TIMEOUT_MS });
+    } else {
+      logger.warn("DB health check exception", { error: err.message });
+    }
+    return false;
+  }
+}
 
 // GHL Event types we handle
 type GHLEventType = "ContactCreate" | "ContactUpdate" | "ContactDelete" | "ContactDndUpdate";
@@ -156,6 +197,53 @@ Deno.serve(async (req: Request) => {
   const requestId = crypto.randomUUID().slice(0, 8);
   logger.info("Webhook received", { requestId, method: req.method });
 
+  // =========================================================================
+  // CIRCUIT BREAKER CHECK - Ejecutar ANTES de cualquier procesamiento
+  // =========================================================================
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !supabaseKey) {
+    logger.error("Missing Supabase configuration", undefined, { requestId });
+    // Responder 200 OK para evitar retries infinitos
+    return new Response(JSON.stringify({ 
+      success: false, 
+      error: "Server configuration error",
+      mode: "circuit_breaker" 
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseKey);
+
+  // Health check rápido
+  const isDbHealthy = await checkDatabaseHealth(supabase);
+  
+  if (!isDbHealthy) {
+    logger.warn("🛡️ CIRCUIT BREAKER ACTIVATED - DB unavailable, returning 200 OK without processing", { 
+      requestId,
+      timeoutMs: DB_HEALTH_TIMEOUT_MS,
+    });
+    
+    // Responder 200 OK inmediatamente - NO intentar nada más
+    // Esto rompe el ciclo de retries de GHL
+    return new Response(JSON.stringify({ 
+      success: true, // Decimos "success" para que GHL no reintente
+      action: "circuit_breaker",
+      message: "Database temporarily unavailable, webhook acknowledged but not processed",
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  logger.info("DB health check passed", { requestId });
+  // =========================================================================
+  // FIN CIRCUIT BREAKER - Continuar procesamiento normal
+  // =========================================================================
+
   try {
     // Only accept POST
     if (req.method !== "POST") {
@@ -225,23 +313,8 @@ Deno.serve(async (req: Request) => {
       tagsCount: unifyParams.p_tags?.length || 0,
     });
 
-    // Create Supabase client
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-    if (!supabaseUrl || !supabaseKey) {
-      logger.error("Missing Supabase configuration", undefined, { requestId });
-      return new Response(JSON.stringify({ success: false, error: "Server configuration error" }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
     // OPTIMIZACIÓN: Insertar en tabla de staging en lugar de llamar RPC bloqueante
     // Esto evita timeouts de 60-120 segundos
-    // La tabla usa: external_id (text), payload (jsonb), fetched_at, processed_at
     const stagingRecord = {
       external_id: unifyParams.p_ghl_contact_id,
       payload: {
@@ -255,7 +328,7 @@ Deno.serve(async (req: Request) => {
         event_type: eventType,
       },
       fetched_at: new Date().toISOString(),
-      processed_at: null, // Será procesado por batch job
+      processed_at: null,
     };
 
     // Intentar insertar en staging (rápido, no bloquea)
@@ -267,33 +340,25 @@ Deno.serve(async (req: Request) => {
       });
 
     if (stagingError) {
-      logger.warn("Staging insert failed, trying background RPC", { 
+      // NO usar EdgeRuntime.waitUntil - estaba causando más carga
+      // Simplemente logear el error y responder OK
+      logger.warn("Staging insert failed - acknowledging webhook without processing", { 
         requestId, 
         error: stagingError.message 
       });
       
-      // Fallback: procesar en background con EdgeRuntime.waitUntil
-      // @ts-ignore - EdgeRuntime disponible en Deno
-      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
-        // @ts-ignore
-        EdgeRuntime.waitUntil((async () => {
-          try {
-            const { error } = await supabase.rpc("unify_identity", unifyParams);
-            if (error) {
-              logger.error("Background RPC failed", error as Error, { requestId });
-            } else {
-              logger.info("Background unification completed", { requestId });
-            }
-          } catch (e) {
-            logger.error("Background processing error", e as Error, { requestId });
-          }
-        })());
-        
-        logger.info("Scheduled background processing", { requestId });
-      }
-    } else {
-      logger.info("Staged for batch processing", { requestId, ghlContactId: unifyParams.p_ghl_contact_id });
+      // Responder OK de todas formas para evitar retries
+      return new Response(JSON.stringify({ 
+        success: true, 
+        action: "acknowledged",
+        message: "Webhook received but could not be staged, will retry on next sync",
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
+
+    logger.info("Staged for batch processing", { requestId, ghlContactId: unifyParams.p_ghl_contact_id });
 
     // Responder inmediatamente (< 1 segundo)
     return new Response(JSON.stringify({ 
