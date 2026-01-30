@@ -74,7 +74,7 @@ export function WhatsAppSettingsPage() {
             <Card className="bg-zinc-900 border-zinc-800">
               <CardHeader>
                 <div className="flex items-center gap-3">
-                  <MessageSquare className="h-5 w-5 text-green-500" />
+                  <MessageSquare className="h-5 w-5 text-primary" />
                   <div>
                     <CardTitle className="text-base">Chat en Tiempo Real</CardTitle>
                     <CardDescription>
@@ -84,7 +84,7 @@ export function WhatsAppSettingsPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                <Badge className="bg-zinc-800 text-white border-zinc-700">
                   Disponible al conectar
                 </Badge>
               </CardContent>
@@ -93,7 +93,7 @@ export function WhatsAppSettingsPage() {
             <Card className="bg-zinc-900 border-zinc-800">
               <CardHeader>
                 <div className="flex items-center gap-3">
-                  <Users className="h-5 w-5 text-blue-500" />
+                  <Users className="h-5 w-5 text-primary" />
                   <div>
                     <CardTitle className="text-base">Importar Contactos</CardTitle>
                     <CardDescription>
@@ -103,7 +103,7 @@ export function WhatsAppSettingsPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
+                <Badge className="bg-zinc-800 text-white border-zinc-700">
                   Disponible al conectar
                 </Badge>
               </CardContent>
@@ -112,7 +112,7 @@ export function WhatsAppSettingsPage() {
             <Card className="bg-zinc-900 border-zinc-800">
               <CardHeader>
                 <div className="flex items-center gap-3">
-                  <History className="h-5 w-5 text-purple-500" />
+                  <History className="h-5 w-5 text-primary" />
                   <div>
                     <CardTitle className="text-base">Historial de Chats</CardTitle>
                     <CardDescription>
@@ -122,7 +122,7 @@ export function WhatsAppSettingsPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">
+                <Badge className="bg-zinc-800 text-white border-zinc-700">
                   Disponible al conectar
                 </Badge>
               </CardContent>
@@ -131,7 +131,7 @@ export function WhatsAppSettingsPage() {
             <Card className="bg-zinc-900 border-zinc-800">
               <CardHeader>
                 <div className="flex items-center gap-3">
-                  <Settings className="h-5 w-5 text-orange-500" />
+                  <Settings className="h-5 w-5 text-primary" />
                   <div>
                     <CardTitle className="text-base">Automatizaciones</CardTitle>
                     <CardDescription>
@@ -141,7 +141,7 @@ export function WhatsAppSettingsPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">
+                <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">
                   Próximamente
                 </Badge>
               </CardContent>

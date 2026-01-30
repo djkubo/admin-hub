@@ -85,9 +85,9 @@ const pipelineConfig = {
     label: 'Winback', 
     shortLabel: 'Winback',
     icon: UserX, 
-    color: 'text-purple-400',
-    bgColor: 'bg-purple-500/10',
-    borderColor: 'border-purple-500/30'
+    color: 'text-white',
+    bgColor: 'bg-zinc-800',
+    borderColor: 'border-zinc-700'
   },
 };
 
@@ -410,7 +410,7 @@ export function RevenueOpsPipeline() {
       {/* Header - Responsive */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <Zap className="h-6 w-6 md:h-8 md:w-8 text-amber-500 shrink-0" />
+          <Zap className="h-6 w-6 md:h-8 md:w-8 text-primary shrink-0" />
           <div>
             <h1 className="text-lg md:text-2xl font-bold text-white">Revenue Ops</h1>
             <p className="text-[10px] md:text-sm text-muted-foreground hidden sm:block">
@@ -466,21 +466,21 @@ export function RevenueOpsPipeline() {
 
         <Card className="bg-card border-border/50">
           <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-blue-400 mb-1">
+            <div className="flex items-center gap-2 text-primary mb-1">
               <TrendingUp className="h-3 w-3 md:h-4 md:w-4" />
               <span className="text-[10px] md:text-xs">Trial→Paid</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-blue-400">{metrics.trial_conversion_rate.toFixed(0)}%</p>
+            <p className="text-lg md:text-2xl font-bold text-primary">{metrics.trial_conversion_rate.toFixed(0)}%</p>
           </CardContent>
         </Card>
 
         <Card className="bg-card border-border/50">
           <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-green-400 mb-1">
+            <div className="flex items-center gap-2 text-emerald-400 mb-1">
               <DollarSign className="h-3 w-3 md:h-4 md:w-4" />
               <span className="text-[10px] md:text-xs">Recuperado</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-green-400">
+            <p className="text-lg md:text-2xl font-bold text-emerald-400">
               ${metrics.revenue_recovered.toFixed(0)}
             </p>
           </CardContent>
@@ -571,14 +571,14 @@ export function RevenueOpsPipeline() {
                           variant="outline" 
                           className={`text-[10px] h-4 px-1 ${
                             client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
-                            client.last_campaign_status === 'sent' ? 'text-blue-400 border-blue-500/30' :
+                            client.last_campaign_status === 'sent' ? 'text-white border-zinc-700 bg-zinc-800' :
                             'text-muted-foreground'
                           }`}
                         >
                           {client.last_campaign_status}
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px] h-4 px-1 text-muted-foreground">Nuevo</Badge>
+                        <Badge variant="outline" className="text-[10px] h-4 px-1 text-muted-foreground bg-zinc-800 border-zinc-700">Nuevo</Badge>
                       )}
                       {client.phone && (
                         <span className="text-[10px] text-muted-foreground/70 truncate max-w-[80px]">{client.phone}</span>
@@ -591,7 +591,7 @@ export function RevenueOpsPipeline() {
                       {client.phone && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-7 px-2 shrink-0 bg-[#25D366] hover:bg-[#1da851] text-white text-[10px] gap-1">
+                            <Button size="sm" className="h-7 px-2 shrink-0 bg-primary hover:bg-primary/90 text-white text-[10px] gap-1">
                               <MessageCircle className="h-3 w-3" />
                               WA
                             </Button>
@@ -730,19 +730,19 @@ export function RevenueOpsPipeline() {
                             )}
                           </TableCell>
                           <TableCell>
-                            {client.last_campaign_status ? (
+                          {client.last_campaign_status ? (
                               <Badge 
                                 variant="outline" 
                                 className={
                                   client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
-                                  client.last_campaign_status === 'sent' ? 'text-blue-400 border-blue-500/30' :
+                                  client.last_campaign_status === 'sent' ? 'text-white border-zinc-700 bg-zinc-800' :
                                   'text-muted-foreground'
                                 }
                               >
                                 {client.last_campaign_status}
                               </Badge>
                             ) : (
-                              <Badge variant="outline" className="text-muted-foreground">Sin contactar</Badge>
+                              <Badge variant="outline" className="text-muted-foreground bg-zinc-800 border-zinc-700">Sin contactar</Badge>
                             )}
                           </TableCell>
                           <TableCell>
@@ -754,7 +754,7 @@ export function RevenueOpsPipeline() {
                               {client.phone && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button size="icon" className="h-8 w-8 bg-[#25D366] hover:bg-[#1da851]">
+                                    <Button size="icon" className="h-8 w-8 bg-primary hover:bg-primary/90">
                                       <MessageCircle className="h-4 w-4" />
                                     </Button>
                                   </DropdownMenuTrigger>
@@ -776,7 +776,7 @@ export function RevenueOpsPipeline() {
                               {client.phone && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button size="icon" variant="outline" className="h-8 w-8 border-blue-500/30 text-blue-400">
+                                    <Button size="icon" variant="outline" className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800">
                                       <Smartphone className="h-4 w-4" />
                                     </Button>
                                   </DropdownMenuTrigger>
@@ -797,7 +797,7 @@ export function RevenueOpsPipeline() {
                               {/* ManyChat */}
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                  <Button size="icon" variant="outline" className="h-8 w-8 border-[#0084FF]/30 text-[#0084FF]">
+                                  <Button size="icon" variant="outline" className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800">
                                     <MessageSquare className="h-4 w-4" />
                                   </Button>
                                 </DropdownMenuTrigger>
@@ -818,7 +818,7 @@ export function RevenueOpsPipeline() {
                               <Button 
                                 size="icon" 
                                 variant="outline" 
-                                className="h-8 w-8 border-orange-500/30 text-orange-400"
+                                className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800"
                                 onClick={() => handleGHL(client)}
                               >
                                 <ExternalLink className="h-4 w-4" />
@@ -828,7 +828,7 @@ export function RevenueOpsPipeline() {
                               <Button 
                                 size="icon" 
                                 variant="outline" 
-                                className="h-8 w-8 border-purple-500/30 text-purple-400"
+                                className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800"
                                 onClick={() => handleStripePortal(client)}
                               >
                                 <DollarSign className="h-4 w-4" />

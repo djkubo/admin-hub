@@ -576,7 +576,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Fallos con Tel</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1 touch-feedback">
@@ -599,7 +599,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="text-emerald-400 hover:bg-emerald-500/10 h-8 w-8 p-0"
+                    className="text-primary hover:bg-primary/10 h-8 w-8 p-0"
                     onClick={() => openWhatsApp(client.phone!, client.full_name || '', getRecoveryMessage(client.full_name || '', client.amount))}
                   >
                     <MessageCircle className="h-4 w-4" />
@@ -614,7 +614,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-blue-500" />
+              <FileText className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Por Cobrar</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1 touch-feedback">
@@ -640,7 +640,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="text-blue-400 hover:bg-blue-500/10 h-8 w-8 p-0"
+                      className="text-primary hover:bg-primary/10 h-8 w-8 p-0"
                       onClick={() => window.open(invoice.hosted_invoice_url!, '_blank')}
                     >
                       <FileText className="h-4 w-4" />
@@ -656,7 +656,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         <div className="rounded-lg border border-border bg-card overflow-hidden md:col-span-2 lg:col-span-1">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
-              <CreditCard className="h-4 w-4 text-purple-500" />
+              <CreditCard className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Trials por Vencer</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1 touch-feedback">
@@ -678,7 +678,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
                       {sub.plan_name}
                     </p>
                   </div>
-                  <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/20 text-xs">
+                  <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700 text-xs">
                     {formatDistanceToNow(new Date(sub.trial_end!), { locale: es })}
                   </Badge>
                 </div>

@@ -82,19 +82,19 @@ const getStatusBadge = (status: string) => {
   switch (status) {
     case 'ok':
     case 'completed':
-      return <Badge className="bg-green-500/20 text-green-400 text-[10px] md:text-xs"><CheckCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> OK</Badge>;
+      return <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px] md:text-xs"><CheckCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> OK</Badge>;
     case 'running':
-      return <Badge className="bg-blue-500/20 text-blue-400 text-[10px] md:text-xs"><Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> ...</Badge>;
+      return <Badge className="bg-zinc-800 text-white text-[10px] md:text-xs"><Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> ...</Badge>;
     case 'warning':
-      return <Badge className="bg-yellow-500/20 text-yellow-400 text-[10px] md:text-xs"><AlertTriangle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Warn</Badge>;
+      return <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs"><AlertTriangle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Warn</Badge>;
     case 'critical':
     case 'fail':
     case 'error':
       return <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs"><XCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Error</Badge>;
     case 'info':
-      return <Badge variant="outline" className="text-[10px] md:text-xs">Info</Badge>;
+      return <Badge variant="outline" className="bg-zinc-800 text-white text-[10px] md:text-xs">Info</Badge>;
     default:
-      return <Badge variant="outline" className="text-[10px] md:text-xs">{status}</Badge>;
+      return <Badge variant="outline" className="bg-zinc-800 text-white text-[10px] md:text-xs">{status}</Badge>;
   }
 };
 
@@ -470,19 +470,19 @@ Responde en español, de forma concisa.`;
 
       {/* Summary Cards - 2x2 on mobile */}
       <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
-        <Card className={hasCriticalIssues ? 'border-red-500/50' : hasWarnings ? 'border-yellow-500/50' : 'border-green-500/50'}>
+        <Card className={hasCriticalIssues ? 'border-red-500/50' : hasWarnings ? 'border-amber-500/50' : 'border-emerald-500/50'}>
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
-              <Database className="w-4 h-4 md:w-5 md:h-5" />
+              <Database className="w-4 h-4 md:w-5 md:h-5 text-primary" />
               <span className="font-medium text-xs md:text-sm">Data</span>
             </div>
             <div className="flex items-center gap-1.5">
               {hasCriticalIssues ? (
                 <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs">Crítico</Badge>
               ) : hasWarnings ? (
-                <Badge className="bg-yellow-500/20 text-yellow-400 text-[10px] md:text-xs">Warn</Badge>
+                <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs">Warn</Badge>
               ) : (
-                <Badge className="bg-green-500/20 text-green-400 text-[10px] md:text-xs">OK</Badge>
+                <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px] md:text-xs">OK</Badge>
               )}
             </div>
           </CardContent>
