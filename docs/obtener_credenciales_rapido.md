@@ -32,14 +32,20 @@ Busca estas 3 variables (usa Ctrl+F para buscar):
 - Haz clic en el 👁️ para revelar
 - Copia el valor completo
 
-### Paso 4: Pega Aquí
+### Paso 4: Configura Variables de Entorno
 
-Pega las 3 credenciales en este formato:
+Configura las credenciales como variables de entorno:
 
+```bash
+export VITE_SUPABASE_URL="https://tu-proyecto.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
-SUPABASE_URL: https://qskmzaxzhkrlchycbria.supabase.co
-SUPABASE_SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-VITE_SUPABASE_PUBLISHABLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+O agrégalas a tu archivo `.env.local`:
+
+```env
+VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ---
@@ -89,14 +95,7 @@ console.log('PUBLISHABLE_KEY:', publishableKey);
 1. Ve a Lovable Cloud → Settings → Environment Variables
 2. Busca: `SUPABASE_SERVICE_ROLE_KEY`
 3. Click en 👁️
-4. Copia y pega aquí
-
-**Ya tengo:**
-- ✅ URL: `https://qskmzaxzhkrlchycbria.supabase.co`
-- ✅ Publishable Key: (del .env)
-
-**Solo falta:**
-- ⏳ SERVICE_ROLE_KEY
+4. Copia y configura como variable de entorno
 
 ---
 
@@ -107,4 +106,4 @@ Después de que termine:
 2. Crear una nueva en Supabase Dashboard
 3. Actualizar en Lovable Cloud
 
-**¿Listo? Pega el SERVICE_ROLE_KEY cuando lo tengas.**
+**Nota:** Nunca compartas credenciales en código. Siempre usa variables de entorno.
