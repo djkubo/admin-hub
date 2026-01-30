@@ -318,9 +318,8 @@ export function SyncResultsPanel() {
     return diffMinutes > 10; // More than 10 minutes = potential zombie
   });
 
-  if (!hasAnySyncs) {
-    return null;
-  }
+  // ALWAYS show the panel so user knows the system is monitoring
+  // Only hide the detailed content when there's nothing to show
 
   return (
     <div className="bg-card rounded-xl border border-border/50 overflow-hidden">
@@ -361,6 +360,27 @@ export function SyncResultsPanel() {
 
       {isExpanded && (
         <div className="border-t border-border/50">
+          {/* IDLE STATE - No syncs running */}
+          {!hasAnySyncs && (
+            <div className="p-6 text-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="p-3 rounded-full bg-zinc-800/50">
+                  <CheckCircle className="h-6 w-6 text-emerald-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Sistema en reposo</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    No hay sincronizaciones activas. Inicia una desde las tarjetas de arriba.
+                  </p>
+                </div>
+                <Badge variant="outline" className="bg-zinc-800/50 text-muted-foreground border-zinc-700 text-xs mt-2">
+                  <Clock className="h-3 w-3 mr-1" />
+                  Monitoreando cada 5s
+                </Badge>
+              </div>
+            </div>
+          )}
+
           {/* Active syncs */}
           {activeSyncs.length > 0 && (
             <div className="p-4 space-y-3 bg-blue-500/5">
@@ -455,89 +475,65 @@ export function SyncResultsPanel() {
                     return 'Iniciando conexión...';
                   }
                   
-                  // Build detailed message
-                  const parts: string[] = [];
+                  const parts = [];
                   
+                  // Show chunk/batch progress
                   if (totalChunks && chunkIndex !== undefined) {
                     parts.push(`Lote ${chunkIndex + 1}/${totalChunks}`);
                   } else if (page) {
                     parts.push(`Página ${page}`);
                   }
                   
-                  if (fetched > 0) {
-                    parts.push(`${fetched.toLocaleString()} procesados`);
-                  }
-                  
-                  if (inserted > 0 && inserted !== fetched) {
-                    parts.push(`${inserted.toLocaleString()} insertados`);
-                  }
+                  // Show counts
+                  if (fetched > 0) parts.push(`${fetched.toLocaleString()} procesados`);
+                  if (inserted > 0) parts.push(`${inserted.toLocaleString()} insertados`);
                   
                   return parts.length > 0 ? parts.join(' • ') : 'Procesando...';
                 };
                 
-                // Check if stale (no activity in 2 minutes)
-                const isStale = lastActivity && (Date.now() - new Date(lastActivity).getTime() > 120000);
+                // Check for stale sync (no activity in 2+ minutes)
+                const isStale = lastActivity 
+                  ? (Date.now() - new Date(lastActivity).getTime()) > 2 * 60 * 1000 
+                  : false;
                 
                 return (
-                  <div key={sync.id} className="space-y-2 p-3 bg-zinc-900/50 rounded-lg border border-zinc-800">
+                  <div key={sync.id} className="bg-zinc-900/50 rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="relative">
-                          <Icon className={`h-4 w-4 ${config.color}`} />
-                          <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                        </div>
-                        <span className="text-sm font-medium text-white">{config.label}</span>
-                        {sync.status === 'continuing' && (
-                          <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
-                            Auto-encadenando
+                        {/* Pulsing indicator */}
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                        </span>
+                        <Icon className={`h-4 w-4 ${config.color}`} />
+                        <span className="text-sm font-medium">{config.label}</span>
+                        {isStale && (
+                          <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/30 text-[10px]">
+                            Sin actividad
                           </Badge>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        <span>{elapsed}</span>
-                      </div>
-                    </div>
-                    
-                    {/* Dynamic status message */}
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                      <span className={`text-sm ${isStale ? 'text-amber-400' : 'text-white'}`}>
-                        {getStatusMessage()}
-                      </span>
-                      {isStale && (
-                        <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
-                          Sin actividad
-                        </Badge>
-                      )}
+                      <span className="text-xs text-muted-foreground">{elapsed}</span>
                     </div>
                     
                     {/* Progress bar with pulse animation */}
                     <div className="relative">
-                      <Progress value={progress} className="h-2" />
-                      {progress < 100 && (
-                        <div 
-                          className="absolute top-0 left-0 h-2 bg-primary/30 rounded-full animate-pulse"
-                          style={{ width: `${Math.min(progress + 10, 100)}%` }}
-                        />
-                      )}
+                      <Progress value={progress} className="h-2 bg-zinc-800" />
+                      <div 
+                        className="absolute top-0 left-0 h-2 bg-blue-400/30 rounded-full animate-pulse"
+                        style={{ width: `${Math.min(progress + 5, 100)}%` }}
+                      />
                     </div>
                     
-                    {/* Detailed stats row */}
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>
-                        {sync.total_fetched?.toLocaleString() || 0} registros
-                        {sync.total_inserted ? ` (${sync.total_inserted.toLocaleString()} nuevos)` : ''}
-                      </span>
-                      <span className="text-zinc-500">
-                        {progress}% completado
-                      </span>
-                    </div>
+                    {/* Dynamic status message */}
+                    <p className="text-xs text-muted-foreground">
+                      {getStatusMessage()}
+                    </p>
                     
-                    {/* Error inline if exists */}
+                    {/* Inline error display */}
                     {sync.error_message && (
-                      <div className="mt-2 p-2 bg-red-500/10 rounded border border-red-500/30 text-xs text-red-400">
-                        ⚠️ {sync.error_message}
+                      <div className="mt-2 p-2 bg-red-500/10 rounded border border-red-500/20">
+                        <p className="text-xs text-red-400">{sync.error_message}</p>
                       </div>
                     )}
                   </div>
@@ -546,55 +542,14 @@ export function SyncResultsPanel() {
             </div>
           )}
 
-          {/* ALWAYS show kill switch if no active syncs but there might be zombies in DB */}
-          {activeSyncs.length === 0 && (
-            <div className="p-4 border-b border-border/30">
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={isForceKilling}
-                    className="w-full text-xs text-muted-foreground hover:text-amber-400 hover:border-amber-500/30"
-                  >
-                    {isForceKilling ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <Skull className="h-3 w-3 mr-1" />
-                    )}
-                    ¿Syncs bloqueados? Forzar desbloqueo
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent className="bg-card border-border">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle className="flex items-center gap-2 text-amber-400">
-                      <Skull className="h-5 w-5" />
-                      ¿Forzar desbloqueo de syncs zombies?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription className="text-muted-foreground">
-                      Si los syncs parecen colgados o no puedes iniciar uno nuevo, usa esto para limpiar todos los procesos que quedaron en estado "running".
-                      <br /><br />
-                      <span className="text-amber-400">Esto no afecta los datos ya sincronizados.</span>
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
-                    <AlertDialogAction 
-                      onClick={handleForceKillAllZombies}
-                      className="bg-amber-600 hover:bg-amber-700 text-white"
-                    >
-                      <Skull className="h-4 w-4 mr-2" />
-                      Sí, desbloquear
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </div>
-          )}
-
-          {/* Recent completed/failed */}
+          {/* Recent completed syncs */}
           {recentRuns.length > 0 && (
             <div className="divide-y divide-border/30">
+              <div className="px-4 py-2 bg-muted/20">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Completados (última hora)
+                </p>
+              </div>
               {recentRuns.map((sync) => {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
