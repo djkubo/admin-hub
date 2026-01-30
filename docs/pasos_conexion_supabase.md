@@ -1,6 +1,6 @@
-# 🔌 Pasos para Conectarme a tu Supabase
+# 🔌 Pasos para Conectar a tu Backend
 
-## Opción 1: Compartir Credenciales Directamente (Rápido)
+## Opción 1: Variables de Entorno (Recomendado)
 
 ### Paso 1: Obtén las Credenciales
 
@@ -15,35 +15,41 @@ Ve a **Lovable Cloud → Settings → Environment Variables** y copia:
 3. **SUPABASE_PUBLISHABLE_KEY** (opcional, para verificar)
    - Formato: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` (JWT largo)
 
-### Paso 2: Compártelas Aquí
+### Paso 2: Configura las Variables
 
-Puedes compartirlas en este formato:
-
+**Opción A - Variables de entorno temporales:**
+```bash
+export VITE_SUPABASE_URL="https://tu-proyecto.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+export VITE_SUPABASE_PUBLISHABLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
-SUPABASE_URL: https://qskmzaxzhkrlchycbria.supabase.co
-SUPABASE_SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-SUPABASE_PUBLISHABLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+**Opción B - Archivo .env.local:**
+```env
+VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+VITE_SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-**⚠️ Nota de Seguridad:** Después de que termine, puedes revocar la Service Role Key y crear una nueva en Supabase Dashboard.
+⚠️ **Nota de Seguridad:** Nunca compartas las credenciales en código fuente. Usa siempre variables de entorno.
 
 ---
 
-## Opción 2: Usar Archivo Local (Más Seguro)
+## Opción 2: Usar Archivo Local
 
 ### Paso 1: Crea Archivo Temporal
 
 ```bash
-cd /Users/gustavogarcia/Documents/CURSOR/CRM/admin-hub
+cd tu-proyecto
 nano .env.local
 ```
 
 ### Paso 2: Agrega las Credenciales
 
 ```env
-SUPABASE_URL=https://tu-proyecto.supabase.co
+VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+VITE_SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ### Paso 3: Ejecuta Script de Prueba
@@ -52,26 +58,26 @@ SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 node scripts/test-supabase-connection.js
 ```
 
-Esto verificará la conexión sin compartir las keys aquí.
+Esto verificará la conexión sin exponer las keys.
 
 ---
 
 ## Opción 3: Ya Tienes las Credenciales en .env
 
-Si ya tienes un `.env` con las credenciales, puedo leerlas directamente:
+Si ya tienes un `.env` con las credenciales:
 
 ```bash
 # Verifica que existan
 cat .env | grep SUPABASE
 ```
 
-Si están ahí, puedo usarlas directamente.
+Si están ahí, los scripts las usarán automáticamente.
 
 ---
 
-## 🎯 Qué Haré con las Credenciales
+## 🎯 Qué Puedes Hacer con las Credenciales
 
-Una vez conectado, puedo:
+Una vez conectado:
 
 1. ✅ **Verificar conexión** - Confirmar que funciona
 2. ✅ **Analizar datos** - Contar registros, ver estructura
@@ -83,9 +89,9 @@ Una vez conectado, puedo:
 
 ## ⚡ Método Más Rápido
 
-**Solo comparte las 3 credenciales aquí** y yo:
-1. Verifico la conexión
-2. Analizo tu base de datos actual
-3. Preparo el plan de migración (si quieres moverte a Supabase Cloud)
+1. Ve a Lovable Cloud → Settings → Environment Variables
+2. Copia las 3 credenciales
+3. Configúralas como variables de entorno
+4. Ejecuta tus scripts
 
-**¿Listo? Pega las credenciales cuando quieras.**
+**Las credenciales se obtienen dinámicamente de tus variables de entorno.**
