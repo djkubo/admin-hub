@@ -1,100 +1,66 @@
 
 
-# Plan de Emergencia: Optimización de Base de Datos para Eliminar Timeouts
+# Plan: Conectar Dashboard a los RPCs Optimizados
 
-## Problema Identificado
+## Estado Actual
 
-La base de datos está sufriendo **cascadas de statement timeouts** porque:
+✅ **Los RPCs ya existen y funcionan en la base de datos**:
+- `kpi_mrr_summary()` → Devuelve MRR: $69,009.50 | 1,332 activas | $16,223 en riesgo | 208 en riesgo
+- `kpi_invoices_at_risk()` → Disponible (tuvo timeout en el test pero existe)
 
-1. **221k clientes** - Las queries con `{ count: "exact" }` fuerzan full table scans
-2. **No hay índice en `subscriptions.amount`** - La query `ORDER BY amount DESC` es lenta
-3. **No hay índice en `invoices.client_id`** - Los JOINs son lentos
-4. **Los hooks del Dashboard cargan TODO** - Sin paginación server-side
+❌ **El código actual NO los usa**:
+- `useDailyKPIs.ts` → Sigue haciendo queries con `.limit(2000)` que devuelven datos incompletos
+- `useSubscriptions.ts` → Limitado a 100 registros, mostrando métricas incorrectas
 
 ---
 
-## Acciones Inmediatas
+## Cambios a Realizar
 
-### 1. Crear Índices Faltantes (Migración SQL)
+### 1. Actualizar `useDailyKPIs.ts`
 
-```sql
--- Índice para ORDER BY amount DESC en subscriptions
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscriptions_amount_desc 
-ON subscriptions (amount DESC);
+Reemplazar las queries directas a `subscriptions` e `invoices` por llamadas a los RPCs:
 
--- Índice para JOINs de invoices con clients
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_invoices_client_id 
-ON invoices (client_id);
+```text
+ANTES (líneas 120-129):
+├── supabase.from('subscriptions').select(...).limit(2000) ❌
+└── supabase.from('invoices').select(...).limit(1000) ❌
 
--- Índice compuesto para invoices por status y fecha
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_invoices_status_created 
-ON invoices (status, stripe_created_at DESC);
-
--- Índice para transactions por status (para kpi_failed_payments)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_status_created 
-ON transactions (status, stripe_created_at DESC);
-
--- Índice parcial para transactions fallidas (optimiza kpi_failed_payments)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_failed 
-ON transactions (stripe_created_at DESC, amount, currency, customer_email)
-WHERE status = 'failed' OR failure_code IS NOT NULL;
+DESPUÉS:
+├── supabase.rpc('kpi_mrr_summary') ✅
+└── (El RPC ya incluye todo: MRR, at_risk_amount, counts)
 ```
 
-### 2. Optimizar Hooks que Causan Timeouts
+**Resultado**: MRR y Revenue at Risk mostrarán valores REALES de toda la base de datos.
 
-**Archivo: `src/hooks/useSubscriptions.ts`**
+---
 
-El hook actual descarga las 5000 suscripciones con `ORDER BY amount DESC`. Solo necesitamos:
-- Agregar `{ count: "exact", head: true }` para el conteo sin descargar datos
-- Reducir el `.limit(5000)` a `.limit(100)` con paginación
+### 2. Actualizar `useSubscriptions.ts`
 
-**Archivo: `src/hooks/useDailyKPIs.ts`**
+Agregar una query separada para obtener las métricas agregadas del RPC, manteniendo la query de listado para la tabla:
 
-Líneas 122-129 descargan **TODOS** los registros de `subscriptions` y `invoices`:
+```text
+ANTES:
+├── Query con .limit(100) para listado ✅ (OK para la tabla)
+├── totalActiveRevenue = sum(subscriptions.filter(active)) ❌ (solo 100 registros)
+└── revenueAtRisk = sum(subscriptions.filter(at_risk)) ❌ (solo 100 registros)
 
-```typescript
-// PROBLEMA: Descarga TODAS las suscripciones activas
-supabase.from('subscriptions')
-  .select('amount')
-  .eq('status', 'active'),  // Sin limit = 221k rows potenciales
-
-// PROBLEMA: Descarga TODAS las invoices abiertas
-supabase.from('invoices')
-  .select('amount_due')
-  .in('status', ['open', 'past_due']),  // Sin limit
+DESPUÉS:
+├── Query con .limit(100) para listado ✅ (mantener)
+├── supabase.rpc('kpi_mrr_summary') para métricas ✅
+└── totalActiveRevenue/revenueAtRisk del RPC ✅ (datos completos)
 ```
 
-**Solución**: Usar agregación server-side con RPCs en lugar de descargar todo al cliente.
+---
 
-### 3. Crear RPC Optimizado para MRR y Revenue at Risk
+## Impacto Esperado
 
-```sql
-CREATE OR REPLACE FUNCTION kpi_mrr_summary()
-RETURNS TABLE(mrr bigint, active_count bigint, at_risk_amount bigint, at_risk_count bigint)
-LANGUAGE sql STABLE SECURITY DEFINER
-SET statement_timeout TO '10s'
-AS $$
-  SELECT 
-    COALESCE(SUM(amount) FILTER (WHERE status = 'active'), 0)::bigint AS mrr,
-    COUNT(*) FILTER (WHERE status = 'active')::bigint AS active_count,
-    COALESCE(SUM(amount) FILTER (WHERE status IN ('past_due', 'unpaid')), 0)::bigint AS at_risk_amount,
-    COUNT(*) FILTER (WHERE status IN ('past_due', 'unpaid'))::bigint AS at_risk_count
-  FROM subscriptions;
-$$;
-```
-
-### 4. Actualizar useDailyKPIs para Usar RPCs
-
-Reemplazar las queries directas por el nuevo RPC:
-
-```typescript
-// ANTES (líneas 122-129)
-supabase.from('subscriptions').select('amount').eq('status', 'active'),
-supabase.from('invoices').select('amount_due').in('status', ['open', 'past_due']),
-
-// DESPUÉS
-supabase.rpc('kpi_mrr_summary'),
-```
+| Métrica | Antes (límites) | Después (RPCs) |
+|---------|-----------------|----------------|
+| MRR | ~$3,000 (parcial) | $69,009.50 (real) |
+| Suscripciones activas | ~100 | 1,332 |
+| Revenue at Risk | ~$500 (parcial) | $16,223 (real) |
+| Subs en riesgo | ~10 | 208 |
+| Tiempo de carga | 2-8s (timeouts) | <500ms |
 
 ---
 
@@ -102,38 +68,56 @@ supabase.rpc('kpi_mrr_summary'),
 
 | Archivo | Cambio |
 |---------|--------|
-| Migración SQL | Crear 5 índices nuevos |
-| `src/hooks/useDailyKPIs.ts` | Usar RPC en lugar de queries directas |
-| `src/hooks/useSubscriptions.ts` | Reducir límite a 100 + paginación |
-| Nueva función SQL | `kpi_mrr_summary()` para agregación |
+| `src/hooks/useDailyKPIs.ts` | Reemplazar queries 7 y 8 por llamada a `kpi_mrr_summary` RPC |
+| `src/hooks/useSubscriptions.ts` | Agregar query al RPC para métricas agregadas |
 
 ---
 
-## Impacto Esperado
+## Sección Técnica
 
-| Métrica | Antes | Después |
-|---------|-------|---------|
-| Query `subscriptions ORDER BY amount` | 8-15s (timeout) | <100ms |
-| Query `invoices JOIN clients` | 5-10s (timeout) | <200ms |
-| `kpi_failed_payments` | 10-30s (timeout) | <500ms |
-| Dashboard load time | Infinito (crash) | <2 segundos |
+### Cambio en useDailyKPIs.ts
 
----
+```typescript
+// Eliminar promises[7] y promises[8] (queries directas)
+// Agregar:
+supabase.rpc('kpi_mrr_summary')
 
-## Sobre el Bot de Render
+// Extraer resultados:
+if (promises[7].status === 'fulfilled' && promises[7].value?.data) {
+  const mrrSummary = promises[7].value.data[0];
+  mrr = (mrrSummary?.mrr || 0) / 100;
+  mrrActiveCount = mrrSummary?.active_count || 0;
+  revenueAtRisk = (mrrSummary?.at_risk_amount || 0) / 100;
+  revenueAtRiskCount = mrrSummary?.at_risk_count || 0;
+}
+```
 
-El error CORS del bot en `vrp-bot-1.onrender.com` es un servicio externo que no puedo modificar desde aquí. Opciones:
+### Cambio en useSubscriptions.ts
 
-1. **Keep-alive automático**: Configurar un cron job que haga ping al bot cada 5 minutos
-2. **Upgrade del plan**: El free tier de Render duerme después de 15 minutos de inactividad
-3. **Mover a Edge Function**: Si el bot solo hace llamadas a APIs, podría migrarse a una Edge Function que no duerme
+```typescript
+// Agregar query al RPC (separada de la query de listado)
+const { data: mrrSummary } = useQuery({
+  queryKey: ["mrr-summary"],
+  queryFn: async () => {
+    const { data, error } = await supabase.rpc('kpi_mrr_summary');
+    if (error) throw error;
+    return data?.[0];
+  },
+  staleTime: 60000,
+});
+
+// Usar valores del RPC en lugar de calcular desde los 100 registros
+const totalActiveRevenue = (mrrSummary?.mrr || 0) / 100;
+const totalActiveCount = mrrSummary?.active_count || 0;
+const revenueAtRisk = (mrrSummary?.at_risk_amount || 0) / 100;
+const atRiskCount = mrrSummary?.at_risk_count || 0;
+```
 
 ---
 
 ## Orden de Ejecución
 
-1. **PRIMERO**: Aplicar migración SQL con índices (efecto inmediato)
-2. **SEGUNDO**: Crear RPC `kpi_mrr_summary`
-3. **TERCERO**: Actualizar `useDailyKPIs.ts` para usar el RPC
-4. **CUARTO**: Optimizar `useSubscriptions.ts` con paginación
+1. Modificar `useDailyKPIs.ts` para usar el RPC
+2. Modificar `useSubscriptions.ts` para usar el RPC
+3. El Dashboard mostrará métricas 100% precisas inmediatamente
 
