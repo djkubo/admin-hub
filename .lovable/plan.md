@@ -1,85 +1,152 @@
 
-# Plan: Conversión a Navegación con Rutas Reales
+# Plan: Arreglar Todos los Problemas de Seguridad
 
-## Resumen
+## Resumen de Problemas Detectados
 
-Convertir la navegación actual basada en estado (`activeMenuItem`) a rutas reales de React Router. Cada sección del dashboard tendrá su propia URL, mejorando el rendimiento y la experiencia de usuario.
+| Problema | Severidad | Causa |
+|----------|-----------|-------|
+| Email admin hardcodeado | ALTO | `ADMIN_EMAIL = "djkubo@live.com.mx"` en Login.tsx |
+| Políticas RLS "Always True" | ALTO | 2 tablas con acceso público |
+| Functions sin search_path | MEDIO | 8 funciones vulnerables a inyección de esquema |
+| Vistas materializadas expuestas | BAJO | 2 vistas accesibles via API |
+| Extension en public | BAJO | `vector` instalada en public schema |
+| Leaked Password Protection | BAJO | Deshabilitado en config de auth |
 
-## Beneficios
+---
 
-| Actual (Estado) | Nuevo (Rutas) |
-|-----------------|---------------|
-| Todo el código carga en `/` | Solo carga el código de la página activa |
-| No hay historial de navegación | Botones "Atrás/Adelante" funcionan |
-| No se puede compartir enlaces a secciones | URLs directas: `/clients`, `/invoices` |
-| Todos los hooks se ejecutan siempre | Hooks aislados por ruta |
+## Fase 1: Eliminar Email Hardcodeado (CRÍTICO)
 
-## Estructura de Rutas Nueva
+### Cambio en `src/pages/Login.tsx`
 
-```text
-/                  → Dashboard (Command Center)
-/movements         → Libro Mayor de Movimientos
-/analytics         → Analytics Panel
-/messages          → Hub de Mensajes
-/campaigns         → Centro de Campañas
-/broadcast         → Listas de Difusión
-/flows             → Automatizaciones
-/whatsapp          → WhatsApp Directo
-/clients           → Clientes
-/invoices          → Facturas
-/subscriptions     → Suscripciones
-/recovery          → Recovery Pipeline
-/import            → Importar / Sync
-/diagnostics       → Diagnostics
-/settings          → Ajustes
+Eliminar la validación client-side del email admin. La seguridad real ya está implementada server-side en la tabla `app_admins` y la función `is_admin()`.
+
+**Antes:**
+```typescript
+const ADMIN_EMAIL = "djkubo@live.com.mx";
+
+// Check if email is admin
+if (email.toLowerCase().trim() !== ADMIN_EMAIL.toLowerCase()) {
+  toast({ title: "Acceso denegado", ... });
+  return;
+}
 ```
 
-## Implementación
+**Después:**
+- Eliminar la constante `ADMIN_EMAIL`
+- Eliminar el bloque de validación client-side
+- Dejar que Supabase Auth maneje la autenticación
+- Las RLS policies con `is_admin()` protegen los datos server-side
 
-### Fase 1: Crear Layout Compartido
+Esto es correcto porque:
+1. La autenticación real es via Supabase Auth (email + password)
+2. El acceso a datos está protegido por RLS + `is_admin()`
+3. El check client-side solo expone el email admin y da falsa seguridad
 
-Crear un componente `DashboardLayout.tsx` que envuelva todas las páginas del dashboard:
+---
 
-```text
-┌────────────────────────────────────────────────────────────┐
-│                    DashboardLayout                         │
-│  ┌──────────┬───────────────────────────────────────────┐  │
-│  │          │                                           │  │
-│  │ Sidebar  │              <Outlet />                   │  │
-│  │  (fijo)  │         (contenido dinámico)              │  │
-│  │          │                                           │  │
-│  └──────────┴───────────────────────────────────────────┘  │
-│  └── SyncStatusBanner ──────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────┘
+## Fase 2: Arreglar Políticas RLS Permisivas
+
+### Tabla: `payment_update_links`
+
+La política actual permite a cualquiera ver todos los tokens de pago:
+```sql
+-- PROBLEMA: "Public can validate own token" con qual=true
 ```
 
-### Fase 2: Modificar Sidebar para usar Links
+**Solución:** Cambiar para que solo permita validar un token específico pasado como parámetro, no listar todos:
 
-Cambiar los `<button>` por `<NavLink>` de React Router:
+```sql
+DROP POLICY IF EXISTS "Public can validate own token" ON public.payment_update_links;
 
-- Usar `NavLink` con prop `className` que detecta ruta activa
-- Remover props `activeItem` y `onItemClick`
-- El estilo activo se aplica automáticamente
+-- Nueva política: Solo permite SELECT cuando se proporciona un token específico
+CREATE POLICY "Validate specific token only" ON public.payment_update_links
+  FOR SELECT TO anon
+  USING (
+    -- Solo permite leer si el request viene con el token correcto
+    -- Esto se valida en el edge function, no expone lista completa
+    false
+  );
 
-### Fase 3: Actualizar App.tsx con Rutas Anidadas
+-- Admin puede ver todo
+CREATE POLICY "Admin full access payment_update_links" ON public.payment_update_links
+  FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
-Usar rutas anidadas bajo el layout protegido:
-
-```text
-<Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-  <Route path="/" element={<DashboardHome />} />
-  <Route path="/clients" element={<ClientsPage />} />
-  <Route path="/invoices" element={<InvoicesPage />} />
-  ... (14 rutas más)
-</Route>
+-- Service role para edge functions
+CREATE POLICY "Service role payment_update_links" ON public.payment_update_links
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
 ```
 
-### Fase 4: Actualizar DashboardHome
+### Tabla: `scheduled_messages`
 
-Cambiar `onNavigate` por `useNavigate`:
+```sql
+DROP POLICY IF EXISTS "Anyone can view scheduled messages" ON public.scheduled_messages;
 
-- Reemplazar `onNavigate?.('clients')` por `navigate('/clients')`
-- Los cards de KPIs navegarán a sus rutas correspondientes
+CREATE POLICY "Admin can manage scheduled_messages" ON public.scheduled_messages
+  FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+CREATE POLICY "Service role scheduled_messages" ON public.scheduled_messages
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+```
+
+---
+
+## Fase 3: Arreglar Funciones sin search_path
+
+Las siguientes funciones necesitan `SET search_path = public`:
+
+1. `cleanup_old_financial_data`
+2. `get_staging_counts_accurate` 
+3. `kpi_invoices_at_risk`
+4. `kpi_invoices_summary`
+5. `kpi_mrr_summary`
+6. `refresh_lifecycle_counts`
+7. `update_recovery_queue_updated_at`
+8. `update_updated_at_column`
+
+Para cada función, se ejecutará:
+```sql
+ALTER FUNCTION public.function_name() SET search_path = public;
+```
+
+Esto previene ataques de inyección de esquema donde un atacante podría crear funciones maliciosas con el mismo nombre en un esquema diferente.
+
+---
+
+## Fase 4: Proteger Vistas Materializadas
+
+Las vistas `mv_client_lifecycle_counts` y `mv_sales_summary` están expuestas via API.
+
+**Solución:** Revocar acceso anónimo:
+
+```sql
+REVOKE ALL ON public.mv_client_lifecycle_counts FROM anon;
+REVOKE ALL ON public.mv_sales_summary FROM anon;
+GRANT SELECT ON public.mv_client_lifecycle_counts TO authenticated;
+GRANT SELECT ON public.mv_sales_summary TO authenticated;
+```
+
+---
+
+## Fase 5: Mover Extension a Schema Dedicado
+
+La extensión `vector` está en `public`. Moverla a un schema dedicado:
+
+```sql
+-- Crear schema para extensiones
+CREATE SCHEMA IF NOT EXISTS extensions;
+
+-- Nota: Mover la extensión vector requiere recrearla
+-- lo cual puede ser disruptivo. Una alternativa es ignorar
+-- este warning ya que el riesgo es menor.
+```
+
+**Decisión:** Ignorar este warning. Mover `vector` requeriría recrear todos los índices vectoriales y es un cambio de alto riesgo para un beneficio menor. El warning es informativo.
+
+---
+
+## Fase 6: Habilitar Leaked Password Protection
+
+Usar la herramienta de configuración de auth para habilitar la protección contra contraseñas filtradas.
 
 ---
 
@@ -87,109 +154,32 @@ Cambiar `onNavigate` por `useNavigate`:
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/App.tsx` | Agregar 14 rutas nuevas bajo layout protegido |
-| `src/pages/Index.tsx` | Convertir a `DashboardLayout.tsx` con `<Outlet />` |
-| `src/components/dashboard/Sidebar.tsx` | Cambiar buttons → NavLinks |
-| `src/components/dashboard/DashboardHome.tsx` | Cambiar `onNavigate` → `useNavigate` |
-
-## Archivos Nuevos
-
-| Archivo | Propósito |
-|---------|-----------|
-| `src/layouts/DashboardLayout.tsx` | Layout compartido con Sidebar + Outlet |
-
----
-
-## Detalles Técnicos
-
-### DashboardLayout.tsx (nuevo)
-
-```typescript
-// Estructura del layout compartido
-import { Outlet } from "react-router-dom";
-import { Sidebar } from "@/components/dashboard/Sidebar";
-import { SyncStatusBanner } from "@/components/dashboard/SyncStatusBanner";
-
-export function DashboardLayout() {
-  return (
-    <div className="min-h-screen bg-background">
-      <Sidebar />
-      <main className="md:pl-64 pt-14 md:pt-0">
-        <div className="p-4 md:p-8 safe-area-bottom">
-          <Outlet />
-        </div>
-      </main>
-      <SyncStatusBanner />
-    </div>
-  );
-}
-```
-
-### Sidebar.tsx - Cambios clave
-
-```typescript
-// Antes: buttons con onClick
-<button onClick={() => onItemClick?.(item.id)}>
-
-// Después: NavLinks con rutas
-import { NavLink } from "react-router-dom";
-
-// Mapeo de IDs a rutas
-const routeMap = {
-  dashboard: "/",
-  clients: "/clients",
-  invoices: "/invoices",
-  // ... etc
-};
-
-<NavLink 
-  to={routeMap[item.id]}
-  className={({ isActive }) => cn(
-    "flex w-full items-center gap-3 ...",
-    isActive ? "bg-accent active-indicator" : "..."
-  )}
->
-```
-
-### App.tsx - Rutas anidadas
-
-```typescript
-<Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-  <Route index element={<DashboardHome />} />
-  <Route path="movements" element={<MovementsPage />} />
-  <Route path="analytics" element={<AnalyticsPanel />} />
-  <Route path="messages" element={<MessagesPageWrapper />} />
-  <Route path="campaigns" element={<CampaignControlCenter />} />
-  <Route path="broadcast" element={<BroadcastListsPage />} />
-  <Route path="flows" element={<FlowsPage />} />
-  <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
-  <Route path="clients" element={<ClientsPage />} />
-  <Route path="invoices" element={<InvoicesPage />} />
-  <Route path="subscriptions" element={<SubscriptionsPage />} />
-  <Route path="recovery" element={<RevenueOpsPipeline />} />
-  <Route path="import" element={<ImportSyncPage />} />
-  <Route path="diagnostics" element={<DiagnosticsPanel />} />
-  <Route path="settings" element={<SettingsPage />} />
-</Route>
-```
-
----
-
-## Resultado Esperado
-
-1. **Code Splitting automático** - Cada página carga solo cuando se visita
-2. **Navegación nativa** - Botones Atrás/Adelante del navegador funcionan
-3. **URLs compartibles** - `tusitio.com/clients` lleva directo a Clientes
-4. **Mejor rendimiento** - Hooks no se ejecutan en páginas que no estás viendo
-5. **SEO básico** - Cada sección tiene su propia URL
+| `src/pages/Login.tsx` | Eliminar ADMIN_EMAIL y validación client-side |
+| Nueva migración SQL | Arreglar RLS, functions, y vistas |
 
 ---
 
 ## Orden de Implementación
 
-1. Crear `src/layouts/DashboardLayout.tsx`
-2. Modificar `src/App.tsx` con rutas anidadas
-3. Actualizar `src/components/dashboard/Sidebar.tsx` con NavLinks
-4. Actualizar `src/components/dashboard/DashboardHome.tsx` con `useNavigate`
-5. Eliminar código obsoleto de `src/pages/Index.tsx`
-6. Probar todas las rutas y navegación
+1. Crear migración SQL para:
+   - Arreglar políticas de `payment_update_links`
+   - Arreglar políticas de `scheduled_messages`
+   - Agregar search_path a 8 funciones
+   - Revocar acceso a vistas materializadas
+
+2. Modificar `Login.tsx` eliminando email hardcodeado
+
+3. Habilitar Leaked Password Protection via auth config
+
+4. Marcar hallazgos de seguridad como resueltos
+
+---
+
+## Verificación Post-Implementación
+
+Después de aplicar los cambios:
+- El escaneo de seguridad debe mostrar 0 errores críticos
+- Los warnings restantes serán:
+  - Extension in Public (ignorado intencionalmente)
+  - Service role policies (aceptables para edge functions)
+
