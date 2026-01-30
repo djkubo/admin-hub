@@ -229,21 +229,25 @@ export function useMetrics() {
       try {
         const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
         
+        // DEBUG: Ver exactamente qué devuelve el RPC
+        console.log('dashboard_metrics RPC response:', { dashboardData, dashboardError });
+        
         if (!dashboardError && dashboardData && Array.isArray(dashboardData) && dashboardData.length > 0) {
+          // CORRECCIÓN: El RPC devuelve nombres en singular (lead_count, no leads_count)
           const dbMetrics = dashboardData[0] as {
-            leads_count?: number;
-            trials_count?: number;
-            customers_count?: number;
+            lead_count?: number;      // ✅ Singular
+            trial_count?: number;     // ✅ Singular
+            customer_count?: number;  // ✅ Singular
             churn_count?: number;
             converted_count?: number;
           };
-          finalLeadCount = dbMetrics.leads_count || 0;
-          finalTrialCount = dbMetrics.trials_count || 0;
-          finalCustomerCount = dbMetrics.customers_count || 0;
+          finalLeadCount = dbMetrics.lead_count || 0;
+          finalTrialCount = dbMetrics.trial_count || 0;
+          finalCustomerCount = dbMetrics.customer_count || 0;
           finalChurnCount = dbMetrics.churn_count || 0;
           finalConvertedCount = dbMetrics.converted_count || 0;
         } else {
-          console.warn('dashboard_metrics RPC not available or returned no data');
+          console.warn('dashboard_metrics RPC not available or returned no data:', { dashboardData, dashboardError });
         }
       } catch (rpcError) {
         console.error('Error calling dashboard_metrics RPC:', rpcError);
