@@ -6,8 +6,6 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const ADMIN_KEY = 'vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk'
-
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -19,6 +17,15 @@ Deno.serve(async (req) => {
 
   try {
     // ========== SECURITY CHECK ==========
+    const ADMIN_KEY = Deno.env.get('VRP_ADMIN_KEY')
+    if (!ADMIN_KEY) {
+      console.error(`[${requestId}] VRP_ADMIN_KEY not configured`)
+      return new Response(
+        JSON.stringify({ ok: false, error: 'Server configuration error' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+    
     const providedKey = req.headers.get('x-admin-key')
     if (providedKey !== ADMIN_KEY) {
       console.warn(`[${requestId}] Unauthorized - Invalid key`)
@@ -66,13 +73,22 @@ Deno.serve(async (req) => {
         break
 
       case 'insert':
-        console.log(`[${requestId}] Inserting into table: ${params.table}`)
+        // Whitelist allowed tables for security
+        const allowedTables = ['chat_events', 'lead_events']
         if (!params.table || !params.data) {
           return new Response(
             JSON.stringify({ ok: false, error: 'Insert requires "table" and "data" fields' }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           )
         }
+        if (!allowedTables.includes(params.table)) {
+          console.warn(`[${requestId}] Blocked insert attempt to table: ${params.table}`)
+          return new Response(
+            JSON.stringify({ ok: false, error: `Table '${params.table}' not allowed for insertion` }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          )
+        }
+        console.log(`[${requestId}] Inserting into table: ${params.table}`)
         const insertResult = await supabase.from(params.table).insert(params.data).select()
         result = insertResult.data
         error = insertResult.error
