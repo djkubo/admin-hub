@@ -1,66 +1,111 @@
 
+# Plan de Emergencia: Eliminar Queries Pesadas que Causan 503
 
-# Plan: Conectar Dashboard a los RPCs Optimizados
+## Diagnóstico Confirmado
 
-## Estado Actual
+El Dashboard carga **4 hooks** al inicio. Aunque `useDailyKPIs` y `useSubscriptions` ya usan RPCs optimizados, los otros 2 hooks siguen haciendo queries directas que causan los timeouts:
 
-✅ **Los RPCs ya existen y funcionan en la base de datos**:
-- `kpi_mrr_summary()` → Devuelve MRR: $69,009.50 | 1,332 activas | $16,223 en riesgo | 208 en riesgo
-- `kpi_invoices_at_risk()` → Disponible (tuvo timeout en el test pero existe)
-
-❌ **El código actual NO los usa**:
-- `useDailyKPIs.ts` → Sigue haciendo queries con `.limit(2000)` que devuelven datos incompletos
-- `useSubscriptions.ts` → Limitado a 100 registros, mostrando métricas incorrectas
+| Hook | Problema | Impacto |
+|------|----------|---------|
+| `useDailyKPIs` | ✅ Usa `kpi_mrr_summary` RPC | OK |
+| `useSubscriptions` | ✅ Usa `kpi_mrr_summary` RPC | OK |
+| `useMetrics` | ❌ Query a `transactions` (5000 rows) | **503 Timeout** |
+| `useInvoices` | ❌ Query a `invoices` con JOIN a `clients` (1000 rows + 221k clients) | **503 Timeout** |
 
 ---
 
-## Cambios a Realizar
+## Solución Propuesta
 
-### 1. Actualizar `useDailyKPIs.ts`
+### 1. Optimizar `useMetrics.ts`
 
-Reemplazar las queries directas a `subscriptions` e `invoices` por llamadas a los RPCs:
-
-```text
-ANTES (líneas 120-129):
-├── supabase.from('subscriptions').select(...).limit(2000) ❌
-└── supabase.from('invoices').select(...).limit(1000) ❌
-
-DESPUÉS:
-├── supabase.rpc('kpi_mrr_summary') ✅
-└── (El RPC ya incluye todo: MRR, at_risk_amount, counts)
+**Problema actual** (líneas 84-90):
+```typescript
+const { data: monthlyTransactions } = await supabase
+  .from('transactions')
+  .select('amount, currency, status, stripe_created_at')
+  .gte('stripe_created_at', firstDayOfMonth.toISOString())
+  .in('status', ['succeeded', 'paid', 'refunded'])
+  .limit(5000); // ← Sigue descargando 5000 filas
 ```
 
-**Resultado**: MRR y Revenue at Risk mostrarán valores REALES de toda la base de datos.
+**Solución**: Crear un RPC `kpi_sales_summary()` que calcule los totales en el servidor:
 
----
-
-### 2. Actualizar `useSubscriptions.ts`
-
-Agregar una query separada para obtener las métricas agregadas del RPC, manteniendo la query de listado para la tabla:
-
-```text
-ANTES:
-├── Query con .limit(100) para listado ✅ (OK para la tabla)
-├── totalActiveRevenue = sum(subscriptions.filter(active)) ❌ (solo 100 registros)
-└── revenueAtRisk = sum(subscriptions.filter(at_risk)) ❌ (solo 100 registros)
-
-DESPUÉS:
-├── Query con .limit(100) para listado ✅ (mantener)
-├── supabase.rpc('kpi_mrr_summary') para métricas ✅
-└── totalActiveRevenue/revenueAtRisk del RPC ✅ (datos completos)
+```sql
+CREATE OR REPLACE FUNCTION kpi_sales_summary(p_start_date date DEFAULT NULL)
+RETURNS TABLE(
+  sales_usd bigint,
+  sales_mxn bigint,
+  refunds_usd bigint,
+  refunds_mxn bigint,
+  today_usd bigint,
+  today_mxn bigint
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET statement_timeout TO '10s'
+AS $$
+  SELECT 
+    COALESCE(SUM(amount) FILTER (WHERE status IN ('succeeded','paid') AND (currency IS NULL OR lower(currency) = 'usd')), 0)::bigint,
+    COALESCE(SUM(amount) FILTER (WHERE status IN ('succeeded','paid') AND lower(currency) = 'mxn'), 0)::bigint,
+    COALESCE(SUM(amount) FILTER (WHERE status = 'refunded' AND (currency IS NULL OR lower(currency) = 'usd')), 0)::bigint,
+    COALESCE(SUM(amount) FILTER (WHERE status = 'refunded' AND lower(currency) = 'mxn'), 0)::bigint,
+    COALESCE(SUM(amount) FILTER (WHERE status IN ('succeeded','paid') AND stripe_created_at >= CURRENT_DATE AND (currency IS NULL OR lower(currency) = 'usd')), 0)::bigint,
+    COALESCE(SUM(amount) FILTER (WHERE status IN ('succeeded','paid') AND stripe_created_at >= CURRENT_DATE AND lower(currency) = 'mxn'), 0)::bigint
+  FROM transactions
+  WHERE stripe_created_at >= COALESCE(p_start_date, date_trunc('month', CURRENT_DATE));
+$$;
 ```
 
----
+### 2. Optimizar `useInvoices.ts`
 
-## Impacto Esperado
+**Problema actual** (líneas 114-126):
+```typescript
+let query = supabase
+  .from("invoices")
+  .select(`*, client:clients!client_id (...)`)
+  .order("stripe_created_at", { ascending: false })
+  .limit(1000); // ← JOIN con 221k clients causa timeout
+```
 
-| Métrica | Antes (límites) | Después (RPCs) |
-|---------|-----------------|----------------|
-| MRR | ~$3,000 (parcial) | $69,009.50 (real) |
-| Suscripciones activas | ~100 | 1,332 |
-| Revenue at Risk | ~$500 (parcial) | $16,223 (real) |
-| Subs en riesgo | ~10 | 208 |
-| Tiempo de carga | 2-8s (timeouts) | <500ms |
+**Solución A (Inmediata)**: Eliminar el JOIN con clients y reducir el límite inicial:
+```typescript
+.select("*")  // Sin JOIN
+.limit(100)   // Reducir de 1000 a 100
+```
+
+**Solución B (RPC para totales)**: Crear `kpi_invoices_summary()` para los totales del Dashboard:
+```sql
+CREATE OR REPLACE FUNCTION kpi_invoices_summary()
+RETURNS TABLE(
+  pending_total bigint,
+  paid_total bigint,
+  next_72h_total bigint,
+  next_72h_count bigint,
+  uncollectible_total bigint
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET statement_timeout TO '10s'
+AS $$
+  SELECT 
+    COALESCE(SUM(amount_due) FILTER (WHERE status IN ('open', 'draft')), 0)::bigint,
+    COALESCE(SUM(amount_paid) FILTER (WHERE status = 'paid'), 0)::bigint,
+    COALESCE(SUM(amount_due) FILTER (WHERE status IN ('open', 'draft') AND next_payment_attempt <= NOW() + INTERVAL '72 hours'), 0)::bigint,
+    COUNT(*) FILTER (WHERE status IN ('open', 'draft') AND next_payment_attempt <= NOW() + INTERVAL '72 hours')::bigint,
+    COALESCE(SUM(amount_due) FILTER (WHERE status = 'uncollectible'), 0)::bigint
+  FROM invoices;
+$$;
+```
+
+### 3. Modificar DashboardHome para Carga Lazy
+
+En `DashboardHome.tsx`, cambiar la llamada a `useInvoices()` para que NO cargue los datos al inicio:
+
+```typescript
+// ANTES
+const { invoicesNext72h } = useInvoices();
+
+// DESPUÉS - Solo cargar cuando se necesite navegar a Invoices
+const { invoicesNext72h } = useInvoices({ skip: true }); // O eliminar del todo
+```
 
 ---
 
@@ -68,56 +113,38 @@ DESPUÉS:
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/hooks/useDailyKPIs.ts` | Reemplazar queries 7 y 8 por llamada a `kpi_mrr_summary` RPC |
-| `src/hooks/useSubscriptions.ts` | Agregar query al RPC para métricas agregadas |
+| Migración SQL | Crear RPCs `kpi_sales_summary` y `kpi_invoices_summary` |
+| `src/hooks/useMetrics.ts` | Reemplazar query de transactions por RPC |
+| `src/hooks/useInvoices.ts` | Eliminar JOIN, reducir límite, agregar query al RPC para totales |
+| `src/components/dashboard/DashboardHome.tsx` | Remover dependencia directa de `useInvoices` si no es crítica |
 
 ---
 
-## Sección Técnica
+## Impacto Esperado
 
-### Cambio en useDailyKPIs.ts
-
-```typescript
-// Eliminar promises[7] y promises[8] (queries directas)
-// Agregar:
-supabase.rpc('kpi_mrr_summary')
-
-// Extraer resultados:
-if (promises[7].status === 'fulfilled' && promises[7].value?.data) {
-  const mrrSummary = promises[7].value.data[0];
-  mrr = (mrrSummary?.mrr || 0) / 100;
-  mrrActiveCount = mrrSummary?.active_count || 0;
-  revenueAtRisk = (mrrSummary?.at_risk_amount || 0) / 100;
-  revenueAtRiskCount = mrrSummary?.at_risk_count || 0;
-}
-```
-
-### Cambio en useSubscriptions.ts
-
-```typescript
-// Agregar query al RPC (separada de la query de listado)
-const { data: mrrSummary } = useQuery({
-  queryKey: ["mrr-summary"],
-  queryFn: async () => {
-    const { data, error } = await supabase.rpc('kpi_mrr_summary');
-    if (error) throw error;
-    return data?.[0];
-  },
-  staleTime: 60000,
-});
-
-// Usar valores del RPC en lugar de calcular desde los 100 registros
-const totalActiveRevenue = (mrrSummary?.mrr || 0) / 100;
-const totalActiveCount = mrrSummary?.active_count || 0;
-const revenueAtRisk = (mrrSummary?.at_risk_amount || 0) / 100;
-const atRiskCount = mrrSummary?.at_risk_count || 0;
-```
+| Métrica | Antes | Después |
+|---------|-------|---------|
+| Query `transactions` (5000 rows) | 5-15s (timeout) | <200ms (RPC) |
+| Query `invoices` con JOIN | 8-20s (timeout) | <300ms (sin JOIN) |
+| Dashboard load time | Infinito (crash) | <2 segundos |
 
 ---
 
 ## Orden de Ejecución
 
-1. Modificar `useDailyKPIs.ts` para usar el RPC
-2. Modificar `useSubscriptions.ts` para usar el RPC
-3. El Dashboard mostrará métricas 100% precisas inmediatamente
+1. **Migración SQL**: Crear los 2 nuevos RPCs
+2. **useInvoices.ts**: Eliminar JOIN y reducir límite a 100
+3. **useMetrics.ts**: Reemplazar query por llamada al RPC
+4. **DashboardHome.tsx**: Evaluar si `invoicesNext72h` es crítico para la vista inicial (opcional: lazy load)
 
+---
+
+## Nota Importante
+
+Los cambios de código que hice anteriormente **ya están en el código fuente** (puedes verificarlo en las líneas 119-147 de `useDailyKPIs.ts`). Sin embargo, el problema es que:
+
+1. **useMetrics** y **useInvoices** NO fueron optimizados
+2. Estas queries pesadas se ejecutan EN PARALELO con los RPCs optimizados
+3. Cuando las queries pesadas fallan (503), el browser puede reportar errores en todas las llamadas
+
+El código desplegado ES el código actual. Lo que necesitamos es completar la optimización de los hooks restantes.
