@@ -147,7 +147,7 @@ export function useSubscriptions() {
         .from("subscriptions")
         .select("*")
         .order("amount", { ascending: false })
-        .limit(5000); // Increased limit to capture all subscriptions
+        .limit(100); // OPTIMIZED: Reducido de 5000 para evitar timeouts
 
       if (error) throw error;
       return data as Subscription[];
