@@ -1,193 +1,195 @@
 
+# Plan: Conversión a Navegación con Rutas Reales
 
-# Plan de Reparación de RPCs Faltantes
+## Resumen
 
-## Resumen del Problema
+Convertir la navegación actual basada en estado (`activeMenuItem`) a rutas reales de React Router. Cada sección del dashboard tendrá su propia URL, mejorando el rendimiento y la experiencia de usuario.
 
-El dashboard muestra errores 500 porque **3 funciones RPC críticas no existen** en la base de datos, aunque el código frontend las espera. Las migraciones anteriores fallaron o no se aplicaron.
+## Beneficios
 
-## Funciones Faltantes
+| Actual (Estado) | Nuevo (Rutas) |
+|-----------------|---------------|
+| Todo el código carga en `/` | Solo carga el código de la página activa |
+| No hay historial de navegación | Botones "Atrás/Adelante" funcionan |
+| No se puede compartir enlaces a secciones | URLs directas: `/clients`, `/invoices` |
+| Todos los hooks se ejecutan siempre | Hooks aislados por ruta |
 
-| RPC Faltante | Archivo que la usa | Impacto |
-|--------------|-------------------|---------|
-| `kpi_mrr_summary` | `useDailyKPIs.ts`, Dashboard | MRR muestra $0 |
-| `get_staging_counts_fast` | `useClients.ts` | Conteos de clientes fallan |
-| `kpi_invoices_summary` | `useInvoices.ts` | Totales de facturas fallan |
-
-## Solución
-
-### Fase 1: Crear las 3 RPCs Faltantes
+## Estructura de Rutas Nueva
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    NUEVA MIGRACIÓN SQL                          │
-├─────────────────────────────────────────────────────────────────┤
-│  1. kpi_mrr_summary()                                           │
-│     → Calcula MRR total + at_risk desde subscriptions           │
-│     → Respuesta: {mrr, active_count, at_risk_amount, at_risk_count} │
-│                                                                 │
-│  2. get_staging_counts_fast()                                   │
-│     → Usa pg_stat_user_tables para estimados instantáneos       │
-│     → Respuesta: [{table_name, row_estimate}, ...]              │
-│                                                                 │
-│  3. kpi_invoices_summary()                                      │
-│     → Agrega totales de facturas por status                     │
-│     → Respuesta: {pending_total, paid_total, next_72h_total, ...}│
-└─────────────────────────────────────────────────────────────────┘
+/                  → Dashboard (Command Center)
+/movements         → Libro Mayor de Movimientos
+/analytics         → Analytics Panel
+/messages          → Hub de Mensajes
+/campaigns         → Centro de Campañas
+/broadcast         → Listas de Difusión
+/flows             → Automatizaciones
+/whatsapp          → WhatsApp Directo
+/clients           → Clientes
+/invoices          → Facturas
+/subscriptions     → Suscripciones
+/recovery          → Recovery Pipeline
+/import            → Importar / Sync
+/diagnostics       → Diagnostics
+/settings          → Ajustes
 ```
 
-### Fase 2: Actualizar Hooks con Fallbacks Robustos
+## Implementación
 
-Modificar los hooks para que:
-1. Intenten llamar a los RPCs optimizados primero
-2. Si fallan, usen queries simples como fallback (sin escanear toda la tabla)
-3. No bloqueen la UI si un RPC no existe
+### Fase 1: Crear Layout Compartido
 
-**Archivos a modificar**:
-- `src/hooks/useDailyKPIs.ts` - Mejorar fallback para MRR
-- `src/hooks/useClients.ts` - Simplificar conteo con COUNT(1) + límite
-- `src/hooks/useInvoices.ts` - Ya tiene fallback, solo ajustar
+Crear un componente `DashboardLayout.tsx` que envuelva todas las páginas del dashboard:
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│                    DashboardLayout                         │
+│  ┌──────────┬───────────────────────────────────────────┐  │
+│  │          │                                           │  │
+│  │ Sidebar  │              <Outlet />                   │  │
+│  │  (fijo)  │         (contenido dinámico)              │  │
+│  │          │                                           │  │
+│  └──────────┴───────────────────────────────────────────┘  │
+│  └── SyncStatusBanner ──────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Fase 2: Modificar Sidebar para usar Links
+
+Cambiar los `<button>` por `<NavLink>` de React Router:
+
+- Usar `NavLink` con prop `className` que detecta ruta activa
+- Remover props `activeItem` y `onItemClick`
+- El estilo activo se aplica automáticamente
+
+### Fase 3: Actualizar App.tsx con Rutas Anidadas
+
+Usar rutas anidadas bajo el layout protegido:
+
+```text
+<Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+  <Route path="/" element={<DashboardHome />} />
+  <Route path="/clients" element={<ClientsPage />} />
+  <Route path="/invoices" element={<InvoicesPage />} />
+  ... (14 rutas más)
+</Route>
+```
+
+### Fase 4: Actualizar DashboardHome
+
+Cambiar `onNavigate` por `useNavigate`:
+
+- Reemplazar `onNavigate?.('clients')` por `navigate('/clients')`
+- Los cards de KPIs navegarán a sus rutas correspondientes
+
+---
+
+## Archivos a Modificar
+
+| Archivo | Cambio |
+|---------|--------|
+| `src/App.tsx` | Agregar 14 rutas nuevas bajo layout protegido |
+| `src/pages/Index.tsx` | Convertir a `DashboardLayout.tsx` con `<Outlet />` |
+| `src/components/dashboard/Sidebar.tsx` | Cambiar buttons → NavLinks |
+| `src/components/dashboard/DashboardHome.tsx` | Cambiar `onNavigate` → `useNavigate` |
+
+## Archivos Nuevos
+
+| Archivo | Propósito |
+|---------|-----------|
+| `src/layouts/DashboardLayout.tsx` | Layout compartido con Sidebar + Outlet |
 
 ---
 
 ## Detalles Técnicos
 
-### RPC 1: `kpi_mrr_summary`
-
-```sql
-CREATE OR REPLACE FUNCTION kpi_mrr_summary()
-RETURNS TABLE(
-  mrr bigint,
-  active_count bigint,
-  at_risk_amount bigint,
-  at_risk_count bigint
-) LANGUAGE sql STABLE SECURITY DEFINER
-SET statement_timeout TO '10s'
-AS $$
-  SELECT 
-    COALESCE(SUM(CASE WHEN status IN ('active','trialing') THEN amount ELSE 0 END), 0)::bigint,
-    COUNT(*) FILTER (WHERE status IN ('active','trialing'))::bigint,
-    COALESCE(SUM(CASE WHEN status = 'past_due' THEN amount ELSE 0 END), 0)::bigint,
-    COUNT(*) FILTER (WHERE status = 'past_due')::bigint
-  FROM subscriptions;
-$$;
-```
-
-### RPC 2: `get_staging_counts_fast`
-
-```sql
-CREATE OR REPLACE FUNCTION get_staging_counts_fast()
-RETURNS JSONB LANGUAGE sql STABLE SECURITY DEFINER AS $$
-  SELECT jsonb_agg(jsonb_build_object(
-    'table_name', relname,
-    'row_estimate', n_live_tup
-  ))
-  FROM pg_stat_user_tables
-  WHERE schemaname = 'public'
-  AND relname IN ('clients','transactions','invoices','subscriptions');
-$$;
-```
-
-### RPC 3: `kpi_invoices_summary`
-
-```sql
-CREATE OR REPLACE FUNCTION kpi_invoices_summary()
-RETURNS TABLE(
-  pending_count bigint,
-  pending_total bigint,
-  paid_total bigint,
-  next_72h_count bigint,
-  next_72h_total bigint,
-  uncollectible_total bigint
-) LANGUAGE sql STABLE SECURITY DEFINER
-SET statement_timeout TO '15s'
-AS $$
-  SELECT 
-    COUNT(*) FILTER (WHERE status IN ('open','draft'))::bigint,
-    COALESCE(SUM(amount_due) FILTER (WHERE status IN ('open','draft')), 0)::bigint,
-    COALESCE(SUM(amount_paid) FILTER (WHERE status = 'paid'), 0)::bigint,
-    COUNT(*) FILTER (WHERE status = 'open' 
-      AND next_payment_attempt <= NOW() + INTERVAL '72 hours')::bigint,
-    COALESCE(SUM(amount_due) FILTER (WHERE status = 'open' 
-      AND next_payment_attempt <= NOW() + INTERVAL '72 hours'), 0)::bigint,
-    COALESCE(SUM(amount_due) FILTER (WHERE status = 'uncollectible'), 0)::bigint
-  FROM invoices;
-$$;
-```
-
----
-
-## Cambios en Frontend (Fallbacks)
-
-### `useClients.ts` - Línea 57-81
-
-Simplificar el conteo para que no dependa de RPCs faltantes:
+### DashboardLayout.tsx (nuevo)
 
 ```typescript
-const { data: totalCount = 0 } = useQuery({
-  queryKey: ["clients-count", vipOnly],
-  queryFn: async () => {
-    if (vipOnly) {
-      const { count } = await supabase
-        .from("clients")
-        .select("*", { count: "exact", head: true })
-        .gte("total_spend", VIP_THRESHOLD);
-      return count || 0;
-    }
-    // Intentar RPC primero, fallback a COUNT estimado
-    try {
-      const { data } = await supabase.rpc('get_staging_counts_fast');
-      const clientsRow = data?.find(r => r.table_name === 'clients');
-      if (clientsRow?.row_estimate) return clientsRow.row_estimate;
-    } catch { /* ignore */ }
-    // Fallback: límite seguro
-    return 200000; // Estimado conocido
-  },
-  staleTime: 120000,
-});
-```
+// Estructura del layout compartido
+import { Outlet } from "react-router-dom";
+import { Sidebar } from "@/components/dashboard/Sidebar";
+import { SyncStatusBanner } from "@/components/dashboard/SyncStatusBanner";
 
-### `useDailyKPIs.ts` - Líneas 100-138
-
-Agregar fallback robusto para MRR:
-
-```typescript
-// MRR con fallback
-try {
-  const { data } = await supabase.rpc('kpi_mrr_summary');
-  if (data?.[0]) {
-    mrr = (data[0].mrr || 0) / 100;
-    mrrActiveCount = data[0].active_count || 0;
-    revenueAtRisk = (data[0].at_risk_amount || 0) / 100;
-    revenueAtRiskCount = data[0].at_risk_count || 0;
-  }
-} catch {
-  // Fallback: usar kpi_mrr (que sí existe)
-  const { data: mrrData } = await supabase.rpc('kpi_mrr');
-  if (mrrData?.[0]) {
-    mrr = (mrrData[0].mrr || 0) / 100;
-    mrrActiveCount = mrrData[0].active_subscriptions || 0;
-  }
+export function DashboardLayout() {
+  return (
+    <div className="min-h-screen bg-background">
+      <Sidebar />
+      <main className="md:pl-64 pt-14 md:pt-0">
+        <div className="p-4 md:p-8 safe-area-bottom">
+          <Outlet />
+        </div>
+      </main>
+      <SyncStatusBanner />
+    </div>
+  );
 }
+```
+
+### Sidebar.tsx - Cambios clave
+
+```typescript
+// Antes: buttons con onClick
+<button onClick={() => onItemClick?.(item.id)}>
+
+// Después: NavLinks con rutas
+import { NavLink } from "react-router-dom";
+
+// Mapeo de IDs a rutas
+const routeMap = {
+  dashboard: "/",
+  clients: "/clients",
+  invoices: "/invoices",
+  // ... etc
+};
+
+<NavLink 
+  to={routeMap[item.id]}
+  className={({ isActive }) => cn(
+    "flex w-full items-center gap-3 ...",
+    isActive ? "bg-accent active-indicator" : "..."
+  )}
+>
+```
+
+### App.tsx - Rutas anidadas
+
+```typescript
+<Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+  <Route index element={<DashboardHome />} />
+  <Route path="movements" element={<MovementsPage />} />
+  <Route path="analytics" element={<AnalyticsPanel />} />
+  <Route path="messages" element={<MessagesPageWrapper />} />
+  <Route path="campaigns" element={<CampaignControlCenter />} />
+  <Route path="broadcast" element={<BroadcastListsPage />} />
+  <Route path="flows" element={<FlowsPage />} />
+  <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
+  <Route path="clients" element={<ClientsPage />} />
+  <Route path="invoices" element={<InvoicesPage />} />
+  <Route path="subscriptions" element={<SubscriptionsPage />} />
+  <Route path="recovery" element={<RevenueOpsPipeline />} />
+  <Route path="import" element={<ImportSyncPage />} />
+  <Route path="diagnostics" element={<DiagnosticsPanel />} />
+  <Route path="settings" element={<SettingsPage />} />
+</Route>
 ```
 
 ---
 
 ## Resultado Esperado
 
-Después de aplicar este plan:
-
-1. **Dashboard carga instantáneamente** - RPCs responden en <50ms
-2. **Sin errores 500** - Todas las funciones requeridas existirán
-3. **Fallbacks seguros** - Si algún RPC falla, la UI sigue funcionando
-4. **Métricas precisas** - MRR, conteos y totales correctos
+1. **Code Splitting automático** - Cada página carga solo cuando se visita
+2. **Navegación nativa** - Botones Atrás/Adelante del navegador funcionan
+3. **URLs compartibles** - `tusitio.com/clients` lleva directo a Clientes
+4. **Mejor rendimiento** - Hooks no se ejecutan en páginas que no estás viendo
+5. **SEO básico** - Cada sección tiene su propia URL
 
 ---
 
 ## Orden de Implementación
 
-1. Crear migración SQL con las 3 funciones RPC
-2. Actualizar `useClients.ts` con fallback simplificado
-3. Actualizar `useDailyKPIs.ts` con fallback a `kpi_mrr`
-4. Probar que el dashboard carga sin errores
-
+1. Crear `src/layouts/DashboardLayout.tsx`
+2. Modificar `src/App.tsx` con rutas anidadas
+3. Actualizar `src/components/dashboard/Sidebar.tsx` con NavLinks
+4. Actualizar `src/components/dashboard/DashboardHome.tsx` con `useNavigate`
+5. Eliminar código obsoleto de `src/pages/Index.tsx`
+6. Probar todas las rutas y navegación
