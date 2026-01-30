@@ -30,15 +30,18 @@ export function useTransactions() {
   const { data: transactions = [], isLoading, error, refetch } = useQuery({
     queryKey: ["transactions"],
     queryFn: async () => {
+      // Only fetch recent succeeded transactions for display (not all 175k)
       const { data, error } = await supabase
         .from("transactions")
-        .select("*")
+        .select("id, stripe_payment_intent_id, payment_key, payment_type, subscription_id, amount, currency, status, failure_code, failure_message, customer_email, stripe_customer_id, stripe_created_at, source")
+        .eq("status", "succeeded")
         .order("stripe_created_at", { ascending: false })
-        .limit(1000); // Prevent 504 timeout on 200k+ rows
+        .limit(500);
 
       if (error) throw error;
       return data as Transaction[];
     },
+    staleTime: 60000, // Cache for 60s
   });
 
   const syncStripe = useMutation({

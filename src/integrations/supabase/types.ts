@@ -2682,6 +2682,13 @@ export type Database = {
     Functions: {
       cleanup_and_maintain: { Args: never; Returns: undefined }
       cleanup_old_data: { Args: never; Returns: Json }
+      cleanup_old_financial_data: {
+        Args: never
+        Returns: {
+          deleted_invoices: number
+          deleted_transactions: number
+        }[]
+      }
       cleanup_stuck_syncs: { Args: never; Returns: Json }
       dashboard_metrics: {
         Args: never

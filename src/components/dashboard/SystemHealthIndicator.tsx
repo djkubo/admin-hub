@@ -36,8 +36,8 @@ export function SystemHealthIndicator() {
     };
 
     checkHealth();
-    // Check every 30 seconds instead of constantly
-    const interval = setInterval(checkHealth, 30000);
+    // Check every 60 seconds to reduce load
+    const interval = setInterval(checkHealth, 60000);
     return () => clearInterval(interval);
   }, []);
 
