@@ -55,12 +55,13 @@ export function SubscriptionsPage() {
     };
   }, [subscriptions]);
 
+  // VRP Style: Semantic colors only (emerald=active, amber=warning, red=risk, zinc=neutral)
   const funnelCards = [
-    { label: 'Trials', value: funnel.trials, icon: Clock, color: 'purple' },
+    { label: 'Trials', value: funnel.trials, icon: Clock, color: 'amber' },           // Pendiente → Amber
     { label: 'Por Vencer', value: funnel.trialsExpiringSoon, icon: AlertTriangle, color: 'amber' },
     { label: 'Activas', value: funnel.active, icon: CheckCircle, color: 'emerald' },
     { label: 'En Riesgo', value: funnel.atRisk, icon: AlertTriangle, color: 'red' },
-    { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'gray' },
+    { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'neutral' },      // Neutral → Zinc
   ];
 
   // VRP Style: Neutral zinc + semantic colors only (emerald=ok, red=risk, amber=warning)
@@ -117,10 +118,10 @@ export function SubscriptionsPage() {
         </div>
       </div>
 
-      {/* Sync Progress Banner */}
+      {/* Sync Progress Banner - VRP Neutral */}
       {isSyncing && syncProgress && (
-        <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3 flex items-center gap-3">
-          <CloudCog className="h-5 w-5 text-purple-400 animate-pulse shrink-0" />
+        <div className="rounded-xl border border-zinc-700 bg-zinc-800 p-3 flex items-center gap-3">
+          <CloudCog className="h-5 w-5 text-primary animate-pulse shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="font-medium text-foreground text-sm">Sincronizando...</p>
             <p className="text-[10px] text-muted-foreground truncate">
@@ -128,7 +129,7 @@ export function SubscriptionsPage() {
               {syncProgress.inserted > 0 && ` • ${syncProgress.inserted} guardadas`}
             </p>
           </div>
-          <Badge variant="outline" className="border-purple-500/30 text-purple-400 text-[10px] shrink-0">
+          <Badge variant="outline" className="border-zinc-700 text-white text-[10px] shrink-0">
             {syncProgress.status === 'running' ? 'En progreso' : syncProgress.status}
           </Badge>
         </div>
@@ -235,7 +236,7 @@ export function SubscriptionsPage() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-xs md:text-sm font-medium truncate">{sub.customer_email || 'Sin email'}</p>
-                      <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] mt-1">
+                      <Badge variant="outline" className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[10px] mt-1">
                         {sub.plan_name}
                       </Badge>
                     </div>
@@ -296,7 +297,7 @@ export function SubscriptionsPage() {
                 <div className="flex-1">
                   <div className="h-2 bg-muted rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-purple-500 to-emerald-500"
+                      className="h-full bg-primary"
                       style={{ width: `${plan.percentage}%` }}
                     />
                   </div>
