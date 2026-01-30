@@ -2712,11 +2712,38 @@ export type Database = {
           failed_count: number
         }[]
       }
+      kpi_invoices_at_risk: {
+        Args: never
+        Returns: {
+          invoice_count: number
+          total_amount: number
+        }[]
+      }
+      kpi_invoices_summary: {
+        Args: never
+        Returns: {
+          next_72h_count: number
+          next_72h_total: number
+          paid_total: number
+          pending_count: number
+          pending_total: number
+          uncollectible_total: number
+        }[]
+      }
       kpi_mrr: {
         Args: never
         Returns: {
           active_subscriptions: number
           currency: string
+          mrr: number
+        }[]
+      }
+      kpi_mrr_summary: {
+        Args: never
+        Returns: {
+          active_count: number
+          at_risk_amount: number
+          at_risk_count: number
           mrr: number
         }[]
       }
@@ -2751,6 +2778,17 @@ export type Database = {
           currency: string
           total_amount: number
           transaction_count: number
+        }[]
+      }
+      kpi_sales_summary: {
+        Args: { p_start_date?: string }
+        Returns: {
+          refunds_mxn: number
+          refunds_usd: number
+          sales_mxn: number
+          sales_usd: number
+          today_mxn: number
+          today_usd: number
         }[]
       }
       kpi_trial_to_paid: {
