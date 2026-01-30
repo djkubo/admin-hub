@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { RefreshCw, Play, Pause, CheckCircle, AlertCircle, Clock, Database, Users, Zap, XCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { FullRecoveryPanel } from "./FullRecoveryPanel";
 
 // Time range options for Stripe sync
 type TimeRange = '24h' | '7d' | '31d' | '6m' | 'all';
@@ -791,6 +792,9 @@ export function SyncOrchestrator() {
 
   return (
     <div className="space-y-6">
+      {/* Full Recovery Panel - Prominent at Top */}
+      <FullRecoveryPanel />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
