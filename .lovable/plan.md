@@ -1,143 +1,205 @@
 
-# Plan de Reescritura Maestra: VRP Dashboard Premium
+# Plan: Reparación de Secciones Importar/Sync y Ajustes
 
 ## Diagnóstico del Estado Actual
 
-Tras revisar exhaustivamente el código, identifiqué los siguientes problemas:
+Tras revisar exhaustivamente el código, encontré lo siguiente:
 
-1. **Sistema de Diseño (index.css + tailwind.config.ts)**: La base de la paleta VRP está definida, pero faltan clases utilitarias globales (`.btn-primary`, `.card-base`, `.input-base`) que obliguen a todo el UI a seguir el estándar.
+### APISyncPanel.tsx (Importar/Sync)
+- **Estado**: Ya está correctamente estilizado con la paleta VRP
+- **Problema**: NO tiene colores arcoíris - ya usa `bg-zinc-800`, `border-zinc-800`, `text-white`, `bg-primary`
+- **Acción**: Solo limpieza menor y optimización
 
-2. **Sidebar (Sidebar.tsx)**: Tiene una estructura plana con 15 items de menú sin agrupar, lo que genera confusión visual.
-
-3. **ErrorBoundary + QueryClient**: Están correctamente configurados (retry max 2, ErrorBoundary envuelve toda la app). Solo necesitan mejoras menores de UX.
-
-4. **Componentes UI**: Los componentes base (Button, Card, Input) usan correctamente las CSS variables. El problema está en componentes individuales que sobreescriben estilos con colores hardcodeados.
-
----
-
-## Acciones a Ejecutar
-
-### 1. Sistema de Diseño Global
-
-**Archivo: `src/index.css`**
-
-Se agregarán clases utilitarias globales en `@layer components` que estandaricen TODOS los elementos interactivos:
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│  NUEVAS CLASES GLOBALES                                 │
-├─────────────────────────────────────────────────────────┤
-│  .btn-primary    → VRP Red (#AA0601), hover 80%         │
-│  .btn-secondary  → Zinc-800, borde sutil                │
-│  .btn-ghost      → Transparente, hover zinc-800         │
-│  .card-base      → bg-card, border-zinc-800, shadow     │
-│  .input-base     → bg-zinc-900, focus ring VRP Red      │
-│  .badge-neutral  → bg-zinc-800, text-zinc-300           │
-│  .badge-success  → bg-emerald/10, text-emerald-400      │
-│  .badge-warning  → bg-amber/10, text-amber-400          │
-│  .badge-error    → bg-red/10, text-red-400              │
-└─────────────────────────────────────────────────────────┘
-```
-
-Se eliminarán estilos legacy innecesarios (`.story-link`, gradientes, sombras agresivas).
-
-**Archivo: `tailwind.config.ts`**
-
-Se añadirán:
-- Animaciones optimizadas (`fade-in`, `scale-in`, `pulse-soft`)
-- Sombras premium (`shadow-soft`, `shadow-elevated`)
-- Transiciones estandarizadas
-
-### 2. Arquitectura de Navegación (Sidebar)
-
-**Archivo: `src/components/dashboard/Sidebar.tsx`**
-
-Reestructuración en 4 Módulos lógicos con íconos de sección:
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│  🏠 GENERAL                                             │
-│  ├── Command Center                                     │
-│  ├── Movimientos                                        │
-│  └── Analytics                                          │
-├─────────────────────────────────────────────────────────┤
-│  💬 COMUNICACIÓN                                        │
-│  ├── Mensajes                                           │
-│  ├── Campañas                                           │
-│  ├── Difusión                                           │
-│  ├── Flows (Automatizaciones)                           │
-│  └── WhatsApp Directo                                   │
-├─────────────────────────────────────────────────────────┤
-│  💰 FINANZAS                                            │
-│  ├── Clientes                                           │
-│  ├── Facturas                                           │
-│  ├── Suscripciones                                      │
-│  └── Recovery                                           │
-├─────────────────────────────────────────────────────────┤
-│  ⚙️ SISTEMA                                             │
-│  ├── Importar / Sync                                    │
-│  ├── Diagnostics                                        │
-│  └── Ajustes                                            │
-└─────────────────────────────────────────────────────────┘
-```
-
-Cambios visuales:
-- Separadores sutiles entre grupos (`border-t border-zinc-800`)
-- Labels de sección en `text-xs text-zinc-500 uppercase tracking-wide`
-- Item activo: `bg-zinc-800 text-white` con indicador lateral VRP Red
-- Hover state: `bg-zinc-800/50`
-
-### 3. Controlador de Errores Global
-
-**Archivo: `src/App.tsx`**
-
-Mejoras al QueryClient:
-- Confirmar que `retry: 2` está correctamente aplicado (ya está)
-- Agregar `staleTime: 60000` global para reducir queries
-- Configurar `refetchOnWindowFocus: false` para evitar saturación
-
-**Archivo: `src/components/ErrorBoundary.tsx`**
-
-Mejoras visuales:
-- Estilo premium con paleta VRP
-- Botón "Reintentar" con `btn-primary`
-- Sección de debug solo en development
-- Opción de "Ir al inicio" además de recargar
-
-### 4. Estandarización de Componentes
-
-Aplicar clases globales a componentes base existentes:
-
-| Componente | Cambio |
-|------------|--------|
-| `button.tsx` | Ya usa CSS vars correctamente |
-| `card.tsx` | Ya usa `bg-card border-border` |
-| `input.tsx` | Cambiar a `input-base` explícito |
-| `badge.tsx` | Agregar variantes `neutral`, `success`, `warning`, `error` |
+### SettingsPage.tsx (Ajustes)
+- **Estado**: Es un wrapper simple de 50 líneas
+- **Problema Real**: Los sub-componentes tienen los colores incorrectos:
+  - `IntegrationsStatusPanel.tsx` → Usa `text-purple-400`, `text-blue-400`, `text-green-400`, `text-cyan-400` para los íconos
+  - `SystemTogglesPanel.tsx` → Usa `text-emerald-400`, `text-amber-400`, `text-blue-400`, `text-purple-400`, `text-cyan-400`
 
 ---
 
 ## Archivos a Modificar
 
-| Archivo | Acción |
-|---------|--------|
-| `src/index.css` | Agregar clases globales, limpiar legacy |
-| `tailwind.config.ts` | Agregar animaciones y sombras |
-| `src/components/dashboard/Sidebar.tsx` | Reestructurar en 4 módulos |
-| `src/App.tsx` | Optimizar QueryClient |
-| `src/components/ErrorBoundary.tsx` | Mejorar UX visual |
-| `src/components/ui/badge.tsx` | Agregar variantes semánticas |
+| Archivo | Problema | Acción |
+|---------|----------|--------|
+| `IntegrationsStatusPanel.tsx` | Colores arcoíris en íconos | Neutralizar a `text-zinc-400` + sutil indicador de marca |
+| `SystemTogglesPanel.tsx` | Colores semánticos en íconos | Neutralizar a `text-primary` |
+| `GHLSettingsPanel.tsx` | Colores verde/amarillo en badges | Usar `.badge-success`/`.badge-warning` globales |
+| `SettingsPage.tsx` | Sin skeleton de carga | Agregar Skeleton mientras cargan sub-componentes |
 
 ---
 
-## Beneficios de Esta Arquitectura
+## Cambios Específicos
 
-1. **Consistencia Automática**: Cualquier nuevo componente que use `.btn-primary` o `.card-base` heredará automáticamente el estilo VRP.
+### 1. IntegrationsStatusPanel.tsx - Eliminar Colores de Marca
 
-2. **Mantenimiento Simplificado**: Cambiar el color primario en un solo lugar (`--primary`) actualiza TODA la app.
+**Antes (Arcoíris):**
+```tsx
+const integrations = [
+  { id: 'stripe', color: 'purple' },
+  { id: 'paypal', color: 'blue' },
+  { id: 'twilio', color: 'red' },
+  { id: 'ghl', color: 'green' },
+  { id: 'manychat', color: 'cyan' },
+];
 
-3. **Navegación Clara**: Los 4 módulos reducen la carga cognitiva y agrupan funcionalidades relacionadas.
+const getColorClasses = (color: string) => ({
+  purple: 'text-purple-400',
+  blue: 'text-blue-400',
+  // etc...
+});
+```
 
-4. **Resiliencia**: El ErrorBoundary mejorado + QueryClient optimizado evitan pantallas blancas y saturación de red.
+**Después (Monocromático VRP):**
+```tsx
+// Eliminar la propiedad 'color' completamente
+// Todos los íconos usan text-zinc-400 o text-primary
+const integrations = [
+  { id: 'stripe', name: 'Stripe', icon: CreditCard, ... },
+  // Sin campo 'color'
+];
 
-5. **Performance**: Reducción de queries con `staleTime` y `refetchOnWindowFocus: false`.
+// Ícono neutral para todos
+<Icon className="h-5 w-5 text-zinc-400" />
+```
+
+### 2. SystemTogglesPanel.tsx - Neutralizar Íconos
+
+**Antes:**
+```tsx
+<Bell className="h-5 w-5 text-emerald-400" />
+<Pause className="h-5 w-5 text-amber-400" />
+<Clock className="h-5 w-5 text-blue-400" />
+<Building className="h-5 w-5 text-purple-400" />
+<Clock className="h-5 w-5 text-cyan-400" />
+```
+
+**Después:**
+```tsx
+// Todos los íconos usan text-zinc-400 (neutral) o text-primary (acento)
+<Bell className="h-5 w-5 text-zinc-400" />
+<Pause className="h-5 w-5 text-zinc-400" />
+<Clock className="h-5 w-5 text-zinc-400" />
+<Building className="h-5 w-5 text-zinc-400" />
+<Clock className="h-5 w-5 text-zinc-400" />
+```
+
+### 3. GHLSettingsPanel.tsx - Badges Estandarizados
+
+**Antes:**
+```tsx
+<Badge className={isConfigured 
+  ? "bg-green-500/10 text-green-400 border-green-500/30" 
+  : "bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
+}>
+```
+
+**Después (usando clases globales):**
+```tsx
+<Badge variant={isConfigured ? "success" : "warning"}>
+```
+
+### 4. SettingsPage.tsx - Agregar Estado de Carga
+
+**Mejora:**
+```tsx
+import { Skeleton } from '@/components/ui/skeleton';
+import { Suspense, lazy } from 'react';
+
+// Skeleton para loading states
+const SettingsSkeleton = () => (
+  <div className="space-y-4">
+    <Skeleton className="h-48 w-full rounded-xl" />
+    <Skeleton className="h-48 w-full rounded-xl" />
+    <Skeleton className="h-48 w-full rounded-xl" />
+  </div>
+);
+
+// Lazy loading de paneles pesados
+const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
+const IntegrationsStatusPanel = lazy(() => import('./IntegrationsStatusPanel'));
+const GHLSettingsPanel = lazy(() => import('./GHLSettingsPanel'));
+```
+
+---
+
+## Resultado Visual Esperado
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  ⚙️ AJUSTES                              [user@email]  │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  🔧 Configuración del Sistema                   │   │
+│  │  ────────────────────────────────────────────   │   │
+│  │  [🔔] Auto-Dunning          [====ON====]       │   │
+│  │  [⏸] Pausar Sync            [===OFF===]        │   │
+│  │  [⏰] Horario Silencioso     21:00 — 08:00     │   │
+│  │  [🏢] Nombre Empresa         [_________]       │   │
+│  │  [🌍] Zona Horaria           [CDMX ▼]          │   │
+│  │                               [Guardar]         │   │
+│  └─────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  ⚡ Estado de Integraciones                     │   │
+│  │  ────────────────────────────────────────────   │   │
+│  │  [💳] Stripe        [Sin probar]    [🔄]       │   │
+│  │  [💳] PayPal        [Conectado✓]    [🔄]       │   │
+│  │  [💬] Twilio        [Sin probar]               │   │
+│  │  [👥] GoHighLevel   [Error✗]        [🔄]       │   │
+│  │  [🤖] ManyChat      [Sin probar]    [🔄]       │   │
+│  └─────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  ⚙️ GoHighLevel Integration   [Configurado ✓]  │   │
+│  │  ────────────────────────────────────────────   │   │
+│  │  Webhook URL:                                   │   │
+│  │  [https://services.lead...          ] [💾]     │   │
+│  │                                                 │   │
+│  │  📋 ¿Cómo configurar?                          │   │
+│  │  1. En GHL → Automation → Workflows...         │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+
+PALETA:
+- Fondo: #09090b (Zinc-950)
+- Cards: #18181b (Zinc-900) con border #27272a
+- Íconos: text-zinc-400 (neutro)
+- Acento: #AA0601 (VRP Red) solo para botón Guardar
+- Badges: Semantic (emerald=success, amber=warning, red=error)
+```
+
+---
+
+## Sección Técnica
+
+### Cambios en `IntegrationsStatusPanel.tsx`:
+1. Eliminar el campo `color` del array de integraciones
+2. Eliminar la función `getColorClasses()`
+3. Cambiar todos los íconos a `text-zinc-400`
+4. Mantener badges semánticos (success/error) solo para estados
+
+### Cambios en `SystemTogglesPanel.tsx`:
+1. Cambiar todos los íconos de colores a `text-zinc-400`
+2. Usar `card-base` para el wrapper principal
+3. Mantener el estado de loading con Skeleton
+
+### Cambios en `GHLSettingsPanel.tsx`:
+1. Usar `variant="success"` y `variant="warning"` del Badge
+2. Cambiar `bg-green-500/10` → `badge-success`
+3. Cambiar `bg-yellow-500/10` → `badge-warning`
+
+### Cambios en `SettingsPage.tsx`:
+1. Agregar `Suspense` con fallback `SettingsSkeleton`
+2. Lazy-load de componentes pesados para mejor UX
+
+---
+
+## Beneficios
+
+1. **Consistencia Visual**: Toda la sección Ajustes seguirá la paleta VRP monocromática
+2. **Mejor UX**: Skeletons visibles durante carga en lugar de spinners solitarios
+3. **Mantenibilidad**: Los badges usan variantes globales definidas en `badge.tsx`
+4. **Profesionalismo**: Sin colores de marca (purple Stripe, blue PayPal) - todo neutral
+
