@@ -1,7 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertTriangle, RefreshCw, Wifi, WifiOff } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -38,6 +36,10 @@ class ErrorBoundary extends Component<Props, State> {
     window.location.reload();
   };
 
+  private handleGoHome = () => {
+    window.location.href = '/';
+  };
+
   public render() {
     if (this.state.hasError) {
       if (this.props.fallback) {
@@ -46,38 +48,66 @@ class ErrorBoundary extends Component<Props, State> {
 
       return (
         <div className="min-h-screen bg-background flex items-center justify-center p-4">
-          <Card className="max-w-md w-full">
-            <CardHeader className="text-center">
-              <div className="mx-auto mb-4 h-16 w-16 rounded-full bg-destructive/10 flex items-center justify-center">
+          <div className="max-w-md w-full card-base p-6">
+            {/* Header */}
+            <div className="text-center mb-6">
+              <div className="mx-auto mb-4 h-16 w-16 rounded-xl bg-destructive/10 flex items-center justify-center">
                 <AlertTriangle className="h-8 w-8 text-destructive" />
               </div>
-              <CardTitle className="text-xl">Algo salió mal</CardTitle>
-              <CardDescription>
+              <h1 className="text-xl font-semibold text-foreground mb-2">
+                Algo salió mal
+              </h1>
+              <p className="text-sm text-muted-foreground">
                 Ha ocurrido un error inesperado. No te preocupes, puedes intentar de nuevo.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {process.env.NODE_ENV === 'development' && this.state.error && (
-                <div className="rounded-md bg-muted p-3 text-xs font-mono overflow-auto max-h-32">
-                  <p className="text-destructive font-semibold">{this.state.error.message}</p>
-                  {this.state.errorInfo && (
-                    <pre className="mt-2 text-muted-foreground whitespace-pre-wrap">
-                      {this.state.errorInfo.componentStack?.slice(0, 500)}
-                    </pre>
-                  )}
-                </div>
-              )}
-              <div className="flex gap-3">
-                <Button onClick={this.handleRetry} variant="outline" className="flex-1 gap-2">
-                  <RefreshCw className="h-4 w-4" />
-                  Reintentar
-                </Button>
-                <Button onClick={this.handleReload} className="flex-1 gap-2">
-                  Recargar página
-                </Button>
+              </p>
+            </div>
+
+            {/* Error details (development only) */}
+            {process.env.NODE_ENV === 'development' && this.state.error && (
+              <div className="mb-6 rounded-lg bg-secondary/50 border border-border p-4 overflow-auto max-h-40">
+                <p className="text-xs font-mono text-destructive font-medium mb-2">
+                  {this.state.error.message}
+                </p>
+                {this.state.errorInfo && (
+                  <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">
+                    {this.state.errorInfo.componentStack?.slice(0, 500)}
+                  </pre>
+                )}
               </div>
-            </CardContent>
-          </Card>
+            )}
+
+            {/* Actions */}
+            <div className="space-y-3">
+              <button
+                onClick={this.handleRetry}
+                className="btn-primary w-full"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Reintentar
+              </button>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={this.handleGoHome}
+                  className="btn-secondary"
+                >
+                  <Home className="h-4 w-4" />
+                  Ir al inicio
+                </button>
+                <button
+                  onClick={this.handleReload}
+                  className="btn-ghost border border-border"
+                >
+                  Recargar página
+                </button>
+              </div>
+            </div>
+
+            {/* Help text */}
+            <p className="text-xs text-muted-foreground text-center mt-6">
+              Si el problema persiste, contacta a soporte.
+            </p>
+          </div>
         </div>
       );
     }

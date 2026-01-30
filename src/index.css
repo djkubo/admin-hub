@@ -7,7 +7,7 @@
 
 @layer base {
   :root {
-    /* ===== PREMIUM SAAS THEME (Linear/Stripe/Vercel Style) ===== */
+    /* ===== VRP PREMIUM SAAS THEME ===== */
     
     /* Background: Zinc 950 - Deep but not pure black */
     --background: 240 10% 3.9%; /* #09090b */
@@ -45,7 +45,7 @@
     --ring: 1 99% 34%; /* VRP Red for focus */
 
     /* Radius: Rounded-md for premium feel */
-    --radius: 0.375rem;
+    --radius: 0.5rem;
 
     /* Status colors - Subtle, professional */
     --status-active: 142 71% 45%;
@@ -60,7 +60,7 @@
     --chart-5: 142 71% 45%; /* Green for positive */
 
     /* Sidebar - Clean, minimal */
-    --sidebar-background: 240 10% 3.9%; /* Same as background */
+    --sidebar-background: 240 10% 3.9%;
     --sidebar-foreground: 0 0% 98%;
     --sidebar-primary: 1 99% 34%;
     --sidebar-primary-foreground: 0 0% 100%;
@@ -70,7 +70,6 @@
     --sidebar-ring: 1 99% 34%;
   }
 
-  /* Dark mode is the same as root for this theme */
   .dark {
     --background: 240 10% 3.9%;
     --foreground: 0 0% 98%;
@@ -156,8 +155,107 @@
   }
 }
 
+/* ===== GLOBAL UTILITY CLASSES ===== */
+@layer components {
+  /* Primary Button - VRP Red */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all duration-200;
+    @apply bg-primary text-primary-foreground;
+    @apply hover:bg-primary/90 active:scale-[0.98];
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    @apply disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  /* Secondary Button - Zinc 800 */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200;
+    @apply bg-secondary text-secondary-foreground border border-border;
+    @apply hover:bg-secondary/80 active:scale-[0.98];
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    @apply disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  /* Ghost Button - Transparent */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200;
+    @apply text-muted-foreground;
+    @apply hover:bg-accent hover:text-accent-foreground active:scale-[0.98];
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    @apply disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  /* Card Base - Consistent card styling */
+  .card-base {
+    @apply rounded-xl border border-border bg-card text-card-foreground shadow-soft;
+  }
+
+  /* Input Base - Consistent input styling */
+  .input-base {
+    @apply flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm transition-colors;
+    @apply file:border-0 file:bg-transparent file:text-sm file:font-medium;
+    @apply placeholder:text-muted-foreground;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Badge Variants - Semantic colors */
+  .badge-neutral {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply bg-secondary text-muted-foreground border border-border;
+  }
+
+  .badge-success {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply bg-emerald-500/10 text-emerald-400 border border-emerald-500/20;
+  }
+
+  .badge-warning {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply bg-amber-500/10 text-amber-400 border border-amber-500/20;
+  }
+
+  .badge-error {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply bg-red-500/10 text-red-400 border border-red-500/20;
+  }
+
+  .badge-primary {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply bg-primary/10 text-primary border border-primary/20;
+  }
+
+  /* Section Label - For sidebar/navigation groups */
+  .section-label {
+    @apply text-xs font-medium uppercase tracking-wider text-muted-foreground px-3 py-2;
+  }
+
+  /* Menu Item - For navigation items */
+  .menu-item {
+    @apply flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors duration-150;
+    @apply text-muted-foreground hover:bg-accent hover:text-foreground;
+  }
+
+  .menu-item-active {
+    @apply flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium;
+    @apply bg-accent text-foreground;
+  }
+
+  /* KPI Card - For dashboard metrics */
+  .kpi-card {
+    @apply card-base p-4 space-y-2;
+  }
+
+  .kpi-value {
+    @apply text-2xl font-bold text-foreground font-display;
+  }
+
+  .kpi-label {
+    @apply text-sm text-muted-foreground;
+  }
+}
+
 @layer utilities {
-  /* Premium Status badges - Subtle, professional */
+  /* Status badges - Semantic */
   .status-active {
     @apply bg-emerald-500/10 text-emerald-400 border-emerald-500/20;
   }
@@ -170,9 +268,9 @@
     @apply bg-red-500/10 text-red-400 border-red-500/20;
   }
 
-  /* Subtle card hover - No aggressive glows */
+  /* Card hover - Subtle */
   .card-hover {
-    @apply transition-all duration-200 hover:bg-card/80;
+    @apply transition-all duration-200 hover:bg-accent/50 hover:border-border/80;
   }
 
   /* iOS-style safe area utilities */
@@ -189,8 +287,18 @@
     @apply active:scale-[0.98] active:opacity-90 transition-all duration-100;
   }
 
-  /* Clean header - No glass effects for readability */
+  /* Glass header */
   .glass-header {
     @apply backdrop-blur-md bg-background/95 border-b border-border;
+  }
+
+  /* Text truncation */
+  .text-truncate {
+    @apply truncate;
+  }
+
+  /* Active indicator - VRP Red left border */
+  .active-indicator {
+    @apply relative before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-6 before:w-1 before:rounded-r-full before:bg-primary;
   }
 }

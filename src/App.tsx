@@ -14,6 +14,7 @@ import UpdateCard from "./pages/UpdateCard";
 import UpdateCardSuccess from "./pages/UpdateCardSuccess";
 import NotFound from "./pages/NotFound";
 
+// Optimized QueryClient for performance and stability
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -23,11 +24,14 @@ const queryClient = new QueryClient({
         if (message.includes('unauthorized') || message.includes('401') || message.includes('jwt')) {
           return false;
         }
-        // Retry up to 2 times for other errors
+        // Max 2 retries for other errors
         return failureCount < 2;
       },
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
-      staleTime: 30000, // 30 seconds
+      staleTime: 60000, // 60 seconds - reduces redundant fetches
+      gcTime: 300000, // 5 minutes garbage collection
+      refetchOnWindowFocus: false, // Prevent saturation on tab switch
+      refetchOnReconnect: true, // Refresh when back online
     },
     mutations: {
       retry: 1,
@@ -41,7 +45,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center safe-area-top safe-area-bottom">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <p className="text-sm text-muted-foreground">Cargando...</p>
+        </div>
       </div>
     );
   }
@@ -59,7 +66,10 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center safe-area-top safe-area-bottom">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <p className="text-sm text-muted-foreground">Cargando...</p>
+        </div>
       </div>
     );
   }
