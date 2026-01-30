@@ -2666,8 +2666,21 @@ export type Database = {
         }
         Relationships: []
       }
+      mv_sales_summary: {
+        Row: {
+          last_refresh: string | null
+          month_mxn: number | null
+          month_usd: number | null
+          refunds_mxn: number | null
+          refunds_usd: number | null
+          today_mxn: number | null
+          today_usd: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      cleanup_and_maintain: { Args: never; Returns: undefined }
       cleanup_old_data: { Args: never; Returns: Json }
       cleanup_stuck_syncs: { Args: never; Returns: Json }
       dashboard_metrics: {
@@ -2792,7 +2805,7 @@ export type Database = {
         }[]
       }
       kpi_sales_summary: {
-        Args: { p_start_date?: string }
+        Args: never
         Returns: {
           refunds_mxn: number
           refunds_usd: number
@@ -2844,6 +2857,7 @@ export type Database = {
       promote_metrics_staging: { Args: never; Returns: boolean }
       rebuild_metrics_staging: { Args: never; Returns: Json }
       refresh_lifecycle_counts: { Args: never; Returns: undefined }
+      refresh_materialized_views: { Args: never; Returns: undefined }
       reset_stuck_syncs: {
         Args: { p_timeout_minutes?: number }
         Returns: {
