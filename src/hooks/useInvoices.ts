@@ -106,24 +106,16 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Fetch invoices with filters - JOIN with clients for unified identity
-  // OPTIMIZATION: Add limit to prevent statement timeout on large tables
+  // OPTIMIZATION: Removed JOIN with clients table (221k rows was causing timeout)
+  // Reduced limit from 1000 to 100 for faster initial load
   const { data: invoices = [], isLoading, refetch } = useQuery({
     queryKey: ["invoices", statusFilter, searchQuery, startDate, endDate],
     queryFn: async () => {
       let query = supabase
         .from("invoices")
-        .select(`
-          *,
-          client:clients!client_id (
-            id,
-            full_name,
-            email,
-            phone_e164
-          )
-        `)
+        .select("*") // No JOIN - prevents timeout
         .order("stripe_created_at", { ascending: false, nullsFirst: false })
-        .limit(1000); // Safety limit to prevent timeout
+        .limit(100); // Reduced limit for fast load
 
       // Status filter
       if (statusFilter !== 'all') {
@@ -138,7 +130,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
         query = query.lte('stripe_created_at', endDate);
       }
 
-      // Search filter - also search in joined client fields
+      // Search filter
       if (searchQuery) {
         query = query.or(`customer_email.ilike.%${searchQuery}%,customer_name.ilike.%${searchQuery}%,invoice_number.ilike.%${searchQuery}%`);
       }
@@ -149,11 +141,29 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       
       return (data || []).map(row => ({
         ...row,
-        client: row.client as InvoiceClient | null,
+        client: null, // Client data now loaded on-demand
         lines: row.lines as unknown as Invoice['lines'],
         raw_data: row.raw_data as unknown as Invoice['raw_data'],
       })) as Invoice[];
     },
+  });
+
+  // OPTIMIZATION: Use RPC for invoice totals (server-side aggregation)
+  const { data: invoiceSummary } = useQuery({
+    queryKey: ["invoice-summary"],
+    queryFn: async () => {
+      try {
+        // Note: RPC may not be in types yet, using type assertion
+        const { data, error } = await supabase.rpc('kpi_invoices_summary' as any);
+        if (error) throw error;
+        return (data as any)?.[0] || null;
+      } catch {
+        // RPC might not exist yet - return null to use local calculation
+        console.warn('kpi_invoices_summary RPC not available');
+        return null;
+      }
+    },
+    staleTime: 60000, // Cache for 1 minute
   });
 
   // OPTIMIZATION: Debounced realtime subscription for invoices table

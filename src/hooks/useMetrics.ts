@@ -79,16 +79,7 @@ export function useMetrics() {
       // Convert back to UTC for database query
       const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetHours * 3600000);
       
-      // Fetch monthly transactions - include refunded for NET calculation
-      // OPTIMIZATION: Limit to 5000 rows max to prevent statement timeout
-      const { data: monthlyTransactions } = await supabase
-        .from('transactions')
-        .select('amount, currency, status, stripe_created_at')
-        .gte('stripe_created_at', firstDayOfMonth.toISOString())
-        .in('status', ['succeeded', 'paid', 'refunded'])
-        .order('stripe_created_at', { ascending: false })
-        .limit(5000); // Safety limit
-
+      // OPTIMIZATION: Use kpi_sales_summary RPC if available, fallback to limited query
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
       let salesTodayUSD = 0;
@@ -96,28 +87,56 @@ export function useMetrics() {
       let refundsMonthUSD = 0;
       let refundsMonthMXN = 0;
 
-      // All amounts stored in CENTS, divide by 100 for display
-      for (const tx of monthlyTransactions || []) {
-        const amountInCurrency = tx.amount / 100;
-        const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
-        const isToday = txDate && txDate >= startOfTodayUTC;
-        const isRefund = tx.status === 'refunded';
+      try {
+        // Try RPC first (server-side aggregation - instant)
+        // Note: RPC may not be in types yet, using type assertion
+        const { data: salesSummary, error: rpcError } = await supabase.rpc('kpi_sales_summary' as any);
         
-        if (tx.currency?.toLowerCase() === 'mxn') {
-          if (isRefund) {
-            refundsMonthMXN += amountInCurrency;
-          } else {
-            salesMonthMXN += amountInCurrency;
-            if (isToday) salesTodayMXN += amountInCurrency;
-          }
+        if (!rpcError && salesSummary && Array.isArray(salesSummary) && salesSummary.length > 0) {
+          const summary = salesSummary[0] as { sales_usd?: number; sales_mxn?: number; refunds_usd?: number; refunds_mxn?: number; today_usd?: number; today_mxn?: number };
+          // RPC returns amounts in cents
+          salesMonthUSD = (summary.sales_usd || 0) / 100;
+          salesMonthMXN = (summary.sales_mxn || 0) / 100;
+          refundsMonthUSD = (summary.refunds_usd || 0) / 100;
+          refundsMonthMXN = (summary.refunds_mxn || 0) / 100;
+          salesTodayUSD = (summary.today_usd || 0) / 100;
+          salesTodayMXN = (summary.today_mxn || 0) / 100;
         } else {
-          if (isRefund) {
-            refundsMonthUSD += amountInCurrency;
-          } else {
-            salesMonthUSD += amountInCurrency;
-            if (isToday) salesTodayUSD += amountInCurrency;
+          // Fallback: Limited query (only if RPC doesn't exist yet)
+          console.warn('kpi_sales_summary RPC not available, using limited fallback');
+          const { data: monthlyTransactions } = await supabase
+            .from('transactions')
+            .select('amount, currency, status, stripe_created_at')
+            .gte('stripe_created_at', firstDayOfMonth.toISOString())
+            .in('status', ['succeeded', 'paid', 'refunded'])
+            .order('stripe_created_at', { ascending: false })
+            .limit(500); // Reduced limit to prevent timeout
+
+          for (const tx of monthlyTransactions || []) {
+            const amountInCurrency = tx.amount / 100;
+            const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
+            const isToday = txDate && txDate >= startOfTodayUTC;
+            const isRefund = tx.status === 'refunded';
+            
+            if (tx.currency?.toLowerCase() === 'mxn') {
+              if (isRefund) {
+                refundsMonthMXN += amountInCurrency;
+              } else {
+                salesMonthMXN += amountInCurrency;
+                if (isToday) salesTodayMXN += amountInCurrency;
+              }
+            } else {
+              if (isRefund) {
+                refundsMonthUSD += amountInCurrency;
+              } else {
+                salesMonthUSD += amountInCurrency;
+                if (isToday) salesTodayUSD += amountInCurrency;
+              }
+            }
           }
         }
+      } catch (salesError) {
+        console.error('Error fetching sales data:', salesError);
       }
 
       const MXN_TO_USD = 0.05;
