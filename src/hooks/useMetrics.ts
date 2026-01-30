@@ -149,74 +149,9 @@ export function useMetrics() {
       const netRevenueMonthMXN = salesMonthMXN - refundsMonthMXN;
       const netRevenueMonthTotal = salesMonthTotal - refundsMonthTotal;
 
-      // Fetch failed transactions for recovery list (EXCLUDE paid/succeeded)
-      // OPTIMIZATION: Limit to 500 to prevent timeout
-      const { data: failedTransactions } = await supabase
-        .from('transactions')
-        .select('customer_email, amount, source, failure_code')
-        .or('status.eq.failed,failure_code.in.(requires_payment_method,requires_action,requires_confirmation)')
-        .order('stripe_created_at', { ascending: false })
-        .limit(500);
-
-      // Deduplicate failed transactions by email
-      const failedByEmail = new Map<string, { amount: number; source: string }>();
-      for (const tx of failedTransactions || []) {
-        if (!tx.customer_email) continue;
-        const existing = failedByEmail.get(tx.customer_email) || { amount: 0, source: tx.source || 'unknown' };
-        // Amount is in cents, convert to dollars for display
-        existing.amount += tx.amount / 100;
-        if (tx.source && existing.source !== tx.source) {
-          existing.source = 'stripe/paypal';
-        }
-        failedByEmail.set(tx.customer_email, existing);
-      }
-
-      // Get client details for recovery list
-      const failedEmails = Array.from(failedByEmail.keys());
+      // Recovery list is now fetched from the optimized RPC (pre-computed)
+      // Initialize empty - will be populated by dashboard_metrics RPC below
       let recoveryList: DashboardMetrics['recoveryList'] = [];
-
-      if (failedEmails.length > 0) {
-        const { data: clients } = await supabase
-          .from('clients')
-          .select('email, full_name, phone, customer_metadata')
-          .in('email', failedEmails.slice(0, 100));
-
-        for (const client of clients || []) {
-          if (client.email) {
-            const failed = failedByEmail.get(client.email);
-            if (failed) {
-              // Extract recovery_status from customer_metadata JSONB
-              const metadata = client.customer_metadata as Record<string, unknown> | null;
-              const recovery_status = metadata?.recovery_status as 'pending' | 'contacted' | 'paid' | 'lost' | undefined;
-              
-              recoveryList.push({
-                email: client.email,
-                full_name: client.full_name,
-                phone: client.phone,
-                amount: failed.amount,
-                source: failed.source,
-                recovery_status
-              });
-            }
-          }
-        }
-
-        // Add any failed emails without client records
-        for (const [email, data] of failedByEmail) {
-          if (!recoveryList.find(r => r.email === email) && recoveryList.length < 100) {
-            recoveryList.push({
-              email,
-              full_name: null,
-              phone: null,
-              amount: data.amount,
-              source: data.source
-            });
-          }
-        }
-      }
-
-      // Sort by amount descending
-      recoveryList.sort((a, b) => b.amount - a.amount);
 
       // OPTIMIZATION: Use dashboard_metrics RPC instead of 5 parallel COUNT queries
       // This reduces 5 heavy queries (221k+ rows each) to 1 server-side aggregation
@@ -229,25 +164,35 @@ export function useMetrics() {
       try {
         const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
         
-        // DEBUG: Ver exactamente qué devuelve el RPC
-        console.log('dashboard_metrics RPC response:', { dashboardData, dashboardError });
-        
         if (!dashboardError && dashboardData && Array.isArray(dashboardData) && dashboardData.length > 0) {
-          // CORRECCIÓN: El RPC devuelve nombres en singular (lead_count, no leads_count)
+          // Optimized RPC now uses materialized view - instant response (~50ms)
           const dbMetrics = dashboardData[0] as {
-            lead_count?: number;      // ✅ Singular
-            trial_count?: number;     // ✅ Singular
-            customer_count?: number;  // ✅ Singular
+            lead_count?: number;
+            trial_count?: number;
+            customer_count?: number;
             churn_count?: number;
             converted_count?: number;
+            recovery_list?: Array<{ email: string; amount: number; source: string }>;
           };
           finalLeadCount = dbMetrics.lead_count || 0;
           finalTrialCount = dbMetrics.trial_count || 0;
           finalCustomerCount = dbMetrics.customer_count || 0;
           finalChurnCount = dbMetrics.churn_count || 0;
           finalConvertedCount = dbMetrics.converted_count || 0;
+          
+          // Use recovery list from RPC (optimized - no client JOIN)
+          if (dbMetrics.recovery_list && Array.isArray(dbMetrics.recovery_list)) {
+            recoveryList = dbMetrics.recovery_list.map(r => ({
+              email: r.email,
+              full_name: null, // Not fetched in ultra-fast mode
+              phone: null,     // Not fetched in ultra-fast mode
+              amount: r.amount,
+              source: r.source,
+              recovery_status: undefined
+            }));
+          }
         } else {
-          console.warn('dashboard_metrics RPC not available or returned no data:', { dashboardData, dashboardError });
+          console.warn('dashboard_metrics RPC not available:', dashboardError?.message);
         }
       } catch (rpcError) {
         console.error('Error calling dashboard_metrics RPC:', rpcError);
