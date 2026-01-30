@@ -435,25 +435,111 @@ export function SyncResultsPanel() {
                 const progress = getProgressPercent(sync);
                 const elapsed = getElapsedTime(sync.started_at);
                 
+                // Extract detailed info from checkpoint
+                const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
+                  ? sync.checkpoint as Record<string, unknown> 
+                  : null;
+                
+                const page = checkpoint?.page as number | undefined;
+                const chunkIndex = checkpoint?.chunkIndex as number | undefined;
+                const totalChunks = checkpoint?.totalChunks as number | undefined;
+                const runningTotal = checkpoint?.runningTotal as number | undefined;
+                const lastActivity = checkpoint?.lastActivity as string | undefined;
+                
+                // Build dynamic status message
+                const getStatusMessage = () => {
+                  const fetched = sync.total_fetched || runningTotal || 0;
+                  const inserted = sync.total_inserted || 0;
+                  
+                  if (fetched === 0 && inserted === 0) {
+                    return 'Iniciando conexión...';
+                  }
+                  
+                  // Build detailed message
+                  const parts: string[] = [];
+                  
+                  if (totalChunks && chunkIndex !== undefined) {
+                    parts.push(`Lote ${chunkIndex + 1}/${totalChunks}`);
+                  } else if (page) {
+                    parts.push(`Página ${page}`);
+                  }
+                  
+                  if (fetched > 0) {
+                    parts.push(`${fetched.toLocaleString()} procesados`);
+                  }
+                  
+                  if (inserted > 0 && inserted !== fetched) {
+                    parts.push(`${inserted.toLocaleString()} insertados`);
+                  }
+                  
+                  return parts.length > 0 ? parts.join(' • ') : 'Procesando...';
+                };
+                
+                // Check if stale (no activity in 2 minutes)
+                const isStale = lastActivity && (Date.now() - new Date(lastActivity).getTime() > 120000);
+                
                 return (
-                  <div key={sync.id} className="space-y-2">
+                  <div key={sync.id} className="space-y-2 p-3 bg-zinc-900/50 rounded-lg border border-zinc-800">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Icon className={`h-4 w-4 ${config.color}`} />
-                        <span className="text-sm font-medium">{config.label}</span>
+                        <div className="relative">
+                          <Icon className={`h-4 w-4 ${config.color}`} />
+                          <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                        </div>
+                        <span className="text-sm font-medium text-white">{config.label}</span>
+                        {sync.status === 'continuing' && (
+                          <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                            Auto-encadenando
+                          </Badge>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <Clock className="h-3 w-3" />
                         <span>{elapsed}</span>
-                        <span>•</span>
-                        <span>{sync.total_fetched?.toLocaleString() || 0} registros</span>
-                        <Loader2 className="h-3 w-3 animate-spin" />
                       </div>
                     </div>
-                    <Progress value={progress} className="h-1.5" />
-                    <p className="text-xs text-muted-foreground">
-                      Iniciado {formatDistanceToNow(new Date(sync.started_at), { addSuffix: true, locale: es })}
-                    </p>
+                    
+                    {/* Dynamic status message */}
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                      <span className={`text-sm ${isStale ? 'text-amber-400' : 'text-white'}`}>
+                        {getStatusMessage()}
+                      </span>
+                      {isStale && (
+                        <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+                          Sin actividad
+                        </Badge>
+                      )}
+                    </div>
+                    
+                    {/* Progress bar with pulse animation */}
+                    <div className="relative">
+                      <Progress value={progress} className="h-2" />
+                      {progress < 100 && (
+                        <div 
+                          className="absolute top-0 left-0 h-2 bg-primary/30 rounded-full animate-pulse"
+                          style={{ width: `${Math.min(progress + 10, 100)}%` }}
+                        />
+                      )}
+                    </div>
+                    
+                    {/* Detailed stats row */}
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>
+                        {sync.total_fetched?.toLocaleString() || 0} registros
+                        {sync.total_inserted ? ` (${sync.total_inserted.toLocaleString()} nuevos)` : ''}
+                      </span>
+                      <span className="text-zinc-500">
+                        {progress}% completado
+                      </span>
+                    </div>
+                    
+                    {/* Error inline if exists */}
+                    {sync.error_message && (
+                      <div className="mt-2 p-2 bg-red-500/10 rounded border border-red-500/30 text-xs text-red-400">
+                        ⚠️ {sync.error_message}
+                      </div>
+                    )}
                   </div>
                 );
               })}

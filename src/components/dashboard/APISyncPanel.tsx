@@ -948,7 +948,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('last24h')}
               disabled={stripeSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimas 24h
@@ -958,7 +958,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('last31d')}
               disabled={stripeSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               31 días
@@ -968,7 +968,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('all6months')}
               disabled={stripeSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               6 Meses
@@ -977,7 +977,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncStripe('allHistory')}
               disabled={stripeSyncing}
-              className="gap-2 bg-primary hover:bg-primary/90"
+              className={`gap-2 bg-primary hover:bg-primary/90 ${stripeSyncing ? 'animate-pulse' : ''}`}
             >
               {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
@@ -1019,7 +1019,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('last24h')}
               disabled={paypalSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimas 24h
@@ -1029,7 +1029,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('last31d')}
               disabled={paypalSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               31 días
@@ -1039,7 +1039,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('all6months')}
               disabled={paypalSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               6 Meses
@@ -1048,7 +1048,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncPayPal('allHistory')}
               disabled={paypalSyncing}
-              className="gap-2 bg-primary hover:bg-primary/90"
+              className={`gap-2 bg-primary hover:bg-primary/90 ${paypalSyncing ? 'animate-pulse' : ''}`}
             >
               {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
@@ -1091,7 +1091,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncInvoices('recent')}
               disabled={invoicesSyncing}
-              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
+              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${invoicesSyncing ? 'animate-pulse' : ''}`}
             >
               {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
               Últimos 90 días
@@ -1100,7 +1100,7 @@ export function APISyncPanel() {
               size="sm"
               onClick={() => syncInvoices('full')}
               disabled={invoicesSyncing}
-              className="gap-2 bg-primary hover:bg-primary/90"
+              className={`gap-2 bg-primary hover:bg-primary/90 ${invoicesSyncing ? 'animate-pulse' : ''}`}
             >
               {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
               Todo Historial
@@ -1142,7 +1142,7 @@ export function APISyncPanel() {
           <Button
             onClick={syncManyChat}
             disabled={manychatSyncing}
-            className="w-full gap-2 bg-primary hover:bg-primary/90"
+            className={`w-full gap-2 bg-primary hover:bg-primary/90 ${manychatSyncing ? 'animate-pulse' : ''}`}
           >
             {manychatSyncing ? (
               <>
@@ -1195,7 +1195,7 @@ export function APISyncPanel() {
           <Button
             onClick={syncGHL}
             disabled={ghlSyncing}
-            className="w-full gap-2 bg-primary hover:bg-primary/90"
+            className={`w-full gap-2 bg-primary hover:bg-primary/90 ${ghlSyncing ? 'animate-pulse' : ''}`}
           >
             {ghlSyncing ? (
               <>
@@ -1219,7 +1219,7 @@ export function APISyncPanel() {
         <Button 
           onClick={syncAllHistory}
           disabled={stripeSyncing || paypalSyncing}
-          className="w-full bg-primary hover:bg-primary/90"
+          className={`w-full bg-primary hover:bg-primary/90 ${(stripeSyncing || paypalSyncing) ? 'animate-pulse' : ''}`}
         >
           {(stripeSyncing || paypalSyncing) ? (
             <>
