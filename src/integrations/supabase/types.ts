@@ -2690,21 +2690,7 @@ export type Database = {
         }[]
       }
       cleanup_stuck_syncs: { Args: never; Returns: Json }
-      dashboard_metrics: {
-        Args: never
-        Returns: {
-          churn_count: number
-          converted_count: number
-          customer_count: number
-          lead_count: number
-          recovery_list: Json
-          sales_month_mxn: number
-          sales_month_usd: number
-          sales_today_mxn: number
-          sales_today_usd: number
-          trial_count: number
-        }[]
-      }
+      dashboard_metrics: { Args: never; Returns: Json }
       data_quality_checks: {
         Args: never
         Returns: {
@@ -2735,14 +2721,7 @@ export type Database = {
           churned_count: number
         }[]
       }
-      kpi_failed_payments: {
-        Args: { p_range?: string }
-        Returns: {
-          at_risk_amount: number
-          currency: string
-          failed_count: number
-        }[]
-      }
+      kpi_failed_payments: { Args: never; Returns: Json }
       kpi_invoices_at_risk: {
         Args: never
         Returns: {
@@ -2778,14 +2757,7 @@ export type Database = {
           mrr: number
         }[]
       }
-      kpi_new_customers: {
-        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
-        Returns: {
-          currency: string
-          new_customer_count: number
-          total_revenue: number
-        }[]
-      }
+      kpi_new_customers: { Args: never; Returns: Json }
       kpi_refunds: {
         Args: { p_range?: string }
         Returns: {
@@ -2811,17 +2783,7 @@ export type Database = {
           transaction_count: number
         }[]
       }
-      kpi_sales_summary: {
-        Args: never
-        Returns: {
-          refunds_mxn: number
-          refunds_usd: number
-          sales_mxn: number
-          sales_usd: number
-          today_mxn: number
-          today_usd: number
-        }[]
-      }
+      kpi_sales_summary: { Args: never; Returns: Json }
       kpi_trial_to_paid: {
         Args: { p_range?: string }
         Returns: {

@@ -53,56 +53,61 @@ export function useClients() {
   const [vipOnly, setVipOnly] = useState(false);
   const [pageSize, setPageSize] = useState<number | 'all'>(DEFAULT_PAGE_SIZE);
 
-  // Query for total count (exact count without downloading data)
+  // OPTIMIZATION: Use RPC estimate for count (instant, no table scan)
   const { data: totalCount = 0, refetch: refetchCount } = useQuery({
     queryKey: ["clients-count", vipOnly],
     queryFn: async () => {
-      let query = supabase
-        .from("clients")
-        .select("*", { count: "exact", head: true });
-
       if (vipOnly) {
-        query = query.gte("total_spend", VIP_THRESHOLD);
+        // For VIP filter, we need actual count (small result set)
+        const { count, error } = await supabase
+          .from("clients")
+          .select("*", { count: "exact", head: true })
+          .gte("total_spend", VIP_THRESHOLD);
+        if (error) throw error;
+        return count || 0;
       }
-
-      const { count, error } = await query;
-
-      if (error) throw error;
-      return count || 0;
+      // Use pg_stat estimate for total count (instant)
+      try {
+        const { data } = await supabase.rpc('get_staging_counts_fast' as any);
+        const clientsRow = (data as any[])?.find((r: any) => r.table_name === 'clients');
+        return clientsRow?.row_estimate || 0;
+      } catch {
+        // Fallback to materialized view count
+        const { data: mvData } = await supabase.from('mv_client_lifecycle_counts' as any).select('count');
+        return (mvData as any[])?.reduce((sum: number, r: any) => sum + (r.count || 0), 0) || 0;
+      }
     },
-    staleTime: 60000, // OPTIMIZATION: Cache for 1 minute
+    staleTime: 120000, // Cache for 2 minutes
   });
 
-  // Query for paginated clients
+  // OPTIMIZATION: Only select needed columns (not SELECT *)
   const { data: clients = [], isLoading, error, refetch: refetchClients } = useQuery({
     queryKey: ["clients", page, vipOnly, pageSize],
     queryFn: async () => {
+      // Only fetch essential columns for table display
+      const columns = "id, email, phone, full_name, status, payment_status, total_paid, total_spend, is_delinquent, stripe_customer_id, lifecycle_stage, created_at, acquisition_source, utm_source, manychat_subscriber_id, ghl_contact_id, paypal_customer_id, tags";
+      
       let query = supabase
         .from("clients")
-        .select("*")
-        .order("total_spend", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false });
+        .select(columns)
+        .order("total_spend", { ascending: false, nullsFirst: false });
 
       if (vipOnly) {
         query = query.gte("total_spend", VIP_THRESHOLD);
       }
 
-      // Apply pagination only if not "all"
-      if (pageSize !== 'all') {
-        const from = page * pageSize;
-        const to = from + pageSize - 1;
-        query = query.range(from, to);
-      } else {
-        // Limit to 10000 for safety
-        query = query.limit(10000);
-      }
+      // Always paginate - no "all" option for 221k rows
+      const effectivePageSize = pageSize === 'all' ? 100 : pageSize;
+      const from = page * effectivePageSize;
+      const to = from + effectivePageSize - 1;
+      query = query.range(from, to);
 
       const { data, error } = await query;
 
       if (error) throw error;
       return data as Client[];
     },
-    staleTime: 60000, // OPTIMIZATION: Cache for 1 minute
+    staleTime: 60000, // Cache for 1 minute
   });
 
   const refetch = () => {
