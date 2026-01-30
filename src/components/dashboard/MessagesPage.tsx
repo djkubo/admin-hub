@@ -311,7 +311,7 @@ export default function MessagesPage() {
                                 {convWindowOpen && (
                                   <Tooltip>
                                     <TooltipTrigger>
-                                      <Badge variant="secondary" className="bg-green-100 text-green-700 h-5 px-1.5 gap-0.5 shrink-0">
+                                      <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 h-5 px-1.5 gap-0.5 shrink-0">
                                         <Zap className="h-3 w-3" />
                                         {convTimeLeft}
                                       </Badge>
@@ -385,11 +385,11 @@ export default function MessagesPage() {
                     </div>
                   </div>
                   
-                  {/* Window status */}
+                  {/* Window status - VRP Semantic */}
                   {windowOpen ? (
                     <Tooltip>
                       <TooltipTrigger>
-                        <Badge className="bg-green-100 text-green-700 gap-1">
+                        <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 gap-1">
                           <Zap className="h-3.5 w-3.5" />
                           Ventana abierta ({timeLeft})
                         </Badge>
@@ -504,7 +504,7 @@ export default function MessagesPage() {
 
               {/* Input with channel selector */}
               <div className="p-3 md:p-4 border-t space-y-2 safe-area-bottom">
-                {/* Channel selector - scroll on mobile */}
+                {/* Channel selector - VRP Red for all active channels */}
                 <div className="flex items-center gap-2 text-xs md:text-sm overflow-x-auto">
                   <span className="text-muted-foreground shrink-0">Enviar:</span>
                   <div className="flex gap-1">
@@ -514,7 +514,7 @@ export default function MessagesPage() {
                       variant={selectedChannel === "whatsapp" ? "default" : "outline"}
                       className={cn(
                         "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
-                        selectedChannel === "whatsapp" && "bg-green-600 hover:bg-green-700"
+                        selectedChannel === "whatsapp" && "bg-primary hover:bg-primary/90"
                       )}
                       onClick={() => setSelectedChannel("whatsapp")}
                     >
@@ -528,7 +528,7 @@ export default function MessagesPage() {
                       variant={selectedChannel === "sms" ? "default" : "outline"}
                       className={cn(
                         "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
-                        selectedChannel === "sms" && "bg-blue-600 hover:bg-blue-700"
+                        selectedChannel === "sms" && "bg-primary hover:bg-primary/90"
                       )}
                       onClick={() => setSelectedChannel("sms")}
                     >
@@ -542,7 +542,7 @@ export default function MessagesPage() {
                         variant={selectedChannel === "native" ? "default" : "outline"}
                         className={cn(
                           "gap-1 h-7 text-xs px-2 md:px-3 touch-feedback",
-                          selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
+                          selectedChannel === "native" && "bg-primary hover:bg-primary/90"
                         )}
                         onClick={() => setSelectedChannel("native")}
                       >
@@ -582,11 +582,7 @@ export default function MessagesPage() {
                     type="submit" 
                     size="icon"
                     disabled={!newMessage.trim() || sendMessage.isPending}
-                    className={cn(
-                      selectedChannel === "whatsapp" && "bg-green-600 hover:bg-green-700",
-                      selectedChannel === "sms" && "bg-blue-600 hover:bg-blue-700",
-                      selectedChannel === "native" && "bg-purple-600 hover:bg-purple-700"
-                    )}
+                    className="bg-primary hover:bg-primary/90"
                   >
                     <Send className="h-4 w-4" />
                   </Button>

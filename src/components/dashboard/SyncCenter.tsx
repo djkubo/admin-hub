@@ -223,16 +223,17 @@ export default function SyncCenter() {
     }
   });
 
+  // VRP Style: Semantic colors only (emerald=ok, amber=warning, red=error, zinc=neutral)
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'completed':
-        return <Badge className="bg-green-500/20 text-green-400"><CheckCircle className="w-3 h-3 mr-1" /> Completado</Badge>;
+        return <Badge className="bg-emerald-500/20 text-emerald-400"><CheckCircle className="w-3 h-3 mr-1" /> Completado</Badge>;
       case 'running':
-        return <Badge className="bg-blue-500/20 text-blue-400"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> En progreso</Badge>;
+        return <Badge className="bg-zinc-800 text-white"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> En progreso</Badge>;
       case 'failed':
         return <Badge className="bg-red-500/20 text-red-400"><XCircle className="w-3 h-3 mr-1" /> Error</Badge>;
       case 'partial':
-        return <Badge className="bg-yellow-500/20 text-yellow-400"><AlertTriangle className="w-3 h-3 mr-1" /> Parcial</Badge>;
+        return <Badge className="bg-amber-500/20 text-amber-400"><AlertTriangle className="w-3 h-3 mr-1" /> Parcial</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -418,10 +419,10 @@ export default function SyncCenter() {
                         <TableCell className="text-muted-foreground">
                           {format(new Date(run.started_at), 'dd/MM HH:mm')}
                         </TableCell>
-                        <TableCell className="text-right">{run.total_fetched}</TableCell>
-                        <TableCell className="text-right text-green-400">+{run.total_inserted}</TableCell>
-                        <TableCell className="text-right text-blue-400">{run.total_updated}</TableCell>
-                        <TableCell className="text-right text-yellow-400">{run.total_conflicts}</TableCell>
+                        <TableCell className="text-right text-zinc-400">{run.total_fetched}</TableCell>
+                        <TableCell className="text-right text-emerald-400">+{run.total_inserted}</TableCell>
+                        <TableCell className="text-right text-zinc-400">{run.total_updated}</TableCell>
+                        <TableCell className="text-right text-amber-400">{run.total_conflicts}</TableCell>
                         <TableCell>
                           {run.dry_run ? (
                             <Badge variant="outline"><Eye className="w-3 h-3 mr-1" /> Preview</Badge>

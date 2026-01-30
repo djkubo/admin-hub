@@ -350,7 +350,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       title: 'Nuevos',
       value: kpis.newPayersToday,
       icon: UserPlus,
-      color: 'cyan',
+      color: 'neutral',  // VRP: All non-critical KPIs use neutral zinc
       subtitle: `$${kpis.newRevenue.toFixed(0)}`,
       navigateTo: 'clients',
     },
@@ -358,7 +358,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       title: 'Trials',
       value: kpis.trialsStartedToday,
       icon: Clock,
-      color: 'blue',
+      color: 'neutral',  // VRP: Neutral instead of blue
       subtitle: 'iniciados',
       navigateTo: 'subscriptions',
     },
@@ -366,7 +366,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       title: 'Trial→Paid',
       value: kpis.trialConversionsToday,
       icon: ArrowRightCircle,
-      color: 'purple',
+      color: 'neutral',  // VRP: Neutral instead of purple
       subtitle: `$${kpis.conversionRevenue.toFixed(0)}`,
       navigateTo: 'subscriptions',
     },
@@ -374,7 +374,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       title: 'Renovaciones',
       value: kpis.renewalsToday,
       icon: RefreshCw,
-      color: 'green',
+      color: 'neutral',  // VRP: Neutral instead of green
       subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
       navigateTo: 'subscriptions',
     },

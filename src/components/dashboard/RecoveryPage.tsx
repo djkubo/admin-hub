@@ -487,7 +487,7 @@ export function RecoveryPage() {
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
-                    <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30 text-[10px] px-1 h-4 shrink-0">
+                    <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700 text-[10px] px-1 h-4 shrink-0">
                       {client.source}
                     </Badge>
                   </div>
@@ -509,13 +509,14 @@ export function RecoveryPage() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    {/* SMS API */}
+                    {/* SMS API - VRP Neutral */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button 
                           size="sm" 
+                          variant="secondary"
                           disabled={!client.phone}
-                          className="h-7 px-2 shrink-0 bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 text-[10px] gap-1 disabled:opacity-30"
+                          className="h-7 px-2 shrink-0 text-[10px] gap-1 disabled:opacity-30"
                         >
                           <Phone className="h-3 w-3" />
                           SMS
@@ -528,14 +529,15 @@ export function RecoveryPage() {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    {/* Native SMS (iPhone) */}
+                    {/* Native SMS (iPhone) - VRP Neutral */}
                     {supportsNativeSms() && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button 
                             size="sm" 
+                            variant="outline"
                             disabled={!client.phone}
-                            className="h-7 px-2 shrink-0 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[10px] gap-1 disabled:opacity-30"
+                            className="h-7 px-2 shrink-0 text-[10px] gap-1 disabled:opacity-30"
                           >
                             <Smartphone className="h-3 w-3" />
                             Nativo
@@ -649,7 +651,7 @@ export function RecoveryPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="bg-purple-500/10 text-purple-400 border-purple-500/30">
+                          <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700">
                             {client.source}
                           </Badge>
                         </TableCell>
@@ -707,10 +709,10 @@ export function RecoveryPage() {
 
                             {client.phone && (
                               <>
-                                {/* SMS via API */}
+                                {/* SMS via API - VRP Neutral */}
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button size="sm" variant="outline" className="gap-1.5 border-blue-500/30 text-blue-400 hover:bg-blue-500/10">
+                                    <Button size="sm" variant="secondary" className="gap-1.5">
                                       <Phone className="h-4 w-4" />
                                       SMS
                                     </Button>
@@ -722,11 +724,11 @@ export function RecoveryPage() {
                                   </DropdownMenuContent>
                                 </DropdownMenu>
 
-                                {/* Native SMS (shows on mobile/tablet) */}
+                                {/* Native SMS (shows on mobile/tablet) - VRP Neutral */}
                                 {supportsNativeSms() && (
                                   <DropdownMenu>
                                     <DropdownMenuTrigger asChild>
-                                      <Button size="sm" variant="outline" className="gap-1.5 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10">
+                                      <Button size="sm" variant="outline" className="gap-1.5">
                                         <Smartphone className="h-4 w-4" />
                                         Nativo
                                       </Button>

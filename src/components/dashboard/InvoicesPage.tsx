@@ -176,14 +176,15 @@ export function InvoicesPage() {
   };
 
   const getStatusBadge = (status: string) => {
+    // VRP Style: Semantic colors only (emerald=paid, amber=pending, red=error, zinc=neutral)
     const styles: Record<string, string> = {
-      draft: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
-      open: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-      pending: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-      paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-      void: 'bg-red-500/10 text-red-400 border-red-500/30',
-      uncollectible: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-      failed: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+      draft: 'bg-zinc-800 text-zinc-400 border-zinc-700',           // Neutro
+      open: 'bg-amber-500/10 text-amber-400 border-amber-500/30',   // Pendiente
+      pending: 'bg-amber-500/10 text-amber-400 border-amber-500/30', // Pendiente
+      paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', // Éxito
+      void: 'bg-red-500/10 text-red-400 border-red-500/30',         // Error
+      uncollectible: 'bg-red-500/10 text-red-400 border-red-500/30', // Error (deuda perdida)
+      failed: 'bg-red-500/10 text-red-400 border-red-500/30',       // Error
     };
     const labels: Record<string, string> = {
       draft: 'Borrador',

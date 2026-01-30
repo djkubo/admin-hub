@@ -36,20 +36,21 @@ interface ClientEventsTimelineProps {
   onOpenChange: (open: boolean) => void;
 }
 
+// VRP Style: Semantic colors only (emerald=success, amber=warning, red=error, zinc=neutral)
 const eventConfig: Record<string, { icon: typeof Mail; color: string; label: string }> = {
-  email_open: { icon: Mail, color: "text-blue-400", label: "Abrió email" },
-  email_click: { icon: MousePointerClick, color: "text-cyan-400", label: "Clic en email" },
-  email_bounce: { icon: AlertCircle, color: "text-red-400", label: "Email rebotado" },
-  email_sent: { icon: Mail, color: "text-gray-400", label: "Email enviado" },
-  payment_failed: { icon: CreditCard, color: "text-red-400", label: "Pago fallido" },
-  payment_success: { icon: CheckCircle2, color: "text-emerald-400", label: "Pago exitoso" },
-  high_usage: { icon: Activity, color: "text-purple-400", label: "Uso alto" },
-  trial_started: { icon: UserPlus, color: "text-blue-400", label: "Inició prueba" },
-  trial_converted: { icon: ArrowUpCircle, color: "text-emerald-400", label: "Convirtió de trial" },
-  churn_risk: { icon: AlertTriangle, color: "text-amber-400", label: "Riesgo de fuga" },
-  support_ticket: { icon: Headphones, color: "text-orange-400", label: "Ticket de soporte" },
-  login: { icon: LogIn, color: "text-gray-400", label: "Inicio de sesión" },
-  custom: { icon: Circle, color: "text-gray-400", label: "Evento personalizado" },
+  email_open: { icon: Mail, color: "text-zinc-400", label: "Abrió email" },           // Neutral
+  email_click: { icon: MousePointerClick, color: "text-zinc-400", label: "Clic en email" }, // Neutral
+  email_bounce: { icon: AlertCircle, color: "text-red-400", label: "Email rebotado" },      // Error
+  email_sent: { icon: Mail, color: "text-zinc-400", label: "Email enviado" },         // Neutral
+  payment_failed: { icon: CreditCard, color: "text-red-400", label: "Pago fallido" }, // Error
+  payment_success: { icon: CheckCircle2, color: "text-emerald-400", label: "Pago exitoso" }, // Success
+  high_usage: { icon: Activity, color: "text-zinc-400", label: "Uso alto" },          // Neutral
+  trial_started: { icon: UserPlus, color: "text-amber-400", label: "Inició prueba" }, // Pending
+  trial_converted: { icon: ArrowUpCircle, color: "text-emerald-400", label: "Convirtió de trial" }, // Success
+  churn_risk: { icon: AlertTriangle, color: "text-amber-400", label: "Riesgo de fuga" }, // Warning
+  support_ticket: { icon: Headphones, color: "text-zinc-400", label: "Ticket de soporte" }, // Neutral
+  login: { icon: LogIn, color: "text-zinc-400", label: "Inicio de sesión" },          // Neutral
+  custom: { icon: Circle, color: "text-zinc-400", label: "Evento personalizado" },    // Neutral
 };
 
 export function ClientEventsTimeline({ clientId, clientName, open, onOpenChange }: ClientEventsTimelineProps) {

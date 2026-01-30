@@ -485,9 +485,9 @@ export default function BotChatPage() {
                                   isUser ? "justify-start" : "justify-end"
                                 )}
                               >
-                                {isUser && (
+                              {isUser && (
                                   <Avatar className="h-7 w-7 shrink-0">
-                                    <AvatarFallback className="bg-blue-100 text-blue-600 text-xs">
+                                    <AvatarFallback className="bg-primary/20 text-primary text-xs">
                                       <User className="h-3.5 w-3.5" />
                                     </AvatarFallback>
                                   </Avatar>
