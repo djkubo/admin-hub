@@ -97,7 +97,7 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       let revenueAtRisk = 0;
       let revenueAtRiskCount = 0;
 
-      // Run minimal queries in parallel
+      // Run minimal queries in parallel with fallback logic
       const promises = await Promise.allSettled([
         // Trials started in period
         supabase.from('subscriptions')
@@ -110,9 +110,9 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
           .select('id', { count: 'exact', head: true })
           .gte('created_at', start)
           .lte('created_at', end),
-        // MRR from optimized RPC
+        // MRR from kpi_mrr_summary RPC
         (supabase.rpc as any)('kpi_mrr_summary'),
-        // Sales from optimized RPC (uses materialized view)
+        // Sales from kpi_sales_summary RPC
         (supabase.rpc as any)('kpi_sales_summary'),
       ]);
 
@@ -126,18 +126,29 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         clientsCount = promises[1].value.count || 0;
       }
       
-      // Extract MRR data
+      // Extract MRR data with fallback
       if (promises[2].status === 'fulfilled' && promises[2].value?.data) {
-        const mrrSummary = promises[2].value.data[0];
+        const mrrData = promises[2].value.data;
+        // Handle both array and single object responses
+        const mrrSummary = Array.isArray(mrrData) ? mrrData[0] : mrrData;
         if (mrrSummary) {
           mrr = (mrrSummary.mrr || 0) / 100;
           mrrActiveCount = mrrSummary.active_count || 0;
           revenueAtRisk = (mrrSummary.at_risk_amount || 0) / 100;
           revenueAtRiskCount = mrrSummary.at_risk_count || 0;
         }
+      } else {
+        // Fallback: try kpi_mrr (older function that exists)
+        try {
+          const { data: fallbackMrr } = await (supabase.rpc as any)('kpi_mrr');
+          if (fallbackMrr?.[0]) {
+            mrr = (fallbackMrr[0].mrr || 0) / 100;
+            mrrActiveCount = fallbackMrr[0].active_subscriptions || 0;
+          }
+        } catch { /* ignore fallback errors */ }
       }
 
-      // Extract sales data from materialized view
+      // Extract sales data
       let salesUsd = 0;
       if (promises[3].status === 'fulfilled' && promises[3].value?.data) {
         const salesData = promises[3].value.data;
@@ -145,7 +156,7 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       }
 
       const failedQueries = promises.filter(p => p.status === 'rejected').length;
-      if (failedQueries > 0) setError(`${failedQueries} métricas no cargaron`);
+      if (failedQueries >= 3) setError('Métricas limitadas disponibles');
 
       setKPIs({
         registrationsToday: clientsCount,
