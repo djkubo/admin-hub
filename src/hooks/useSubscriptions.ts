@@ -142,18 +142,31 @@ export function useSubscriptions() {
   const { data: subscriptions = [], isLoading, error, refetch } = useQuery({
     queryKey: ["subscriptions"],
     queryFn: async () => {
-      // FIXED: Fetch ALL subscriptions without filtering by status
+      // FIXED: Fetch subscriptions for table display (limited for performance)
       const { data, error } = await supabase
         .from("subscriptions")
         .select("*")
         .order("amount", { ascending: false })
-        .limit(100); // OPTIMIZED: Reducido de 5000 para evitar timeouts
+        .limit(100); // Pagination for UI table
 
       if (error) throw error;
       return data as Subscription[];
     },
     refetchInterval: 120000, // Refetch every 2 minutes
     staleTime: 60000, // Consider data fresh for 1 minute
+  });
+
+  // OPTIMIZED: Fetch aggregate metrics from server-side RPC (100% accurate)
+  const { data: mrrSummary } = useQuery({
+    queryKey: ["mrr-summary"],
+    queryFn: async () => {
+      // Cast to any to bypass TypeScript until types are regenerated
+      const { data, error } = await (supabase.rpc as any)('kpi_mrr_summary');
+      if (error) throw error;
+      return data?.[0] as { mrr: number; active_count: number; at_risk_amount: number; at_risk_count: number } | undefined;
+    },
+    staleTime: 60000, // Consider data fresh for 1 minute
+    refetchInterval: 120000, // Refetch every 2 minutes
   });
 
   // OPTIMIZATION: Debounced realtime subscription for subscriptions table
@@ -233,19 +246,17 @@ export function useSubscriptions() {
     });
   })();
 
-  // FIXED: Active revenue only from status = 'active' (not trialing - they haven't paid yet)
-  const totalActiveRevenue = subscriptions
-    .filter((s) => s.status === "active")
-    .reduce((sum, s) => sum + s.amount, 0);
+  // OPTIMIZED: Use server-side RPC for accurate totals (not limited to 100 rows)
+  const totalActiveRevenue = mrrSummary ? mrrSummary.mrr / 100 : 
+    subscriptions.filter((s) => s.status === "active").reduce((sum, s) => sum + s.amount, 0);
   
-  const totalActiveCount = statusBreakdown.active;
+  const totalActiveCount = mrrSummary?.active_count ?? statusBreakdown.active;
   
-  // NEW: Revenue at risk (past_due + unpaid)
-  const revenueAtRisk = subscriptions
-    .filter((s) => s.status === "past_due" || s.status === "unpaid")
-    .reduce((sum, s) => sum + s.amount, 0);
+  // Revenue at risk from server-side RPC
+  const revenueAtRisk = mrrSummary ? mrrSummary.at_risk_amount / 100 :
+    subscriptions.filter((s) => s.status === "past_due" || s.status === "unpaid").reduce((sum, s) => sum + s.amount, 0);
   
-  const atRiskCount = statusBreakdown.past_due + statusBreakdown.unpaid;
+  const atRiskCount = mrrSummary?.at_risk_count ?? (statusBreakdown.past_due + statusBreakdown.unpaid);
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {

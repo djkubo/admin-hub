@@ -106,7 +106,6 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         supabase.rpc('kpi_failed_payments', { p_range: rangeParam }),
         supabase.rpc('kpi_cancellations', { p_range: rangeParam }),
         // FIX: Use trial_start instead of created_at for trials count
-        // Also use proper date range (start to end of day)
         supabase.from('subscriptions')
           .select('id', { count: 'exact', head: true })
           .eq('status', 'trialing')
@@ -117,16 +116,9 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
           .select('id', { count: 'exact', head: true })
           .gte('created_at', start)
           .lte('created_at', end),
-        // OPTIMIZED: Limit queries to prevent timeouts (will be replaced with RPCs)
-        supabase.from('subscriptions')
-          .select('amount, status')
-          .in('status', ['active', 'past_due', 'unpaid'])
-          .limit(2000), // Safety limit
-        // Revenue at Risk from open/past_due invoices
-        supabase.from('invoices')
-          .select('amount_due')
-          .in('status', ['open', 'past_due'])
-          .limit(1000) // Safety limit
+        // OPTIMIZED: Use server-side RPC for MRR aggregation (no limits needed)
+        // Cast to any to bypass TypeScript until types are regenerated
+        (supabase.rpc as any)('kpi_mrr_summary'),
       ]);
 
       // Extract results safely
@@ -137,15 +129,21 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       if (promises[4].status === 'fulfilled' && promises[4].value?.count !== null) trialsCount = promises[4].value.count || 0;
       if (promises[5].status === 'fulfilled' && promises[5].value?.data) trialConversions = promises[5].value.data;
       if (promises[6].status === 'fulfilled' && promises[6].value?.count !== null) clientsCount = promises[6].value.count || 0;
-      // Extract subscription data with status filtering
-      let subsData: { amount: number; status: string }[] = [];
-      let revenueAtRiskData: { amount_due: number }[] = [];
+      
+      // OPTIMIZED: Extract MRR data from server-side RPC (100% accurate)
+      let mrr = 0;
+      let mrrActiveCount = 0;
+      let revenueAtRisk = 0;
+      let revenueAtRiskCount = 0;
       
       if (promises[7].status === 'fulfilled' && promises[7].value?.data) {
-        subsData = promises[7].value.data;
-      }
-      if (promises[8].status === 'fulfilled' && promises[8].value?.data) {
-        revenueAtRiskData = promises[8].value.data;
+        const mrrSummary = promises[7].value.data[0];
+        if (mrrSummary) {
+          mrr = (mrrSummary.mrr || 0) / 100;
+          mrrActiveCount = mrrSummary.active_count || 0;
+          revenueAtRisk = (mrrSummary.at_risk_amount || 0) / 100;
+          revenueAtRiskCount = mrrSummary.at_risk_count || 0;
+        }
       }
 
       const failedQueries = promises.filter(p => p.status === 'rejected').length;
@@ -163,15 +161,6 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       const conversionRevenue = trialConv.total_revenue / 100;
       const renewalRevenue = Math.max(0, usdSales.total_amount / 100 - newRevenue - conversionRevenue);
       const cancellationRevenue = (usdCancel.lost_mrr || 0) / 100;
-
-      // Calculate MRR from active subscriptions (amounts are in cents)
-      const activeSubsData = subsData.filter(s => s.status === 'active');
-      const mrr = activeSubsData.reduce((sum, sub) => sum + (sub.amount || 0), 0) / 100;
-      const mrrActiveCount = activeSubsData.length;
-
-      // Calculate Revenue at Risk from pending invoices (amounts are in cents)
-      const revenueAtRisk = revenueAtRiskData.reduce((sum, inv) => sum + (inv.amount_due || 0), 0) / 100;
-      const revenueAtRiskCount = revenueAtRiskData.length;
 
       setKPIs({
         registrationsToday: clientsCount,
