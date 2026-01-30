@@ -6,20 +6,17 @@ import { RevenueByPlanChart } from "./RevenueByPlanChart";
 import { SourceAnalytics } from "./SourceAnalytics";
 import { AnalyzeButton } from "./AnalyzeButton";
 import { AIInsightsWidget } from "../AIInsightsWidget";
-import { Transaction } from "@/hooks/useTransactions";
-import { Client } from "@/hooks/useClients";
+import { useTransactions, Transaction } from "@/hooks/useTransactions";
+import { useClients, Client } from "@/hooks/useClients";
 import { useSubscriptions } from "@/hooks/useSubscriptions";
-import { Sparkles } from "lucide-react";
+import { Sparkles, BarChart3, LogOut } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { subDays, subMonths, subYears } from "date-fns";
+import { subDays, subYears } from "date-fns";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/hooks/useAuth";
 
 export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
-
-interface AnalyticsPanelProps {
-  transactions: Transaction[];
-  clients: Client[];
-}
 
 function getDateRangeStart(period: AnalyticsPeriod): Date {
   const now = new Date();
@@ -48,9 +45,16 @@ function getMonthsForPeriod(period: AnalyticsPeriod): number {
   }
 }
 
-export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
+export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
+  
+  // Load data internally - no more props drilling
+  const { transactions, isLoading: txLoading } = useTransactions();
+  const { clients, isLoading: clientsLoading } = useClients();
   const { subscriptions } = useSubscriptions();
+  const { user, signOut } = useAuth();
+
+  const isLoading = txLoading || clientsLoading;
 
   // Filter transactions based on selected period
   const filteredTransactions = useMemo(() => {
@@ -79,10 +83,51 @@ export function AnalyticsPanel({ transactions, clients }: AnalyticsPanelProps) {
     { value: "all", label: "Todo" },
   ];
 
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-display text-foreground flex items-center gap-3">
+              <BarChart3 className="h-7 w-7 text-primary" />
+              ANALYTICS
+            </h1>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Métricas avanzadas: LTV, MRR, Cohortes
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Skeleton className="h-32 rounded-xl" />
+          <Skeleton className="h-32 rounded-xl" />
+          <Skeleton className="h-32 rounded-xl" />
+        </div>
+        <Skeleton className="h-64 rounded-xl" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 sm:space-y-6">
-      {/* AI Analysis Section */}
-      {/* VRP Style: Neutral card without gradient */}
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-display text-foreground flex items-center gap-3">
+            <BarChart3 className="h-7 w-7 text-primary" />
+            ANALYTICS
+          </h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Métricas avanzadas: LTV, MRR, Cohortes
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-muted-foreground">{user?.email}</span>
+          <Button variant="outline" size="sm" onClick={() => signOut()} className="gap-2">
+            <LogOut className="h-4 w-4" />
+            Salir
+          </Button>
+        </div>
+      </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-zinc-800 bg-card">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">

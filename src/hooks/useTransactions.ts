@@ -33,7 +33,8 @@ export function useTransactions() {
       const { data, error } = await supabase
         .from("transactions")
         .select("*")
-        .order("stripe_created_at", { ascending: false });
+        .order("stripe_created_at", { ascending: false })
+        .limit(1000); // Prevent 504 timeout on 200k+ rows
 
       if (error) throw error;
       return data as Transaction[];
