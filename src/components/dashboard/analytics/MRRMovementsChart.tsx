@@ -170,7 +170,7 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
     const { active, payload, label } = props;
     if (active && payload && payload.length) {
       return (
-        <div className="bg-[#1a1f36] border border-gray-700/50 rounded-lg p-3 shadow-xl">
+        <div className="bg-card border border-zinc-700 rounded-lg p-3 shadow-xl">
           <p className="text-white font-medium mb-2">{label}</p>
           {payload.map((entry: any, index: number) => (
             <p
@@ -193,7 +193,7 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
                       `${monthsToShow}m`;
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-3 sm:p-6">
+    <div className="rounded-xl border border-zinc-800 bg-card p-3 sm:p-6">
       <div className="mb-4 sm:mb-6">
         <h3 className="text-sm sm:text-lg font-semibold text-white">Movimientos de MRR</h3>
         <p className="text-xs sm:text-sm text-muted-foreground">
@@ -230,21 +230,21 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
               dataKey="newBusiness"
               name="Nuevo"
               stackId="stack"
-              fill="#10B981"
+              fill="#22c55e"
               radius={[4, 4, 0, 0]}
             />
             <Bar
               dataKey="reactivation"
               name="Reactiv"
               stackId="stack"
-              fill="#6366F1"
+              fill="#71717a"
               radius={[4, 4, 0, 0]}
             />
             <Bar
               dataKey="churn"
               name="Churn"
               stackId="stack"
-              fill="#F43F5E"
+              fill="#ef4444"
               radius={[0, 0, 4, 4]}
             />
           </BarChart>
@@ -259,15 +259,15 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
             ${chartData.reduce((sum, d) => sum + d.newBusiness, 0).toLocaleString()}
           </p>
         </div>
-        <div className="text-center p-2 sm:p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-          <p className="text-[10px] sm:text-xs text-indigo-400 mb-0.5 sm:mb-1">Reactiv ({periodLabel})</p>
-          <p className="text-sm sm:text-lg font-bold text-indigo-400">
+        <div className="text-center p-2 sm:p-3 rounded-lg bg-zinc-800 border border-zinc-700">
+          <p className="text-[10px] sm:text-xs text-zinc-400 mb-0.5 sm:mb-1">Reactiv ({periodLabel})</p>
+          <p className="text-sm sm:text-lg font-bold text-white">
             ${chartData.reduce((sum, d) => sum + d.reactivation, 0).toLocaleString()}
           </p>
         </div>
-        <div className="text-center p-2 sm:p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
-          <p className="text-[10px] sm:text-xs text-rose-400 mb-0.5 sm:mb-1">Churn ({periodLabel})</p>
-          <p className="text-sm sm:text-lg font-bold text-rose-400">
+        <div className="text-center p-2 sm:p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+          <p className="text-[10px] sm:text-xs text-red-400 mb-0.5 sm:mb-1">Churn ({periodLabel})</p>
+          <p className="text-sm sm:text-lg font-bold text-red-400">
             ${Math.abs(chartData.reduce((sum, d) => sum + d.churn, 0)).toLocaleString()}
           </p>
         </div>

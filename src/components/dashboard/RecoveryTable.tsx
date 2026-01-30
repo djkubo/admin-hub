@@ -55,24 +55,22 @@ export const getGreetingMessage = (name: string): string => {
 
 export function RecoveryTable({ clients }: RecoveryTableProps) {
   const getSourceBadge = (source: string) => {
-    switch (source.toLowerCase()) {
-      case 'stripe':
-        return <Badge className="bg-purple-500/20 text-purple-400 border border-purple-500/30">Stripe</Badge>;
-      case 'paypal':
-        return <Badge className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">PayPal</Badge>;
-      case 'stripe/paypal':
-        return <Badge className="bg-orange-500/20 text-orange-400 border border-orange-500/30">Múltiple</Badge>;
-      default:
-        return <Badge className="bg-gray-500/20 text-gray-400 border border-gray-500/30">{source}</Badge>;
-    }
+    // Unified neutral style for all sources
+    return (
+      <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700">
+        {source.toLowerCase() === 'stripe' ? 'Stripe' : 
+         source.toLowerCase() === 'paypal' ? 'PayPal' : 
+         source.toLowerCase() === 'stripe/paypal' ? 'Múltiple' : source}
+      </Badge>
+    );
   };
 
   if (clients.length === 0) {
     return (
       <div className="rounded-xl border border-border/50 bg-card p-8">
         <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 rounded-lg bg-yellow-500/10">
-            <AlertTriangle className="h-5 w-5 text-yellow-500" />
+          <div className="p-2 rounded-lg bg-zinc-800">
+            <AlertTriangle className="h-5 w-5 text-primary" />
           </div>
           <div>
             <h3 className="text-lg font-semibold text-white">Recuperación de Pagos</h3>
@@ -95,8 +93,8 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
       <div className="p-6 border-b border-border/50">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-yellow-500/10">
-              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+            <div className="p-2 rounded-lg bg-zinc-800">
+              <AlertTriangle className="h-5 w-5 text-primary" />
             </div>
             <div>
               <h3 className="text-lg font-semibold text-white">Recuperación de Pagos</h3>
@@ -146,7 +144,7 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="gap-1.5 border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                          className="gap-1.5 border-zinc-700 text-white hover:bg-zinc-800"
                           onClick={() => openNativeSms(
                             client.phone!, 
                             getRecoveryMessage(client.full_name || '', client.amount)
@@ -159,7 +157,7 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
                       {/* WhatsApp Button */}
                       <Button
                         size="sm"
-                        className="gap-1.5 bg-[#25D366] hover:bg-[#1da851] text-white border-0"
+                        className="gap-1.5 bg-primary hover:bg-primary/90 text-white border-0"
                         onClick={() => openWhatsApp(
                           client.phone!, 
                           client.full_name || '', 

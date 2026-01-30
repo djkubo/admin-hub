@@ -357,7 +357,7 @@ export default function BotChatPage() {
                                 {getInitials(contact.name, contact.contact_id)}
                               </AvatarFallback>
                             </Avatar>
-                            <div className="absolute -bottom-1 -right-1 rounded-full p-0.5 bg-green-500">
+                            <div className="absolute -bottom-1 -right-1 rounded-full p-0.5 bg-primary">
                               <Bot className="h-2.5 w-2.5 text-white" />
                             </div>
                           </div>

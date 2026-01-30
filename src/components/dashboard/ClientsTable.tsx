@@ -59,8 +59,8 @@ const getLifecycleBadge = (stage: string | null, isDelinquent?: boolean) => {
   const stageLower = stage?.toUpperCase() || "UNKNOWN";
   
   const stageConfig: Record<string, { label: string; className: string }> = {
-    LEAD: { label: "Lead", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
-    TRIAL: { label: "Trial", className: "bg-purple-500/10 text-purple-400 border-purple-500/30" },
+    LEAD: { label: "Lead", className: "bg-zinc-800 text-zinc-400 border-zinc-700" },
+    TRIAL: { label: "Trial", className: "bg-zinc-800 text-white border-zinc-700" },
     CUSTOMER: { label: "Cliente", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
     CHURN: { label: "Cancel", className: "bg-red-500/10 text-red-400 border-red-500/30" },
   };
@@ -80,9 +80,9 @@ const getPaymentStatusBadge = (paymentStatus: string | null) => {
   
   const statusConfig: Record<string, { label: string; className: string }> = {
     active: { label: "Pagando", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
-    past_due: { label: "Atrás", className: "bg-orange-500/10 text-orange-400 border-orange-500/30" },
+    past_due: { label: "Atrás", className: "bg-amber-500/10 text-amber-400 border-amber-500/30" },
     failed: { label: "Fallido", className: "bg-red-500/10 text-red-400 border-red-500/30" },
-    canceled: { label: "Cancel", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
+    canceled: { label: "Cancel", className: "bg-zinc-800 text-zinc-400 border-zinc-700" },
   };
 
   const config = statusConfig[paymentStatus] || null;
@@ -317,7 +317,7 @@ export function ClientsTable({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-blue-400"
+                          className="h-7 w-7 text-white hover:text-primary"
                           onClick={() => handleNativeSmsClick(client)}
                         >
                           <Smartphone className="h-3.5 w-3.5" />
@@ -327,7 +327,7 @@ export function ClientsTable({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-[#25D366]"
+                          className="h-7 w-7 text-white hover:text-primary"
                           onClick={() => handleWhatsAppClick(client)}
                         >
                           <MessageCircle className="h-3.5 w-3.5" />

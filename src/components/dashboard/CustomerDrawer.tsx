@@ -48,22 +48,22 @@ interface CustomerDrawerProps {
 }
 
 const statusConfig: Record<string, { label: string; color: string; icon: typeof Play }> = {
-  trialing: { label: 'En Trial', color: 'text-blue-400 bg-blue-500/10 border-blue-500/30', icon: Play },
+  trialing: { label: 'En Trial', color: 'text-white bg-zinc-800 border-zinc-700', icon: Play },
   active: { label: 'Activo', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30', icon: CheckCircle2 },
   past_due: { label: 'Pago Vencido', color: 'text-amber-400 bg-amber-500/10 border-amber-500/30', icon: AlertTriangle },
   canceled: { label: 'Cancelado', color: 'text-red-400 bg-red-500/10 border-red-500/30', icon: XCircle },
   customer: { label: 'Cliente', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30', icon: CheckCircle2 },
-  lead: { label: 'Lead', color: 'text-gray-400 bg-gray-500/10 border-gray-500/30', icon: Play },
+  lead: { label: 'Lead', color: 'text-zinc-400 bg-zinc-800 border-zinc-700', icon: Play },
   churn: { label: 'Churn', color: 'text-red-400 bg-red-500/10 border-red-500/30', icon: XCircle },
-  trial: { label: 'Trial', color: 'text-blue-400 bg-blue-500/10 border-blue-500/30', icon: Play },
+  trial: { label: 'Trial', color: 'text-white bg-zinc-800 border-zinc-700', icon: Play },
 };
 
 const eventIcons: Record<string, { icon: typeof Mail; color: string }> = {
-  email_open: { icon: Mail, color: 'text-blue-400' },
-  email_click: { icon: ExternalLink, color: 'text-cyan-400' },
+  email_open: { icon: Mail, color: 'text-white' },
+  email_click: { icon: ExternalLink, color: 'text-primary' },
   payment_failed: { icon: CreditCard, color: 'text-red-400' },
   payment_success: { icon: CheckCircle2, color: 'text-emerald-400' },
-  trial_started: { icon: Play, color: 'text-blue-400' },
+  trial_started: { icon: Play, color: 'text-white' },
   trial_converted: { icon: ArrowUpCircle, color: 'text-emerald-400' },
 };
 
@@ -290,10 +290,10 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
   const getSubscriptionStatusColor = (status: string) => {
     switch (status) {
       case 'active': return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
-      case 'trialing': return 'text-blue-400 border-blue-500/30 bg-blue-500/10';
+      case 'trialing': return 'text-white border-zinc-700 bg-zinc-800';
       case 'past_due': return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
       case 'unpaid': return 'text-red-400 border-red-500/30 bg-red-500/10';
-      default: return 'text-gray-400 border-gray-500/30 bg-gray-500/10';
+      default: return 'text-zinc-400 border-zinc-700 bg-zinc-800';
     }
   };
 
@@ -388,7 +388,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
               <p className="text-[10px] sm:text-xs text-muted-foreground">LTV Real</p>
             </div>
             <div className="rounded-lg border border-border/50 bg-background/50 p-2 sm:p-3 text-center">
-              <CreditCard className="h-4 w-4 sm:h-5 sm:w-5 mx-auto text-blue-400 mb-0.5 sm:mb-1" />
+              <CreditCard className="h-4 w-4 sm:h-5 sm:w-5 mx-auto text-primary mb-0.5 sm:mb-1" />
               <p className="text-sm sm:text-lg font-bold text-foreground">{successfulPayments}</p>
               <p className="text-[10px] sm:text-xs text-muted-foreground">Pagos</p>
             </div>
@@ -399,7 +399,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
             <Button
               onClick={handleWhatsApp}
               disabled={!client.phone}
-              className="flex-1 gap-1.5 sm:gap-2 bg-[#25D366] hover:bg-[#1da851] h-8 sm:h-9 text-xs sm:text-sm"
+              className="flex-1 gap-1.5 sm:gap-2 bg-primary hover:bg-primary/90 h-8 sm:h-9 text-xs sm:text-sm"
               size="sm"
             >
               <MessageCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4" />

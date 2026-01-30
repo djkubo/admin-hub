@@ -51,11 +51,11 @@ export function PendingInvoicesTable({
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "draft":
-        return <Badge variant="outline" className="border-yellow-500/50 text-yellow-400">Borrador</Badge>;
+        return <Badge variant="outline" className="border-zinc-700 text-zinc-400 bg-zinc-800">Borrador</Badge>;
       case "open":
-        return <Badge variant="outline" className="border-amber-500/50 text-amber-400">Abierta</Badge>;
+        return <Badge variant="outline" className="border-amber-500/50 text-amber-400 bg-amber-500/10">Abierta</Badge>;
       default:
-        return <Badge variant="secondary">{status}</Badge>;
+        return <Badge variant="outline" className="border-zinc-700 text-white bg-zinc-800">{status}</Badge>;
     }
   };
 
@@ -66,7 +66,7 @@ export function PendingInvoicesTable({
     const absolute = format(date, "dd MMM, HH:mm", { locale: es });
     return (
       <div className="flex flex-col">
-        <span className="text-amber-300">{relative}</span>
+        <span className="text-white">{relative}</span>
         <span className="text-xs text-muted-foreground">{absolute}</span>
       </div>
     );
@@ -161,11 +161,11 @@ export function PendingInvoicesTable({
 
   return (
     <TooltipProvider>
-      <div className="rounded-xl border border-amber-500/20 bg-[#1a1f36] p-6">
+      <div className="rounded-xl border border-zinc-800 bg-card p-6">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/20">
-              <FileText className="h-5 w-5 text-amber-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-800">
+              <FileText className="h-5 w-5 text-primary" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-white">Cobros Pendientes</h2>
@@ -184,7 +184,7 @@ export function PendingInvoicesTable({
                     size="sm"
                     onClick={handleChargeAll}
                     disabled={isChargingAll || isSyncing}
-                    className="gap-2 bg-green-600 hover:bg-green-700 text-white"
+                    className="gap-2 bg-primary hover:bg-primary/90 text-white"
                   >
                     {isChargingAll ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -204,7 +204,7 @@ export function PendingInvoicesTable({
               size="sm"
               onClick={onSync}
               disabled={isSyncing || isChargingAll}
-              className="gap-2 border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
               Sincronizar
@@ -214,12 +214,12 @@ export function PendingInvoicesTable({
 
         {/* Charging All Progress */}
         {isChargingAll && (
-          <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/20">
+          <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/20">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-green-400 font-medium">
+              <span className="text-sm text-primary font-medium">
                 Cobrando facturas...
               </span>
-              <span className="text-sm text-green-300">{chargeProgress}%</span>
+              <span className="text-sm text-white">{chargeProgress}%</span>
             </div>
             <Progress value={chargeProgress} className="h-2" />
           </div>
@@ -227,15 +227,15 @@ export function PendingInvoicesTable({
 
         {/* Charge Result Summary */}
         {chargeResult && !isChargingAll && (
-          <div className="mb-4 p-4 rounded-lg bg-gradient-to-r from-green-500/10 to-amber-500/10 border border-green-500/20">
+          <div className="mb-4 p-4 rounded-lg bg-zinc-800/50 border border-zinc-700">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-green-400">{chargeResult.succeeded}</p>
+                  <p className="text-2xl font-bold text-emerald-400">{chargeResult.succeeded}</p>
                   <p className="text-xs text-muted-foreground">Cobradas</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-green-300">
+                  <p className="text-2xl font-bold text-white">
                     ${(chargeResult.totalRecovered / 100).toFixed(2)}
                   </p>
                   <p className="text-xs text-muted-foreground">Recuperado</p>
@@ -260,12 +260,12 @@ export function PendingInvoicesTable({
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-16 animate-pulse rounded-lg bg-amber-500/5" />
+              <div key={i} className="h-16 animate-pulse rounded-lg bg-zinc-800/50" />
             ))}
           </div>
         ) : invoices.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
-            <Clock className="h-12 w-12 text-amber-500/30 mb-3" />
+            <Clock className="h-12 w-12 text-zinc-600 mb-3" />
             <p className="text-muted-foreground">No hay facturas pendientes</p>
             <p className="text-sm text-muted-foreground/70">
               Las facturas en draft/open aparecerán aquí
@@ -274,19 +274,19 @@ export function PendingInvoicesTable({
         ) : (
           <Table>
             <TableHeader>
-              <TableRow className="hover:bg-transparent border-amber-500/10">
-                <TableHead className="text-amber-300/80">Cliente</TableHead>
-                <TableHead className="text-amber-300/80">Monto</TableHead>
-                <TableHead className="text-amber-300/80">Estado</TableHead>
-                <TableHead className="text-amber-300/80">Cobro Programado</TableHead>
-                <TableHead className="text-amber-300/80 text-right">Acciones</TableHead>
+              <TableRow className="hover:bg-transparent border-zinc-800">
+                <TableHead className="text-muted-foreground">Cliente</TableHead>
+                <TableHead className="text-muted-foreground">Monto</TableHead>
+                <TableHead className="text-muted-foreground">Estado</TableHead>
+                <TableHead className="text-muted-foreground">Cobro Programado</TableHead>
+                <TableHead className="text-muted-foreground text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {invoices.map((invoice) => (
                 <TableRow 
                   key={invoice.id} 
-                  className="hover:bg-amber-500/5 border-amber-500/10"
+                  className="hover:bg-muted/20 border-zinc-800"
                 >
                   <TableCell>
                     <div className="flex flex-col">
@@ -299,7 +299,7 @@ export function PendingInvoicesTable({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className="text-lg font-semibold text-amber-300">
+                    <span className="text-lg font-semibold text-white">
                       ${(invoice.amount_due / 100).toFixed(2)}
                     </span>
                     <span className="text-xs text-muted-foreground ml-1">
@@ -319,7 +319,7 @@ export function PendingInvoicesTable({
                             <Button
                               variant="default"
                               size="sm"
-                              className="gap-2 bg-green-600 hover:bg-green-700 text-white"
+                              className="gap-2 bg-primary hover:bg-primary/90 text-white"
                               onClick={() => handleForceCharge(invoice)}
                               disabled={chargingInvoice === invoice.id || isChargingAll}
                             >
@@ -345,7 +345,7 @@ export function PendingInvoicesTable({
                           variant="ghost"
                           size="sm"
                           asChild
-                          className="gap-2 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                          className="gap-2 text-white hover:text-primary hover:bg-zinc-800"
                         >
                           <a
                             href={invoice.hosted_invoice_url}

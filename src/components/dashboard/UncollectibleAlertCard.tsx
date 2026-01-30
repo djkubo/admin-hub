@@ -18,7 +18,7 @@ export function UncollectibleAlertCard({
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="rounded-xl border border-red-500/30 bg-gradient-to-br from-red-500/10 via-rose-500/5 to-orange-500/10 p-4 shadow-lg shadow-red-500/5 hover:shadow-red-500/10 transition-all duration-300">
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 shadow-lg hover:border-red-500/50 transition-all duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/20 ring-2 ring-red-500/30">

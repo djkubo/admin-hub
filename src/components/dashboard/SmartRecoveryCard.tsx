@@ -48,12 +48,12 @@ export function SmartRecoveryCard() {
   const showResults = progress && (isCompleted || isFailed || isRunning);
 
   return (
-    <div className="rounded-xl border border-red-500/20 bg-gradient-to-br from-[#1a1f36] to-[#1a1f36]/80 p-6">
+    <div className="rounded-xl border border-primary/30 bg-card p-6">
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-red-500/30 to-orange-500/20">
-            <Rocket className="h-6 w-6 text-red-400" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/20">
+            <Rocket className="h-6 w-6 text-primary" />
           </div>
           <div>
             <h2 className="text-xl font-bold text-white">Smart Recovery</h2>
@@ -86,8 +86,8 @@ export function SmartRecoveryCard() {
             disabled={isRunning}
             className={
               selectedRange === hours 
-                ? "bg-red-600 hover:bg-red-700 text-white border-red-600" 
-                : "border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                ? "bg-primary hover:bg-primary/90 text-white border-primary" 
+                : "border-zinc-700 text-white hover:bg-zinc-800"
             }
           >
             {isRunning && selectedRange === hours ? (
@@ -117,8 +117,8 @@ export function SmartRecoveryCard() {
       {isRunning && progress && (
         <div className="flex flex-col items-center justify-center py-6 text-center">
           <div className="relative">
-            <Loader2 className="h-16 w-16 text-red-500 animate-spin" />
-            <Zap className="h-6 w-6 text-yellow-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+            <Loader2 className="h-16 w-16 text-primary animate-spin" />
+            <Zap className="h-6 w-6 text-white absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
           </div>
           
           <p className="mt-4 text-lg font-medium text-white">
@@ -163,7 +163,7 @@ export function SmartRecoveryCard() {
 
           {/* Progress Bar */}
           <div className="mt-4 w-full max-w-md">
-            <Progress value={undefined} className="h-2 bg-red-500/20" />
+            <Progress value={undefined} className="h-2 bg-zinc-800" />
           </div>
 
           {/* Real-time Stats */}
@@ -269,12 +269,12 @@ export function SmartRecoveryCard() {
               </p>
             </div>
 
-            <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-4">
+            <div className="rounded-lg bg-zinc-800 border border-zinc-700 p-4">
               <div className="flex items-center gap-2 mb-2">
-                <Activity className="h-5 w-5 text-blue-400" />
-                <span className="text-sm font-medium text-blue-400">Total</span>
+                <Activity className="h-5 w-5 text-primary" />
+                <span className="text-sm font-medium text-white">Total</span>
               </div>
-              <p className="text-2xl font-bold text-blue-300">
+              <p className="text-2xl font-bold text-white">
                 {progress.checkpoint.processed}
               </p>
               <p className="text-xs text-muted-foreground">
@@ -289,7 +289,7 @@ export function SmartRecoveryCard() {
               variant="outline"
               size="sm"
               onClick={exportToCSV}
-              className="gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10"
+              className="gap-2 border-zinc-700 text-white hover:bg-zinc-800"
             >
               <Download className="h-4 w-4" />
               Descargar Reporte CSV
@@ -301,8 +301,8 @@ export function SmartRecoveryCard() {
       {/* Empty State */}
       {!showResults && !isRunning && !error && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="h-16 w-16 rounded-full bg-red-500/10 flex items-center justify-center mb-4">
-            <Rocket className="h-8 w-8 text-red-400" />
+          <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+            <Rocket className="h-8 w-8 text-primary" />
           </div>
           <p className="text-lg font-medium text-white mb-2">
             Selecciona un rango para iniciar

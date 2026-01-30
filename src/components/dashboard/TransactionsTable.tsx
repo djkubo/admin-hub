@@ -39,19 +39,19 @@ const getStatusBadge = (status: string) => {
   const statusConfig: Record<string, { label: string; className: string }> = {
     requires_payment_method: { 
       label: "Requiere método", 
-      className: "bg-amber-500/10 text-amber-500 border-amber-500/20" 
+      className: "bg-amber-500/10 text-amber-400 border-amber-500/20" 
     },
     requires_confirmation: { 
       label: "Requiere confirmación", 
-      className: "bg-blue-500/10 text-blue-500 border-blue-500/20" 
+      className: "bg-zinc-800 text-white border-zinc-700" 
     },
     requires_action: { 
       label: "Requiere acción", 
-      className: "bg-orange-500/10 text-orange-500 border-orange-500/20" 
+      className: "bg-amber-500/10 text-amber-400 border-amber-500/20" 
     },
     canceled: { 
       label: "Cancelado", 
-      className: "bg-destructive/10 text-destructive border-destructive/20" 
+      className: "bg-red-500/10 text-red-400 border-red-500/20" 
     },
   };
 

@@ -18,7 +18,7 @@ interface SourceMetrics {
   trialToPaid: number;
 }
 
-const COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const COLORS = ['#AA0601', '#71717a', '#52525b', '#3f3f46', '#27272a', '#18181b', '#a1a1aa', '#d4d4d8'];
 
 export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
 
@@ -180,8 +180,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="p-1.5 sm:p-2 rounded-lg bg-blue-500/10 shrink-0">
-                <Users className="h-4 w-4 sm:h-5 sm:w-5 text-blue-400" />
+              <div className="p-1.5 sm:p-2 rounded-lg bg-zinc-800 shrink-0">
+                <Users className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
               </div>
               <div className="min-w-0">
                 <p className="text-[10px] sm:text-sm text-muted-foreground">Leads</p>
@@ -194,8 +194,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="p-1.5 sm:p-2 rounded-lg bg-amber-500/10 shrink-0">
-                <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5 text-amber-400" />
+              <div className="p-1.5 sm:p-2 rounded-lg bg-zinc-800 shrink-0">
+                <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
               </div>
               <div className="min-w-0">
                 <p className="text-[10px] sm:text-sm text-muted-foreground">En Trial</p>
@@ -208,8 +208,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="p-1.5 sm:p-2 rounded-lg bg-green-500/10 shrink-0">
-                <Target className="h-4 w-4 sm:h-5 sm:w-5 text-green-400" />
+              <div className="p-1.5 sm:p-2 rounded-lg bg-emerald-500/10 shrink-0">
+                <Target className="h-4 w-4 sm:h-5 sm:w-5 text-emerald-400" />
               </div>
               <div className="min-w-0">
                 <p className="text-[10px] sm:text-sm text-muted-foreground">Clientes</p>
@@ -273,9 +273,9 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                           tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
-                        <Bar dataKey="leads" name="Leads" fill="#3b82f6" stackId="stack" />
-                        <Bar dataKey="trials" name="Trials" fill="#f59e0b" stackId="stack" />
-                        <Bar dataKey="customers" name="Clientes" fill="#22c55e" stackId="stack" />
+                        <Bar dataKey="leads" name="Leads" fill="#71717a" stackId="stack" />
+                        <Bar dataKey="trials" name="Trials" fill="#52525b" stackId="stack" />
+                        <Bar dataKey="customers" name="Clientes" fill="#AA0601" stackId="stack" />
                       </BarChart>
                     </ResponsiveContainer>
                   </ChartContainer>
@@ -327,7 +327,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                         content={<ChartTooltipContent />}
                         formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Revenue 30d']}
                       />
-                      <Bar dataKey="revenue" name="Revenue 30d" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="revenue" name="Revenue 30d" fill="#AA0601" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -350,8 +350,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                       />
                       <YAxis stroke="#6b7280" fontSize={10} unit="%" width={35} />
                       <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="conversionRate" name="Lead→Paid" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="trialToPaid" name="Trial→Paid" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="conversionRate" name="Lead→Paid" fill="#AA0601" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="trialToPaid" name="Trial→Paid" fill="#71717a" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -377,7 +377,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                         content={<ChartTooltipContent />}
                         formatter={(value) => [`$${Number(value).toLocaleString()}`, 'LTV']}
                       />
-                      <Bar dataKey="ltv" name="LTV" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="ltv" name="LTV" fill="#AA0601" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
