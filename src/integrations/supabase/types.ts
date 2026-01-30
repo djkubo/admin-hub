@@ -2655,6 +2655,17 @@ export type Database = {
         }
         Relationships: []
       }
+      mv_client_lifecycle_counts: {
+        Row: {
+          churn_count: number | null
+          converted_count: number | null
+          customer_count: number | null
+          lead_count: number | null
+          refreshed_at: string | null
+          trial_count: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       cleanup_old_data: { Args: never; Returns: Json }
@@ -2832,6 +2843,7 @@ export type Database = {
       normalize_phone_e164: { Args: { phone: string }; Returns: string }
       promote_metrics_staging: { Args: never; Returns: boolean }
       rebuild_metrics_staging: { Args: never; Returns: Json }
+      refresh_lifecycle_counts: { Args: never; Returns: undefined }
       reset_stuck_syncs: {
         Args: { p_timeout_minutes?: number }
         Returns: {
