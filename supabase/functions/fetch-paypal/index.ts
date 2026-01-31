@@ -331,6 +331,39 @@ Deno.serve(async (req) => {
     }
     // ================================================================
 
+    // ============= TEST ONLY MODE - Quick API verification =============
+    let body: any = {};
+    try { body = await req.json(); } catch { /* empty body */ }
+
+    if (body.testOnly === true) {
+      logger.info('Test-only mode: Verifying PayPal API connection');
+      try {
+        const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
+        
+        logger.info('PayPal API test result: SUCCESS (got access token)');
+        
+        return new Response(JSON.stringify({
+          ok: true,
+          success: true,
+          status: 'connected',
+          apiStatus: 200,
+          hasToken: true,
+          error: null,
+          testOnly: true
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      } catch (testError) {
+        logger.error('PayPal API test failed', testError instanceof Error ? testError : new Error(String(testError)));
+        return new Response(JSON.stringify({
+          ok: false,
+          success: false,
+          status: 'error',
+          error: testError instanceof Error ? testError.message : 'Connection failed',
+          testOnly: true
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+    }
+    // ================================================================
+
     // Parse request
     let originalStartDate: string;
     let originalEndDate: string;
@@ -352,70 +385,61 @@ Deno.serve(async (req) => {
     const threeYearsAgoMs = nowMs - (3 * 365 - 7) * 24 * 60 * 60 * 1000;
     const threeYearsAgo = new Date(threeYearsAgoMs);
 
-    try {
-      const body = await req.json();
-      fetchAll = body.fetchAll === true;
-      cleanupStale = body.cleanupStale === true;
-      forceCancel = body.forceCancel === true;
-      isContinuation = body._continuation === true;
-      page = body.page || 1;
-      chunkIndex = body.chunkIndex || 0;
-      totalChunks = body.totalChunks || 1;
-      syncRunId = body.syncRunId || null;
+    // Now use already-parsed body for remaining logic
+    fetchAll = body.fetchAll === true;
+    cleanupStale = body.cleanupStale === true;
+    forceCancel = body.forceCancel === true;
+    isContinuation = body._continuation === true;
+    page = body.page || 1;
+    chunkIndex = body.chunkIndex || 0;
+    totalChunks = body.totalChunks || 1;
+    syncRunId = body.syncRunId || null;
 
-      // For continuations, use the chunk dates passed
-      if (isContinuation && body.chunkStart && body.chunkEnd) {
-        chunkStart = body.chunkStart;
-        chunkEnd = body.chunkEnd;
-        originalStartDate = body.originalStartDate || body.chunkStart;
-        originalEndDate = body.originalEndDate || body.chunkEnd;
+    // For continuations, use the chunk dates passed
+    if (isContinuation && body.chunkStart && body.chunkEnd) {
+      chunkStart = body.chunkStart;
+      chunkEnd = body.chunkEnd;
+      originalStartDate = body.originalStartDate || body.chunkStart;
+      originalEndDate = body.originalEndDate || body.chunkEnd;
+    } else {
+      // Initial request - calculate the range
+      let requestedStart: Date;
+      let requestedEnd: Date;
+
+      if (body.startDate) {
+        requestedStart = new Date(body.startDate);
+        if (requestedStart < threeYearsAgo) {
+          requestedStart = threeYearsAgo;
+        }
       } else {
-        // Initial request - calculate the range
-        let requestedStart: Date;
-        let requestedEnd: Date;
-
-        if (body.startDate) {
-          requestedStart = new Date(body.startDate);
-          if (requestedStart < threeYearsAgo) {
-            requestedStart = threeYearsAgo;
-          }
-        } else {
-          requestedStart = new Date(nowMs - 31 * 24 * 60 * 60 * 1000);
-        }
-
-        if (body.endDate) {
-          const bodyEnd = new Date(body.endDate);
-          requestedEnd = bodyEnd < safeEndDate ? bodyEnd : safeEndDate;
-        } else {
-          requestedEnd = safeEndDate;
-        }
-
-        originalStartDate = formatPayPalDate(requestedStart);
-        originalEndDate = formatPayPalDate(requestedEnd);
-
-        // Split into chunks if range > 31 days
-        const rangeDays = (requestedEnd.getTime() - requestedStart.getTime()) / (24 * 60 * 60 * 1000);
-        
-        if (rangeDays > MAX_DAYS_PER_CHUNK) {
-          const chunks = splitIntoChunks(requestedStart, requestedEnd);
-          totalChunks = chunks.length;
-          chunkIndex = 0;
-          chunkStart = formatPayPalDate(chunks[0].start);
-          chunkEnd = formatPayPalDate(chunks[0].end);
-          logger.info(`📊 Large range detected: ${Math.round(rangeDays)} days → split into ${totalChunks} chunks of ${MAX_DAYS_PER_CHUNK} days`);
-        } else {
-          chunkStart = originalStartDate;
-          chunkEnd = originalEndDate;
-          totalChunks = 1;
-        }
+        requestedStart = new Date(nowMs - 31 * 24 * 60 * 60 * 1000);
       }
-    } catch {
-      // Default range if no body: last 31 days
-      const defaultStart = new Date(nowMs - 31 * 24 * 60 * 60 * 1000);
-      originalStartDate = formatPayPalDate(defaultStart);
-      originalEndDate = formatPayPalDate(safeEndDate);
-      chunkStart = originalStartDate;
-      chunkEnd = originalEndDate;
+
+      if (body.endDate) {
+        const bodyEnd = new Date(body.endDate);
+        requestedEnd = bodyEnd < safeEndDate ? bodyEnd : safeEndDate;
+      } else {
+        requestedEnd = safeEndDate;
+      }
+
+      originalStartDate = formatPayPalDate(requestedStart);
+      originalEndDate = formatPayPalDate(requestedEnd);
+
+      // Split into chunks if range > 31 days
+      const rangeDays = (requestedEnd.getTime() - requestedStart.getTime()) / (24 * 60 * 60 * 1000);
+      
+      if (rangeDays > MAX_DAYS_PER_CHUNK) {
+        const chunks = splitIntoChunks(requestedStart, requestedEnd);
+        totalChunks = chunks.length;
+        chunkIndex = 0;
+        chunkStart = formatPayPalDate(chunks[0].start);
+        chunkEnd = formatPayPalDate(chunks[0].end);
+        logger.info(`📊 Large range detected: ${Math.round(rangeDays)} days → split into ${totalChunks} chunks of ${MAX_DAYS_PER_CHUNK} days`);
+      } else {
+        chunkStart = originalStartDate;
+        chunkEnd = originalEndDate;
+        totalChunks = 1;
+      }
     }
 
     console.log(`📅 PayPal: chunk ${chunkIndex + 1}/${totalChunks}, page ${page}, range: ${chunkStart} → ${chunkEnd}`);

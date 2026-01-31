@@ -498,6 +498,28 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const ghlApiKey = Deno.env.get('GHL_API_KEY');
     const ghlLocationId = Deno.env.get('GHL_LOCATION_ID');
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // ============= KILL SWITCH: Check if GHL is paused =============
+    const { data: ghlPausedConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'ghl_paused')
+      .single();
+
+    if (ghlPausedConfig?.value === 'true') {
+      logger.info('🛑 GHL PAUSED - Manual sync blocked');
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          success: false,
+          status: 'paused',
+          error: 'GoHighLevel está pausado. Actívalo desde Settings → Configuración del Sistema.' 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    // ================================================================
 
     if (!ghlApiKey || !ghlLocationId) {
       return new Response(
@@ -505,8 +527,6 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Parse request
     let dryRun = false;

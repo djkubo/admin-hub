@@ -386,6 +386,28 @@ Deno.serve(async (req) => {
     const testOnly = body.testOnly ?? false; // TEST MODE
     const cursor = body.cursor ?? 0;
     const forceCancel = body.forceCancel === true;
+
+    // ============= KILL SWITCH: Check if ManyChat is paused =============
+    const { data: manychatPausedConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'manychat_paused')
+      .single();
+
+    // Allow testOnly to pass through even if paused
+    if (manychatPausedConfig?.value === 'true' && !testOnly && !forceCancel) {
+      logger.info('🛑 MANYCHAT PAUSED - Manual sync blocked');
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          success: false,
+          status: 'paused',
+          error: 'ManyChat está pausado. Actívalo desde Settings → Configuración del Sistema.' 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    // ================================================================
     let syncRunId = body.syncRunId;
 
     // ============ TEST ONLY MODE - Just verify API connection ============

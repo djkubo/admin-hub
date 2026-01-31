@@ -14,6 +14,7 @@ interface SystemSettings {
   auto_dunning_enabled: boolean;
   sync_paused: boolean;
   ghl_paused: boolean;
+  manychat_paused: boolean;
   quiet_hours_start: string;
   quiet_hours_end: string;
   company_name: string;
@@ -24,6 +25,7 @@ const defaultSettings: SystemSettings = {
   auto_dunning_enabled: true,
   sync_paused: false,
   ghl_paused: false,
+  manychat_paused: false,
   quiet_hours_start: '21:00',
   quiet_hours_end: '08:00',
   company_name: '',
@@ -90,7 +92,7 @@ export default function SystemTogglesPanel() {
       for (const row of data || []) {
         if (row.key in loaded) {
           const value = row.value;
-          if (row.key === 'auto_dunning_enabled' || row.key === 'sync_paused' || row.key === 'ghl_paused') {
+          if (row.key === 'auto_dunning_enabled' || row.key === 'sync_paused' || row.key === 'ghl_paused' || row.key === 'manychat_paused') {
             (loaded as Record<string, boolean | string>)[row.key] = value === 'true';
           } else {
             (loaded as Record<string, boolean | string>)[row.key] = value || '';
@@ -206,7 +208,22 @@ export default function SystemTogglesPanel() {
           />
         </div>
 
-        {/* Quiet Hours */}
+        {/* ManyChat Paused Toggle - EMERGENCY KILL SWITCH */}
+        <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+          <div className="flex items-center gap-3">
+            <Pause className="h-5 w-5 text-destructive" />
+            <div>
+              <Label className="font-medium text-destructive">🛑 Pausar ManyChat</Label>
+              <p className="text-xs text-muted-foreground">
+                Detiene TODOS los syncs de ManyChat
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={settings.manychat_paused}
+            onCheckedChange={(checked) => updateSetting('manychat_paused', checked)}
+          />
+        </div>
         <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
           <div className="flex items-center gap-3">
             <Clock className="h-5 w-5 text-zinc-400" />

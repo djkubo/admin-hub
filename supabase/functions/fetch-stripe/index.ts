@@ -100,6 +100,54 @@ const DECLINE_REASONS_ES: Record<string, string> = {
 const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ============= TEST ONLY: Quick API verification =============
+async function handleTestOnly(stripeSecretKey: string, corsHeaders: Record<string, string>): Promise<Response> {
+  logger.info('Test-only mode: Verifying Stripe API connection');
+  try {
+    const testResponse = await fetch('https://api.stripe.com/v1/balance', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${stripeSecretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    
+    let balanceInfo = null;
+    if (testResponse.ok) {
+      try {
+        const data = await testResponse.json();
+        balanceInfo = { 
+          available: data.available?.[0]?.amount, 
+          currency: data.available?.[0]?.currency 
+        };
+      } catch {
+        // Ignore JSON parse errors
+      }
+    }
+    
+    logger.info('Stripe API test result', { ok: testResponse.ok, status: testResponse.status, balanceInfo });
+    
+    return new Response(JSON.stringify({
+      ok: testResponse.ok,
+      success: testResponse.ok,
+      status: testResponse.ok ? 'connected' : 'error',
+      apiStatus: testResponse.status,
+      balanceInfo,
+      error: testResponse.ok ? null : `Stripe API returned ${testResponse.status}`,
+      testOnly: true
+    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (error) {
+    logger.error('Stripe API test failed', error instanceof Error ? error : new Error(String(error)));
+    return new Response(JSON.stringify({
+      ok: false,
+      success: false,
+      status: 'error',
+      error: error instanceof Error ? error.message : 'Connection failed',
+      testOnly: true
+    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+}
+
 // ============= HELPERS =============
 
 async function getCustomerInfo(customerId: string, stripeSecretKey: string): Promise<{ email: string | null; name: string | null; phone: string | null }> {
@@ -571,11 +619,17 @@ Deno.serve(async (req) => {
       );
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Parse body first to check for _continuation flag
+    // Parse body first to check for testOnly and _continuation flags
     let body: any = {};
     try { body = await req.json(); } catch { /* empty body */ }
+
+    // ============= TEST ONLY MODE - Quick API verification =============
+    if (body.testOnly === true) {
+      return await handleTestOnly(stripeSecretKey, corsHeaders);
+    }
+    // ================================================================
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // ============= KILL SWITCH: Check if sync is paused =============
     const { data: syncPausedConfig } = await supabase
