@@ -511,6 +511,7 @@ Deno.serve(async (req) => {
     // Parse request
     let dryRun = false;
     let stageOnly = false; // NEW: Stage-only mode
+    let testOnly = false; // TEST MODE: Just verify API connection
     let startAfterId: string | null = null;
     let startAfter: number | null = null;
     let syncRunId: string | null = null;
@@ -519,8 +520,9 @@ Deno.serve(async (req) => {
 
     try {
       const body = await req.json();
-      dryRun = body.dry_run ?? false;
+      dryRun = body.dry_run ?? body.dryRun ?? false;
       stageOnly = body.stageOnly ?? false; // NEW
+      testOnly = body.testOnly ?? false; // TEST MODE
       cleanupStale = body.cleanupStale === true;
       forceCancel = body.forceCancel === true;
       startAfterId = body.startAfterId || null;
@@ -528,6 +530,53 @@ Deno.serve(async (req) => {
       syncRunId = body.syncRunId || null;
     } catch {
       // Empty body is OK
+    }
+
+    // ============ TEST ONLY MODE - Just verify API connection ============
+    if (testOnly) {
+      logger.info('Test-only mode: Verifying GHL API connection');
+      try {
+        const testResponse = await fetch(
+          `https://services.leadconnectorhq.com/locations/${ghlLocationId}`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${ghlApiKey}`,
+              'Version': '2021-07-28',
+              'Accept': 'application/json'
+            }
+          }
+        );
+        
+        const isOk = testResponse.ok;
+        const statusCode = testResponse.status;
+        
+        logger.info('GHL API test result', { ok: isOk, status: statusCode });
+        
+        return new Response(
+          JSON.stringify({
+            ok: isOk,
+            success: isOk,
+            status: isOk ? 'connected' : 'error',
+            apiStatus: statusCode,
+            error: isOk ? null : `GHL API returned ${statusCode}`,
+            testOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (testError) {
+        logger.error('GHL API test failed', testError instanceof Error ? testError : new Error(String(testError)));
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            success: false,
+            status: 'error',
+            error: testError instanceof Error ? testError.message : 'Connection failed',
+            testOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
     // ============ FORCE CANCEL ALL SYNCS ============

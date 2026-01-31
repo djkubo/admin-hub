@@ -380,12 +380,72 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const body: SyncRequest = await req.json().catch(() => ({}));
+    const body: SyncRequest & { testOnly?: boolean } = await req.json().catch(() => ({}));
     const dryRun = body.dry_run ?? false;
     const stageOnly = body.stageOnly ?? false;
+    const testOnly = body.testOnly ?? false; // TEST MODE
     const cursor = body.cursor ?? 0;
     const forceCancel = body.forceCancel === true;
     let syncRunId = body.syncRunId;
+
+    // ============ TEST ONLY MODE - Just verify API connection ============
+    if (testOnly) {
+      logger.info('Test-only mode: Verifying ManyChat API connection');
+      try {
+        const testResponse = await fetch(
+          'https://api.manychat.com/fb/page/getInfo',
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${manychatApiKey}`,
+              'Accept': 'application/json'
+            }
+          }
+        );
+        
+        const isOk = testResponse.ok;
+        const statusCode = testResponse.status;
+        let pageInfo = null;
+        
+        if (isOk) {
+          try {
+            const data = await testResponse.json();
+            if (data.status === 'success' && data.data) {
+              pageInfo = { name: data.data.name, id: data.data.id };
+            }
+          } catch {
+            // Ignore JSON parse errors
+          }
+        }
+        
+        logger.info('ManyChat API test result', { ok: isOk, status: statusCode, pageInfo });
+        
+        return new Response(
+          JSON.stringify({
+            ok: isOk,
+            success: isOk,
+            status: isOk ? 'connected' : 'error',
+            apiStatus: statusCode,
+            pageInfo,
+            error: isOk ? null : `ManyChat API returned ${statusCode}`,
+            testOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (testError) {
+        logger.error('ManyChat API test failed', testError instanceof Error ? testError : new Error(String(testError)));
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            success: false,
+            status: 'error',
+            error: testError instanceof Error ? testError.message : 'Connection failed',
+            testOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
 
     // ============ FORCE CANCEL ALL SYNCS ============
     if (forceCancel) {

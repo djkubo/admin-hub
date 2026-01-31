@@ -71,9 +71,9 @@ export function IntegrationsStatusPanel() {
     }, 30000);
     
     try {
-      const result = await invokeWithAdminKey<{ success?: boolean; ok?: boolean; error?: string }>(
+      const result = await invokeWithAdminKey<{ success?: boolean; ok?: boolean; error?: string; testOnly?: boolean }>(
         integration.testEndpoint,
-        { dryRun: true, limit: 1 }
+        { testOnly: true } // Fast health check mode - no sync, just API ping
       );
 
       clearTimeout(timeoutId);
