@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 interface SystemSettings {
   auto_dunning_enabled: boolean;
   sync_paused: boolean;
+  ghl_paused: boolean;
   quiet_hours_start: string;
   quiet_hours_end: string;
   company_name: string;
@@ -22,6 +23,7 @@ interface SystemSettings {
 const defaultSettings: SystemSettings = {
   auto_dunning_enabled: true,
   sync_paused: false,
+  ghl_paused: false,
   quiet_hours_start: '21:00',
   quiet_hours_end: '08:00',
   company_name: '',
@@ -88,7 +90,7 @@ export default function SystemTogglesPanel() {
       for (const row of data || []) {
         if (row.key in loaded) {
           const value = row.value;
-          if (row.key === 'auto_dunning_enabled' || row.key === 'sync_paused') {
+          if (row.key === 'auto_dunning_enabled' || row.key === 'sync_paused' || row.key === 'ghl_paused') {
             (loaded as Record<string, boolean | string>)[row.key] = value === 'true';
           } else {
             (loaded as Record<string, boolean | string>)[row.key] = value || '';
@@ -184,6 +186,23 @@ export default function SystemTogglesPanel() {
           <Switch
             checked={settings.sync_paused}
             onCheckedChange={(checked) => updateSetting('sync_paused', checked)}
+          />
+        </div>
+
+        {/* GHL Paused Toggle - EMERGENCY KILL SWITCH */}
+        <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+          <div className="flex items-center gap-3">
+            <Pause className="h-5 w-5 text-destructive" />
+            <div>
+              <Label className="font-medium text-destructive">🛑 Pausar GoHighLevel</Label>
+              <p className="text-xs text-muted-foreground">
+                Detiene TODOS los webhooks y syncs de GHL
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={settings.ghl_paused}
+            onCheckedChange={(checked) => updateSetting('ghl_paused', checked)}
           />
         </div>
 

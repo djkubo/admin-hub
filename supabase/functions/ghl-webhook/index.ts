@@ -240,8 +240,31 @@ Deno.serve(async (req: Request) => {
   }
 
   logger.info("DB health check passed", { requestId });
+
   // =========================================================================
-  // FIN CIRCUIT BREAKER - Continuar procesamiento normal
+  // KILL SWITCH - Verificar si GHL está pausado globalmente
+  // =========================================================================
+  const { data: pausedSetting } = await supabase
+    .from('system_settings')
+    .select('value')
+    .eq('key', 'ghl_paused')
+    .single();
+
+  if (pausedSetting?.value === 'true') {
+    logger.info("🛑 GHL PAUSED - Webhook acknowledged but not processed", { requestId });
+    return new Response(JSON.stringify({ 
+      success: true, 
+      action: "paused",
+      message: "GHL integration is currently paused",
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  logger.info("GHL not paused, proceeding with processing", { requestId });
+  // =========================================================================
+  // FIN KILL SWITCH - Continuar procesamiento normal
   // =========================================================================
 
   try {
