@@ -557,16 +557,42 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ========== RESUME PAUSED SYNC ==========
-    if (body.resumeSync) {
-      const { data: pausedSync } = await supabase
-        .from('sync_runs')
-        .select('id, checkpoint')
-        .eq('source', 'stripe')
-        .in('status', ['paused', 'failed'])
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .single();
+    // ========== RESUME PAUSED/FAILED SYNC ==========
+    if (body.resumeSync || body.resumeFromCursor) {
+      // If resumeFromCursor is passed, we look for a sync with that cursor
+      // If resumeSync is true, we find the most recent resumable sync
+      
+      let pausedSync: { id: string; checkpoint: any } | null = null;
+      
+      if (body.resumeFromCursor) {
+        // Find sync by cursor
+        const { data } = await supabase
+          .from('sync_runs')
+          .select('id, checkpoint')
+          .eq('source', 'stripe')
+          .in('status', ['paused', 'failed'])
+          .order('started_at', { ascending: false })
+          .limit(10);
+        
+        // Find the one with matching cursor
+        pausedSync = data?.find((s: any) => s.checkpoint?.cursor === body.resumeFromCursor) || null;
+        
+        // If not found by cursor, just get the most recent with any checkpoint
+        if (!pausedSync && data && data.length > 0) {
+          pausedSync = data.find((s: any) => s.checkpoint?.cursor) || null;
+        }
+      } else {
+        // Get most recent resumable
+        const { data } = await supabase
+          .from('sync_runs')
+          .select('id, checkpoint')
+          .eq('source', 'stripe')
+          .in('status', ['paused', 'failed'])
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .single();
+        pausedSync = data;
+      }
 
       if (!pausedSync || !pausedSync.checkpoint) {
         return new Response(
@@ -595,8 +621,10 @@ Deno.serve(async (req) => {
         JSON.stringify({ 
           success: true, 
           status: 'resumed', 
+          run_id: pausedSync.id,
           syncRunId: pausedSync.id,
-          resumedFrom: checkpoint.runningTotal || 0
+          resumedFrom: checkpoint.runningTotal || 0,
+          cursor: checkpoint.cursor?.slice(-15)
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
