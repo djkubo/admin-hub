@@ -1,131 +1,99 @@
 
+# Plan: Corregir CORS y Estados Fantasma de Sync
 
-# Plan de Recuperación Completa de Datos
-
-## Estado Actual del Sistema
-
-| Tabla | Registros | Estado |
-|-------|-----------|--------|
-| `transactions` | 164,827 | ✅ Stripe: 108k, PayPal: 38k, Web: 18k |
-| `clients` | 221,276 | ✅ Base sólida |
-| `ghl_contacts_raw` | 8 | ⚠️ Casi vacío - necesita sync |
-| `manychat_contacts_raw` | 0 | ❌ Vacío - necesita sync |
-| `csv_imports_raw` | 0 | ✅ Ya unificado |
-
-**Última sincronización PayPal:** 27 enero (faltan 3 días)
-**Última sincronización Stripe:** 29 enero (reciente)
+## Resumen del Problema
+1. **Error CORS** en 4 Edge Functions que no tienen la URL de producción (`https://zen-admin-joy.lovable.app`) en sus origins permitidos
+2. **Estados fantasma** en la UI de sync cuando las respuestas de API fallan silenciosamente
 
 ---
 
-## Flujo de Ejecución Recomendado
+## Fase 1: Corregir CORS en Edge Functions
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│  FASE 1: DESCARGAR DATOS (Staging)                          │
-├─────────────────────────────────────────────────────────────┤
-│  1.1 Stripe → Historial Completo (si hay gaps)              │
-│  1.2 PayPal → Últimos 7 días (actualizar)                   │
-│  1.3 GHL → Todo el historial                                │
-│  1.4 ManyChat → Todo el historial                           │
-│      ⏱️ Esperar que cada uno termine antes del siguiente    │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│  FASE 2: UNIFICAR IDENTIDADES                               │
-├─────────────────────────────────────────────────────────────┤
-│  2.1 Ejecutar "Unify All Sources"                           │
-│      → Merge GHL raw → clients                              │
-│      → Merge ManyChat raw → clients                         │
-│      → Enriquecer perfiles con datos de pago                │
-│      ⏱️ Proceso largo (~30 min para 200k+ registros)        │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│  FASE 3: LIMPIEZA AUTOMÁTICA                                │
-├─────────────────────────────────────────────────────────────┤
-│  3.1 Ejecutar cleanup_old_data()                            │
-│      → Elimina staging > 30 días                            │
-│      → Elimina sync_runs > 14 días                          │
-│      → Libera espacio en disco                              │
-└─────────────────────────────────────────────────────────────┘
+### Archivos a modificar:
+1. `supabase/functions/reconcile-metrics/index.ts`
+2. `supabase/functions/create-portal-session/index.ts`
+3. `supabase/functions/force-charge-invoice/index.ts`
+4. `supabase/functions/sync-clients/index.ts`
+
+### Cambio en cada archivo:
+Agregar la URL de producción a `ALLOWED_ORIGINS`:
+
+```typescript
+const ALLOWED_ORIGINS = [
+  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://zen-admin-joy.lovable.app",  // <-- AGREGAR ESTA LÍNEA
+  "https://lovable.dev",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
 ```
 
 ---
 
-## Pasos Detallados
+## Fase 2: Prevenir Estados Fantasma en IntegrationsStatusPanel
 
-### Paso 1: Actualizar PayPal (7 días)
-- **Por qué:** Última transacción fue el 27 enero, faltan 3 días de datos
-- **Acción:** Sync Center → PayPal → 7 días
-- **Tiempo estimado:** 2-5 minutos
+### Archivo: `src/components/dashboard/IntegrationsStatusPanel.tsx`
 
-### Paso 2: Sincronizar GHL (Todo el historial)
-- **Por qué:** Solo hay 8 registros en staging, probablemente falló
-- **Acción:** Sync Center → GHL → "Todo el historial"
-- **Tiempo estimado:** 10-30 minutos dependiendo del volumen
-- **⚠️ Nota:** Si da error 429 (Too Many Requests), esperar 5 min y reintentar
+### Mejoras:
+1. **Timeout de seguridad** de 30 segundos para evitar spinners infinitos
+2. **Limpieza automática** del estado `testing` en caso de error de red
+3. **Mensaje de error más descriptivo** cuando hay problemas de conexión
 
-### Paso 3: Sincronizar ManyChat
-- **Por qué:** Tabla vacía, necesita todos los suscriptores
-- **Acción:** Sync Center → ManyChat → Sincronizar
-- **Tiempo estimado:** 5-15 minutos
+```typescript
+const testConnection = async (integration: Integration) => {
+  if (!integration.testEndpoint) {
+    toast.info('Esta integración no tiene prueba automática');
+    return;
+  }
 
-### Paso 4: Unificar Todo
-- **Por qué:** Consolidar todas las fuentes en `clients`
-- **Acción:** Sync Center → "Unify All Sources"
-- **Tiempo estimado:** 20-45 minutos para ~200k registros
-- **✅ Auto-continúa:** El proceso se encadena automáticamente
-
-### Paso 5: Limpieza Final
-- **Por qué:** Liberar espacio después de procesar
-- **Acción:** Ejecutar `SELECT cleanup_old_data();` desde settings o esperar cron
-- **Resultado:** Elimina datos de staging ya procesados
+  setTesting(integration.id);
+  
+  // Timeout de seguridad
+  const timeout = setTimeout(() => {
+    setTesting(null);
+    setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
+    toast.error(`${integration.name}: Timeout - sin respuesta`);
+  }, 30000);
+  
+  try {
+    const result = await invokeWithAdminKey<...>(...);
+    clearTimeout(timeout);
+    // ... resto de la lógica
+  } catch (error) {
+    clearTimeout(timeout);
+    setTesting(null);
+    setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
+    toast.error(`Error probando ${integration.name}: ${error.message || 'Error de conexión'}`);
+  }
+};
+```
 
 ---
 
-## Mejoras al Sistema (Implementación)
+## Fase 3: Verificar y Limpiar SyncCenter
 
-Para facilitar este flujo, propongo agregar un **Panel de Recuperación Guiada** en el Sync Center:
+### Archivo: `src/components/dashboard/SyncCenter.tsx`
 
-### Componentes a Crear
+### Mejora similar:
+Agregar timeout de seguridad en las mutaciones de sync para evitar spinners infinitos.
 
-**1. Botones de Acción Rápida en SyncOrchestrator**
-- "Recuperación Completa" - Ejecuta todo el flujo secuencialmente
-- Indicador de progreso por fase
-- Log de actividad en tiempo real
+---
 
-**2. Cola de Sincronización Inteligente**
-- Encolar syncs en orden
-- Esperar que uno termine antes de iniciar el siguiente
-- Manejar errores con retry automático
-
-### Archivos a Modificar
+## Resumen de Cambios
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/components/dashboard/SyncOrchestrator.tsx` | Agregar botón "Recuperación Completa" |
-| `src/hooks/useSyncQueue.ts` | Nuevo hook para manejar cola de syncs |
+| `reconcile-metrics/index.ts` | Agregar URL de producción a CORS |
+| `create-portal-session/index.ts` | Agregar URL de producción a CORS |
+| `force-charge-invoice/index.ts` | Agregar URL de producción a CORS |
+| `sync-clients/index.ts` | Agregar URL de producción a CORS |
+| `IntegrationsStatusPanel.tsx` | Timeout de 30s para evitar spinners |
+| `SyncCenter.tsx` | Timeout de 30s en mutaciones |
 
 ---
 
-## Resumen Visual del Flujo
-
-```text
- ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
- │  PayPal  │───▶│   GHL    │───▶│ ManyChat │───▶│  Unify   │
- │  7 días  │    │ Historial│    │ Historial│    │   All    │
- └──────────┘    └──────────┘    └──────────┘    └──────────┘
-                                                       │
-                                                       ▼
-                                                 ┌──────────┐
-                                                 │ Cleanup  │
-                                                 │  Datos   │
-                                                 └──────────┘
-```
-
----
-
-## Acción Inmediata
-
-¿Quieres que implemente los botones de acción rápida en el Sync Center para ejecutar este flujo de forma guiada?
+## Resultado Esperado
+- Las funciones de Diagnostics (reconcile-metrics) funcionarán desde producción
+- Los modales de test de conexiones nunca quedarán atascados
+- Si algo falla, el usuario verá un mensaje claro en vez de un spinner infinito
 
