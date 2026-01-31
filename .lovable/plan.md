@@ -1,133 +1,56 @@
 
-# Plan: Arreglar Modales Atascados y CORS de Reconcile
+# Plan: Desplegar Edge Functions y Corregir Diagnostics
 
 ## Diagnóstico Confirmado
 
-### Problema 1: Error CORS en `reconcile-metrics` (Diagnostics)
-- **Causa**: La Edge Function ya tiene el código correcto con `https://zen-admin-joy.lovable.app`, pero los cambios NO están desplegados en Supabase
-- **Solución**: Desplegar manualmente la Edge Function
+### Buenas Noticias:
+- **No hay syncs atascados ejecutándose** - La base de datos confirma 0 syncs de GHL/ManyChat en estado "running"
+- **Los webhooks de GHL funcionan bien** - Procesando correctamente y guardando en staging (~52 contactos)
+- **El código `testOnly` YA EXISTE** en `sync-ghl` y `sync-manychat` (líneas 536-580 y 392-448 respectivamente)
 
-### Problema 2: Modales "atascados" en Settings (ManyChat y GHL)  
-- **Causa**: El panel de "Probar Conexión" llama a `sync-ghl` y `sync-manychat` que ejecutan sincronizaciones completas (pueden tardar minutos)
-- **Lo que debería pasar**: Una prueba de conexión solo debería verificar que la API responde, no sincronizar datos
-
----
-
-## Fase 1: Desplegar Edge Functions (Acción Inmediata)
-
-Ejecutar deploy de las 4 Edge Functions con CORS corregido:
-1. `reconcile-metrics`
-2. `create-portal-session`
-3. `force-charge-invoice`
-4. `sync-clients`
+### El Problema Real:
+Las Edge Functions **tienen el código correcto pero NO están desplegadas** en Supabase. Cuando el IntegrationsStatusPanel envía `{ testOnly: true }`, la versión en producción NO reconoce ese parámetro y trata de ejecutar un sync completo → timeout → modal "atascado".
 
 ---
 
-## Fase 2: Crear Modo "Test Only" para GHL y ManyChat
+## Fase 1: Desplegar TODAS las Edge Functions Críticas
 
-### Cambios en `supabase/functions/sync-ghl/index.ts`:
-Agregar parámetro `testOnly: true` que solo hace un ping a la API sin sincronizar:
+Desplegar inmediatamente:
+1. `sync-ghl` - con modo testOnly  
+2. `sync-manychat` - con modo testOnly
+3. `reconcile-metrics` - con CORS corregido
 
-```typescript
-// Al inicio de Deno.serve, después de parsear body:
-if (body?.testOnly) {
-  // Solo verificar que la API responde
-  const testResponse = await fetch(
-    `https://services.leadconnectorhq.com/locations/${ghlLocationId}`,
-    { headers: { 'Authorization': `Bearer ${ghlApiKey}`, 'Version': '2021-07-28' } }
-  );
-  
-  return new Response(JSON.stringify({
-    ok: testResponse.ok,
-    success: testResponse.ok,
-    status: testResponse.ok ? 'connected' : 'error',
-    error: testResponse.ok ? null : `API returned ${testResponse.status}`
-  }), { headers: corsHeaders });
-}
-```
-
-### Cambios en `supabase/functions/sync-manychat/index.ts`:
-Agregar el mismo parámetro `testOnly`:
-
-```typescript
-if (body?.testOnly) {
-  // Verificar API key con endpoint de info
-  const testResponse = await fetch(
-    'https://api.manychat.com/fb/page/getInfo',
-    { headers: { 'Authorization': `Bearer ${manychatApiKey}` } }
-  );
-  
-  return new Response(JSON.stringify({
-    ok: testResponse.ok,
-    success: testResponse.ok,
-    status: testResponse.ok ? 'connected' : 'error',
-    error: testResponse.ok ? null : `API returned ${testResponse.status}`
-  }), { headers: corsHeaders });
-}
-```
+Esto solucionará:
+- Los modales de GoHighLevel y ManyChat "atascados"
+- El error CORS de Reconciliación
 
 ---
 
-## Fase 3: Actualizar IntegrationsStatusPanel
+## Fase 2: Verificar la Ruta de Error `rebuild_metrics_staging`
 
-### Archivo: `src/components/dashboard/IntegrationsStatusPanel.tsx`
-
-Cambiar el payload de prueba de conexión:
-
-```typescript
-// ANTES
-const result = await invokeWithAdminKey<...>(
-  integration.testEndpoint,
-  { dryRun: true, limit: 1 }  // ❌ Esto ejecuta un sync completo
-);
-
-// DESPUÉS  
-const result = await invokeWithAdminKey<...>(
-  integration.testEndpoint,
-  { testOnly: true }  // ✅ Solo verifica la conexión
-);
+El log de consola muestra:
 ```
+POST /rest/v1/rpc/rebuild_metrics_staging 404 (Not Found)
+```
+
+Esta función RPC puede no existir o tener un nombre diferente. Verificaré el schema y corregiré el DiagnosticsPanel si es necesario.
 
 ---
 
 ## Resumen de Cambios
 
-| Archivo | Cambio |
-|---------|--------|
-| Edge Functions (deploy) | Desplegar las 4 funciones con CORS actualizado |
-| `sync-ghl/index.ts` | Agregar modo `testOnly` para health check rápido |
-| `sync-manychat/index.ts` | Agregar modo `testOnly` para health check rápido |
-| `IntegrationsStatusPanel.tsx` | Cambiar `{ dryRun, limit }` a `{ testOnly: true }` |
+| Acción | Descripción |
+|--------|-------------|
+| Desplegar `sync-ghl` | Activa modo `testOnly` para conexión instantánea |
+| Desplegar `sync-manychat` | Activa modo `testOnly` para conexión instantánea |
+| Desplegar `reconcile-metrics` | Activa CORS para producción |
+| Revisar `rebuild_metrics_staging` | Verificar si existe y corregir el nombre si es necesario |
 
 ---
 
 ## Resultado Esperado
-- **Diagnostics**: Reconciliación funcionará desde producción (CORS arreglado)
-- **Settings**: Probar conexión será instantáneo (~1 segundo) en vez de minutos
-- **No más modales atascados**: El timeout de 30s casi nunca se activará porque los tests serán rápidos
 
----
-
-## Detalles Técnicos del Modo testOnly
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    FLUJO ACTUAL (Lento)                         │
-├─────────────────────────────────────────────────────────────────┤
-│ Click "Probar"  →  sync-ghl  →  Crear sync_run  →  Fetch 100   │
-│   conexión           │           en DB             contactos    │
-│                      │                                │         │
-│                      ↓                                ↓         │
-│               Respuesta después de 10-60 segundos              │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    FLUJO NUEVO (Rápido)                         │
-├─────────────────────────────────────────────────────────────────┤
-│ Click "Probar"  →  sync-ghl  →  Ping API  →  Respuesta         │
-│   conexión         testOnly       solo       en <2 segundos     │
-│                      │                                          │
-│                      ↓                                          │
-│               NO toca la base de datos                         │
-└─────────────────────────────────────────────────────────────────┘
-```
+Después del despliegue:
+- **Settings > Integraciones**: "Probar Conexión" responderá en < 2 segundos
+- **Diagnostics > Reconciliación**: Funcionará sin error CORS
+- **Diagnostics > Rebuild Metrics**: Si la función existe, funcionará; si no, se mostrará un mensaje de error claro
