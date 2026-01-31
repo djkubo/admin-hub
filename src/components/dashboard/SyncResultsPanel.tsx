@@ -13,7 +13,8 @@ import {
   Users,
   StopCircle,
   Skull,
-  AlertTriangle
+  AlertTriangle,
+  PlayCircle
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -62,10 +63,12 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; co
 
 export function SyncResultsPanel() {
   const [recentRuns, setRecentRuns] = useState<SyncRun[]>([]);
+  const [failedResumable, setFailedResumable] = useState<SyncRun[]>([]);
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSyncs, setActiveSyncs] = useState<SyncRun[]>([]);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isForceKilling, setIsForceKilling] = useState(false);
+  const [isResuming, setIsResuming] = useState<string | null>(null);
 
   const fetchRuns = async () => {
     // Active/running syncs
@@ -82,12 +85,31 @@ export function SyncResultsPanel() {
     const { data: recent } = await supabase
       .from("sync_runs")
       .select("*")
-      .in("status", ["completed", "completed_with_errors", "failed"])
+      .in("status", ["completed", "completed_with_errors"])
       .gte("completed_at", oneHourAgo)
       .order("completed_at", { ascending: false })
       .limit(10);
 
     setRecentRuns((recent || []) as SyncRun[]);
+    
+    // Failed syncs with checkpoint (resumable) - last 24 hours
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: failed } = await supabase
+      .from("sync_runs")
+      .select("*")
+      .eq("status", "failed")
+      .not("checkpoint", "is", null)
+      .gte("completed_at", oneDayAgo)
+      .order("completed_at", { ascending: false })
+      .limit(5);
+    
+    // Filter to only those with real checkpoint data
+    const resumableFailed = (failed || []).filter((run: SyncRun) => {
+      const cp = run.checkpoint as Record<string, unknown> | null;
+      return cp && (cp.cursor || cp.runningTotal);
+    });
+    
+    setFailedResumable(resumableFailed as SyncRun[]);
   };
 
   useEffect(() => {
@@ -299,6 +321,81 @@ export function SyncResultsPanel() {
     }
   };
 
+  // ============= RESUME FAILED SYNC =============
+  const handleResumeSync = async (sync: SyncRun) => {
+    setIsResuming(sync.id);
+    try {
+      const checkpoint = sync.checkpoint as Record<string, unknown> | null;
+      const cursor = checkpoint?.cursor as string | undefined;
+      
+      if (!cursor) {
+        toast.error('No hay punto de reanudación', {
+          description: 'El sync no tiene un cursor guardado para continuar.',
+        });
+        return;
+      }
+
+      // Map source to edge function
+      let endpoint = '';
+      let payload: Record<string, unknown> = {};
+      
+      switch (sync.source) {
+        case 'stripe':
+          endpoint = 'fetch-stripe';
+          payload = { resumeFromCursor: cursor };
+          break;
+        case 'paypal':
+          endpoint = 'fetch-paypal';
+          payload = { resumeFromCursor: cursor };
+          break;
+        case 'ghl':
+          endpoint = 'sync-ghl';
+          payload = { resumeFromCursor: cursor };
+          break;
+        case 'manychat':
+          endpoint = 'sync-manychat';
+          payload = { resumeFromCursor: cursor };
+          break;
+        default:
+          toast.error('Fuente no soportada', {
+            description: `No se puede reanudar syncs de ${sync.source}`,
+          });
+          return;
+      }
+
+      // Mark old sync as superseded
+      await supabase
+        .from('sync_runs')
+        .update({
+          error_message: `${sync.error_message || ''} → Reanudado en nuevo sync`
+        })
+        .eq('id', sync.id);
+
+      // Start new sync with resume cursor
+      const result = await invokeWithAdminKey<{ success: boolean; run_id?: string }>(endpoint, payload);
+      
+      if (result?.success || result?.run_id) {
+        toast.success('Sync reanudado', {
+          description: `Continuando desde cursor guardado (${(checkpoint?.runningTotal as number || 0).toLocaleString()} procesados)`,
+        });
+      } else {
+        toast.success('Sync iniciado', {
+          description: 'Verificando si continúa desde el cursor...',
+        });
+      }
+      
+      fetchRuns();
+      
+    } catch (error) {
+      console.error('Resume sync error:', error);
+      toast.error('Error al reanudar', {
+        description: error instanceof Error ? error.message : 'Error desconocido',
+      });
+    } finally {
+      setIsResuming(null);
+    }
+  };
+
   const formatDuration = (start: string, end: string | null) => {
     const startDate = new Date(start);
     const endDate = end ? new Date(end) : new Date();
@@ -309,8 +406,8 @@ export function SyncResultsPanel() {
     return `${minutes}m ${seconds % 60}s`;
   };
 
-  const hasAnySyncs = activeSyncs.length > 0 || recentRuns.length > 0;
-  const hasErrors = recentRuns.some(r => r.error_message || r.status === 'failed');
+  const hasAnySyncs = activeSyncs.length > 0 || recentRuns.length > 0 || failedResumable.length > 0;
+  const hasErrors = recentRuns.some(r => r.error_message || r.status === 'failed') || failedResumable.length > 0;
   const hasPotentialZombies = activeSyncs.some(sync => {
     const startDate = new Date(sync.started_at);
     const now = new Date();
@@ -585,7 +682,59 @@ export function SyncResultsPanel() {
             </div>
           )}
 
-          {/* Error messages */}
+          {/* ============= RESUMABLE FAILED SYNCS ============= */}
+          {failedResumable.length > 0 && (
+            <div className="divide-y divide-border/30 bg-amber-500/5">
+              <div className="px-4 py-2 bg-amber-500/10">
+                <p className="text-xs font-medium text-amber-400 uppercase tracking-wider flex items-center gap-2">
+                  <PlayCircle className="h-3 w-3" />
+                  Syncs Reanudables
+                </p>
+              </div>
+              {failedResumable.map((sync) => {
+                const config = getSourceConfig(sync.source);
+                const Icon = config.icon;
+                const checkpoint = sync.checkpoint as Record<string, unknown> | null;
+                const runningTotal = checkpoint?.runningTotal as number || sync.total_fetched || 0;
+                const lastActivity = checkpoint?.lastActivity as string | undefined;
+                
+                return (
+                  <div key={sync.id} className="px-4 py-3 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <Icon className={`h-4 w-4 ${config.color} flex-shrink-0`} />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{config.label}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {runningTotal.toLocaleString()} procesados • 
+                          {lastActivity && ` última actividad ${formatDistanceToNow(new Date(lastActivity), { locale: es, addSuffix: true })}`}
+                        </p>
+                        {sync.error_message && (
+                          <p className="text-xs text-red-400 truncate mt-0.5">{sync.error_message}</p>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleResumeSync(sync)}
+                      disabled={isResuming === sync.id}
+                      className="h-8 text-xs border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                    >
+                      {isResuming === sync.id ? (
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      ) : (
+                        <PlayCircle className="h-3 w-3 mr-1" />
+                      )}
+                      Reanudar
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Error messages from recent runs */}
           {recentRuns.filter(r => r.error_message).map((sync) => (
             <div key={`error-${sync.id}`} className="px-4 py-2 bg-red-500/5 text-xs text-red-400 border-t border-red-500/20">
               <span className="font-medium">{getSourceConfig(sync.source).label}:</span>{' '}
