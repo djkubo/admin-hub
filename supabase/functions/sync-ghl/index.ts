@@ -483,6 +483,12 @@ Deno.serve(async (req) => {
   }
 
   const startTime = Date.now();
+  
+  // Declare these outside try so they're available in catch
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const supabase = createClient(supabaseUrl, supabaseKey);
+  let syncRunId: string | null = null;
 
   try {
     // SECURITY: Verify JWT + is_admin()
@@ -494,11 +500,8 @@ Deno.serve(async (req) => {
       );
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const ghlApiKey = Deno.env.get('GHL_API_KEY');
     const ghlLocationId = Deno.env.get('GHL_LOCATION_ID');
-    const supabase = createClient(supabaseUrl, supabaseKey);
 
     // ============= KILL SWITCH: Check if GHL is paused =============
     const { data: ghlPausedConfig } = await supabase
@@ -534,7 +537,6 @@ Deno.serve(async (req) => {
     let testOnly = false; // TEST MODE: Just verify API connection
     let startAfterId: string | null = null;
     let startAfter: number | null = null;
-    let syncRunId: string | null = null;
     let cleanupStale = false;
     let forceCancel = false;
 
@@ -868,11 +870,30 @@ Deno.serve(async (req) => {
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
+    const errorObj = error instanceof Error ? error : new Error(errorMessage);
+    logger.error("Fatal sync-ghl error", errorObj);
+    
+    // CRITICAL: Mark sync_runs as failed so frontend stops polling
+    if (syncRunId) {
+      try {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage
+          })
+          .eq('id', syncRunId);
+        logger.info('Marked sync run as failed', { id: syncRunId });
+      } catch (updateErr) {
+        const updateErrObj = updateErr instanceof Error ? updateErr : new Error(String(updateErr));
+        logger.error('Failed to update sync_runs status', updateErrObj);
+      }
+    }
     
     return new Response(
-      JSON.stringify({ ok: false, error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ ok: false, success: false, error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
