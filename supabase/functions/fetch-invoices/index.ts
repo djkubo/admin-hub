@@ -665,7 +665,7 @@ Deno.serve(async (req) => {
       mode = body.mode || 'recent';
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
-      fetchAll = body.fetchAll === true;
+      fetchAll = body.fetchAll === true || !!syncRunId;
       isContinuation = body._continuation === true;
       
       if (body.startDate) startDate = body.startDate;
