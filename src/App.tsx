@@ -4,7 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useAuth } from "@/hooks/useAuth";
+import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { OfflineBanner } from "@/components/OfflineIndicator";
 import { QueryErrorHandler } from "@/components/QueryErrorHandler";
@@ -62,6 +62,16 @@ const PageSkeleton = () => (
   </div>
 );
 
+// Full-screen loading spinner for auth state
+const AuthLoadingScreen = () => (
+  <div className="min-h-screen bg-background flex items-center justify-center safe-area-top safe-area-bottom">
+    <div className="flex flex-col items-center gap-4">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <p className="text-sm text-muted-foreground">Verificando sesión...</p>
+    </div>
+  </div>
+);
+
 // Optimized QueryClient for performance and stability
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -88,17 +98,10 @@ const queryClient = new QueryClient({
 });
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading } = useAuthContext();
   
   if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center safe-area-top safe-area-bottom">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Cargando...</p>
-        </div>
-      </div>
-    );
+    return <AuthLoadingScreen />;
   }
   
   if (!isAuthenticated) {
@@ -109,17 +112,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function PublicRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading } = useAuthContext();
   
   if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center safe-area-top safe-area-bottom">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Cargando...</p>
-        </div>
-      </div>
-    );
+    return <AuthLoadingScreen />;
   }
   
   if (isAuthenticated) {
@@ -151,83 +147,92 @@ function DeferredComponents() {
   );
 }
 
+// Main app routes wrapped with AuthProvider
+function AppRoutes() {
+  return (
+    <Routes>
+      {/* Protected Dashboard Routes */}
+      <Route 
+        element={
+          <ProtectedRoute>
+            <ErrorBoundary>
+              <DashboardLayout />
+            </ErrorBoundary>
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<DashboardHome />} />
+        <Route path="movements" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <MovementsPage />
+          </Suspense>
+        } />
+        <Route path="analytics" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <AnalyticsPanel />
+          </Suspense>
+        } />
+        <Route path="messages" element={<MessagesPageWrapper />} />
+        <Route path="campaigns" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <CampaignControlCenter />
+          </Suspense>
+        } />
+        <Route path="broadcast" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <BroadcastListsPage />
+          </Suspense>
+        } />
+        <Route path="flows" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <FlowsPage />
+          </Suspense>
+        } />
+        <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
+        <Route path="clients" element={<ClientsPage />} />
+        <Route path="invoices" element={<InvoicesPage />} />
+        <Route path="subscriptions" element={<SubscriptionsPage />} />
+        <Route path="recovery" element={<RevenueOpsPipeline />} />
+        <Route path="import" element={<ImportSyncPage />} />
+        <Route path="diagnostics" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <DiagnosticsPanel />
+          </Suspense>
+        } />
+        <Route path="settings" element={<SettingsPage />} />
+      </Route>
+
+      {/* Public Routes */}
+      <Route 
+        path="/login" 
+        element={
+          <PublicRoute>
+            <ErrorBoundary>
+              <Login />
+            </ErrorBoundary>
+          </PublicRoute>
+        } 
+      />
+      <Route path="/install" element={<Install />} />
+      <Route path="/update-card" element={<UpdateCard />} />
+      <Route path="/update-card/success" element={<UpdateCardSuccess />} />
+      
+      {/* Catch-all */}
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  );
+}
+
 const App = () => (
   <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <DeferredComponents />
-        <BrowserRouter>
-          <Routes>
-            {/* Protected Dashboard Routes */}
-            <Route 
-              element={
-                <ProtectedRoute>
-                  <ErrorBoundary>
-                    <DashboardLayout />
-                  </ErrorBoundary>
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<DashboardHome />} />
-              <Route path="movements" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <MovementsPage />
-                </Suspense>
-              } />
-              <Route path="analytics" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <AnalyticsPanel />
-                </Suspense>
-              } />
-              <Route path="messages" element={<MessagesPageWrapper />} />
-              <Route path="campaigns" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <CampaignControlCenter />
-                </Suspense>
-              } />
-              <Route path="broadcast" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <BroadcastListsPage />
-                </Suspense>
-              } />
-              <Route path="flows" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <FlowsPage />
-                </Suspense>
-              } />
-              <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
-              <Route path="clients" element={<ClientsPage />} />
-              <Route path="invoices" element={<InvoicesPage />} />
-              <Route path="subscriptions" element={<SubscriptionsPage />} />
-              <Route path="recovery" element={<RevenueOpsPipeline />} />
-              <Route path="import" element={<ImportSyncPage />} />
-              <Route path="diagnostics" element={
-                <Suspense fallback={<PageSkeleton />}>
-                  <DiagnosticsPanel />
-                </Suspense>
-              } />
-              <Route path="settings" element={<SettingsPage />} />
-            </Route>
-
-            {/* Public Routes */}
-            <Route 
-              path="/login" 
-              element={
-                <PublicRoute>
-                  <ErrorBoundary>
-                    <Login />
-                  </ErrorBoundary>
-                </PublicRoute>
-              } 
-            />
-            <Route path="/install" element={<Install />} />
-            <Route path="/update-card" element={<UpdateCard />} />
-            <Route path="/update-card/success" element={<UpdateCardSuccess />} />
-            
-            {/* Catch-all */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
+        <AuthProvider>
+          <DeferredComponents />
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
   </ErrorBoundary>
