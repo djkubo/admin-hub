@@ -67,6 +67,22 @@ interface ClientRecord {
   last_sync: string;
 }
 
+interface InvoiceRecord {
+  stripe_invoice_id: string;
+  invoice_number: string;
+  status: string;
+  amount_due: number;
+  amount_paid: number;
+  amount_remaining: number;
+  currency: string;
+  customer_email: string | null;
+  customer_name: string | null;
+  stripe_created_at: string;
+  period_end: string;
+  billing_reason: string;
+  description: string | null;
+}
+
 interface DateChunk {
   start: Date;
   end: Date;
@@ -629,6 +645,7 @@ Deno.serve(async (req) => {
     let failedCount = 0;
     const transactions: TransactionRecord[] = [];
     const clientsMap = new Map<string, ClientRecord>();
+    const invoices: InvoiceRecord[] = [];
 
     for (const tx of result.transactions) {
       const info = tx.transaction_info;
@@ -674,6 +691,26 @@ Deno.serve(async (req) => {
         raw_data: tx as unknown as Record<string, unknown>
       });
 
+      // Map PayPal status to invoice status
+      const invoiceStatus = status === 'paid' ? 'paid' : status === 'pending' ? 'open' : 'void';
+      const amountCents = Math.round(Math.abs(grossAmount) * 100);
+
+      invoices.push({
+        stripe_invoice_id: `paypal_${info.transaction_id}`,
+        invoice_number: `PAYPAL-${info.transaction_id}`,
+        status: invoiceStatus,
+        amount_due: amountCents,
+        amount_paid: invoiceStatus === 'paid' ? amountCents : 0,
+        amount_remaining: invoiceStatus === 'paid' ? 0 : amountCents,
+        currency,
+        customer_email: email,
+        customer_name: fullName,
+        stripe_created_at: info.transaction_initiation_date,
+        period_end: info.transaction_initiation_date,
+        billing_reason: 'paypal_transaction',
+        description: productName
+      });
+
       if (!clientsMap.has(email)) {
         clientsMap.set(email, {
           email,
@@ -688,6 +725,7 @@ Deno.serve(async (req) => {
     // Save to database
     let transactionsSaved = 0;
     let clientsSaved = 0;
+    let invoicesSaved = 0;
 
     if (transactions.length > 0) {
       const { data } = await supabase
@@ -704,6 +742,20 @@ Deno.serve(async (req) => {
         .upsert(clientsToSave, { onConflict: 'email', ignoreDuplicates: false })
         .select('id');
       clientsSaved = data?.length || 0;
+    }
+
+    // Save PayPal invoices
+    if (invoices.length > 0) {
+      const { data, error: invoicesError } = await supabase
+        .from('invoices')
+        .upsert(invoices, { onConflict: 'stripe_invoice_id', ignoreDuplicates: false })
+        .select('id');
+      
+      if (invoicesError) {
+        logger.warn('Error upserting invoices', { error: invoicesError.message });
+      } else {
+        invoicesSaved = data?.length || 0;
+      }
     }
 
     // Check if more pages in current chunk
