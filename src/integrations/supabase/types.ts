@@ -2880,6 +2880,8 @@ export type Database = {
           reset_ids: string[]
         }[]
       }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
       unify_identity: {
         Args: {
           p_email?: string
