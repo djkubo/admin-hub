@@ -229,7 +229,16 @@ export function DashboardHome() {
     setSyncStatus(null);
     setSyncProgress('');
     
-    toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
+    // Show appropriate toast based on range size
+    const isLargeRange = range === 'month' || range === 'full';
+    if (isLargeRange) {
+      toast.info(`🚀 Sincronización masiva iniciada en segundo plano`, {
+        description: 'Los datos aparecerán progresivamente en los próximos minutos.',
+        duration: 8000,
+      });
+    } else {
+      toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
+    }
 
     try {
       // Use sync-command-center for orchestrated sync

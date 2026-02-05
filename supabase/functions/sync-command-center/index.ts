@@ -1,5 +1,8 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
+// Declare EdgeRuntime for background task processing
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -538,64 +541,108 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============ PAYPAL TRANSACTIONS ============
+    // For large ranges (month/full), run PayPal in background to avoid timeout
+    const isLargeRange = config.mode === 'month' || config.mode === 'full';
+    
     if (!isTimeout()) {
       try {
-      await updateProgress("paypal-transactions", "Iniciando...");
-      console.log("🔄 Starting PayPal transactions sync...");
-      let totalPaypal = 0;
-      let hasMore = true;
-      let page = 1;
-      let paypalSyncId: string | null = null;
-        const MAX_PAGES = config.mode === 'today' ? 5 : 20; // Reduce pages for safety
-      
-        while (hasMore && page <= MAX_PAGES && !isTimeout()) {
-        console.log(`📄 PayPal page ${page}`);
+        await updateProgress("paypal-transactions", isLargeRange ? "Iniciando en segundo plano..." : "Iniciando...");
+        console.log(`🔄 Starting PayPal transactions sync... (background: ${isLargeRange})`);
         
-        const response = await invokeClient.functions.invoke('fetch-paypal', {
-          body: {
-            fetchAll: true,
-            startDate: formatPayPalDate(startDate),
-            endDate: formatPayPalDate(endDate),
-            page,
-            syncRunId: paypalSyncId,
+        const paypalPayload = {
+          fetchAll: true, // CRÍTICO: Siempre activar paginación recursiva
+          startDate: formatPayPalDate(startDate),
+          endDate: formatPayPalDate(endDate),
+          page: 1,
+          syncRunId: null as string | null,
+        };
+        
+        if (isLargeRange) {
+          // For large ranges, fire and forget - PayPal will self-chain in background
+          console.log("🔥 PayPal: Fire-and-forget mode for large range");
+          
+          // Use EdgeRuntime.waitUntil to run in background without blocking
+          const backgroundPayPalSync = async () => {
+            try {
+              const response = await invokeClient.functions.invoke('fetch-paypal', {
+                body: paypalPayload
+              });
+              console.log("📥 PayPal background started:", { 
+                hasError: !!response.error, 
+                syncRunId: (response.data as PayPalSyncResponse)?.syncRunId 
+              });
+            } catch (e) {
+              console.error("❌ PayPal background start error:", e);
+            }
+          };
+          
+          // Fire without await - let it run in background
+          if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+            EdgeRuntime.waitUntil(backgroundPayPalSync());
+          } else {
+            backgroundPayPalSync(); // Fallback: still fire without await
           }
-        });
-        
-        console.log(`📥 PayPal response:`, { 
-          hasError: !!response.error, 
-          hasData: !!response.data,
-          status: (response.data as PayPalSyncResponse)?.status 
-        });
-        
-        const respData = response.data as PayPalSyncResponse | null;
-        if (response.error) {
-          console.error("❌ PayPal invoke error:", response.error);
-          throw response.error;
+          
+          results["paypal"] = { success: true, count: 0, error: "background_processing" };
+          await updateProgress("paypal-transactions", "Procesando en segundo plano...");
+          console.log("✅ PayPal sync started in background");
+        } else {
+          // For small ranges (today, 7d), await synchronously with pagination
+          let totalPaypal = 0;
+          let hasMore = true;
+          let page = 1;
+          let paypalSyncId: string | null = null;
+          const MAX_PAGES = config.mode === 'today' ? 5 : 20;
+          
+          while (hasMore && page <= MAX_PAGES && !isTimeout()) {
+            console.log(`📄 PayPal page ${page}`);
+            
+            const response = await invokeClient.functions.invoke('fetch-paypal', {
+              body: {
+                fetchAll: true,
+                startDate: formatPayPalDate(startDate),
+                endDate: formatPayPalDate(endDate),
+                page,
+                syncRunId: paypalSyncId,
+              }
+            });
+            
+            console.log(`📥 PayPal response:`, { 
+              hasError: !!response.error, 
+              hasData: !!response.data,
+              status: (response.data as PayPalSyncResponse)?.status 
+            });
+            
+            const respData = response.data as PayPalSyncResponse | null;
+            if (response.error) {
+              console.error("❌ PayPal invoke error:", response.error);
+              throw response.error;
+            }
+            if (respData?.error === 'sync_already_running') {
+              console.warn("⚠️ PayPal sync already running");
+              results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
+              break;
+            }
+            
+            const pageCount = respData?.synced_transactions ?? 0;
+            totalPaypal += pageCount;
+            paypalSyncId = respData?.syncRunId ?? paypalSyncId;
+            hasMore = respData?.hasMore === true;
+            page = respData?.nextPage ?? page + 1;
+            
+            console.log(`✅ PayPal page ${page - 1}: ${pageCount} tx, total: ${totalPaypal}, hasMore: ${hasMore}`);
+            await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
+          }
+          
+          if (page > MAX_PAGES) {
+            console.warn(`⚠️ PayPal sync reached max pages limit (${MAX_PAGES})`);
+          }
+          
+          if (!results["paypal"]) {
+            results["paypal"] = { success: true, count: totalPaypal };
+          }
+          console.log(`✅ PayPal sync completed: ${totalPaypal} transactions`);
         }
-        if (respData?.error === 'sync_already_running') {
-          console.warn("⚠️ PayPal sync already running");
-          results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
-          break;
-        }
-        
-        const pageCount = respData?.synced_transactions ?? 0;
-        totalPaypal += pageCount;
-        paypalSyncId = respData?.syncRunId ?? paypalSyncId;
-        hasMore = respData?.hasMore === true;
-        page = respData?.nextPage ?? page + 1;
-        
-        console.log(`✅ PayPal page ${page - 1}: ${pageCount} tx, total: ${totalPaypal}, hasMore: ${hasMore}`);
-        await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
-      }
-      
-      if (page > MAX_PAGES) {
-        console.warn(`⚠️ PayPal sync reached max pages limit (${MAX_PAGES})`);
-      }
-      
-        if (!results["paypal"]) {
-          results["paypal"] = { success: true, count: totalPaypal };
-        }
-        console.log(`✅ PayPal sync completed: ${totalPaypal} transactions`);
       } catch (e) {
         console.error("❌ PayPal sync error:", e);
         results["paypal"] = { success: false, count: 0, error: String(e) };
