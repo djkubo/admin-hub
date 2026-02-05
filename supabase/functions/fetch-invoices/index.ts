@@ -712,7 +712,79 @@ Deno.serve(async (req) => {
       console.log("✅ Admin verified");
     }
 
-    // Check for existing running sync (avoid duplicates)
+    // ============= RESUME LOGIC: Check if we should resume an existing sync =============
+    let resumeCursor: string | null = null;
+    let resumeMode: 'full' | 'range' | 'recent' | null = null;
+    let resumeStartDate: string | null = null;
+    let resumeEndDate: string | null = null;
+    let isResume = false;
+    
+    if (syncRunId && !isContinuation) {
+      // Check if this syncRunId exists and can be resumed
+      const { data: existingRun } = await supabase
+        .from('sync_runs')
+        .select('id, status, checkpoint, metadata')
+        .eq('id', syncRunId)
+        .eq('source', 'stripe_invoices')
+        .maybeSingle();
+      
+      if (existingRun) {
+        console.log(`🔍 Found existing sync run: ${syncRunId}, status: ${existingRun.status}`);
+        
+        // Can resume if status is failed, paused, error, or cancelled with a checkpoint
+        const resumableStatuses = ['failed', 'paused', 'error', 'cancelled'];
+        if (resumableStatuses.includes(existingRun.status) && existingRun.checkpoint?.cursor) {
+          isResume = true;
+          resumeCursor = existingRun.checkpoint.cursor;
+          
+          // Restore original configuration from metadata
+          const meta = existingRun.metadata || {};
+          resumeMode = meta.mode || mode;
+          resumeStartDate = meta.startDate || startDate;
+          resumeEndDate = meta.endDate || endDate;
+          
+          console.log(`✅ Resuming sync from cursor: ${resumeCursor?.slice(0, 10)}... with mode=${resumeMode}`);
+          
+          // Update status to running
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'running',
+              error_message: null,
+              completed_at: null
+            })
+            .eq('id', syncRunId);
+          
+          // Use the restored configuration
+          mode = resumeMode as 'full' | 'range' | 'recent';
+          startDate = resumeStartDate;
+          endDate = resumeEndDate;
+          cursor = resumeCursor;
+        } else if (existingRun.status === 'running' || existingRun.status === 'continuing') {
+          // Sync is already running, don't create a new one
+          console.log(`⚠️ Sync ${syncRunId} is already in progress`);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              status: existingRun.status,
+              syncRunId,
+              synced: 0,
+              upserted: 0,
+              hasMore: true,
+              nextCursor: null,
+              message: 'Sync already in progress'
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        } else {
+          console.log(`ℹ️ Existing sync ${syncRunId} cannot be resumed (status: ${existingRun.status}, checkpoint: ${existingRun.checkpoint ? 'yes' : 'no'})`);
+        }
+      }
+    }
+
+    // ============= SKIP DUPLICATE CHECK AND CREATE IF RESUMING =============
+    if (!isResume) {
+      // Check for existing running sync (avoid duplicates)
     const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
     
     const { data: existingSync } = await supabase
@@ -725,7 +797,7 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
     
-    if (existingSync && !syncRunId) {
+      if (existingSync) {
       console.log('⚠️ Sync already running (last 3min):', existingSync.id);
       return new Response(
         JSON.stringify({
@@ -769,26 +841,29 @@ Deno.serve(async (req) => {
     syncRunId = syncRun?.id || null;
     
     console.log('🆕 Created new sync run:', syncRunId);
+    } else {
+      console.log(`🔄 Resuming existing sync run: ${syncRunId}`);
+    }
 
     // ============= BACKGROUND MODE (fetchAll=true) =============
     if (fetchAll && syncRunId) {
       console.log('🚀 Starting background processing with EdgeRuntime.waitUntil()');
       
       EdgeRuntime.waitUntil(
-        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate, null)
+        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate, isResume ? cursor : null)
       );
       
       // Return immediately with running status
       return new Response(
         JSON.stringify({
           success: true,
-          status: 'running',
+          status: isResume ? 'resuming' : 'running',
           syncRunId,
           synced: 0,
           upserted: 0,
           hasMore: true,
           nextCursor: null,
-          message: 'Sync started in background'
+          message: isResume ? 'Sync resumed from checkpoint' : 'Sync started in background'
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
