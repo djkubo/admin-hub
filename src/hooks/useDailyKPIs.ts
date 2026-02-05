@@ -109,28 +109,52 @@ async function getSalesTotal(start: string, end: string): Promise<number> {
   return totalCents / 100;
 }
 
-async function countNewPayers(start: string, end: string): Promise<number> {
-  // Use 'as any' to avoid TS2589 deep type instantiation error with .in() + .eq() chains
+async function getNewPayersData(start: string, end: string): Promise<{ count: number; revenue: number }> {
+  // Fetch new subscriptions with amount for both count and revenue
   const result = await (supabase
     .from('transactions')
-    .select('id', { count: 'exact', head: true })
+    .select('id, amount')
     .in('status', ['succeeded', 'paid']) as any)
     .eq('billing_reason', 'subscription_create')
     .gte('stripe_created_at', start)
     .lte('stripe_created_at', end);
-  return result?.count || 0;
+  
+  const data = result?.data || [];
+  const count = data.length;
+  const revenue = data.reduce((sum: number, tx: any) => sum + (tx.amount || 0), 0) / 100;
+  return { count, revenue };
 }
 
-async function countRenewals(start: string, end: string): Promise<number> {
-  // Use 'as any' to avoid TS2589 deep type instantiation error with .in() + .eq() chains
+async function getRenewalsData(start: string, end: string): Promise<{ count: number; revenue: number }> {
+  // Fetch renewals with amount for both count and revenue
   const result = await (supabase
     .from('transactions')
-    .select('id', { count: 'exact', head: true })
+    .select('id, amount')
     .in('status', ['succeeded', 'paid']) as any)
     .eq('billing_reason', 'subscription_cycle')
     .gte('stripe_created_at', start)
     .lte('stripe_created_at', end);
-  return result?.count || 0;
+  
+  const data = result?.data || [];
+  const count = data.length;
+  const revenue = data.reduce((sum: number, tx: any) => sum + (tx.amount || 0), 0) / 100;
+  return { count, revenue };
+}
+
+async function getTrialConversionsData(start: string, end: string): Promise<{ count: number; revenue: number }> {
+  // Trial conversions are first payments after trial period
+  const result = await (supabase
+    .from('transactions')
+    .select('id, amount')
+    .in('status', ['succeeded', 'paid']) as any)
+    .eq('payment_type', 'trial_conversion')
+    .gte('stripe_created_at', start)
+    .lte('stripe_created_at', end);
+  
+  const data = result?.data || [];
+  const count = data.length;
+  const revenue = data.reduce((sum: number, tx: any) => sum + (tx.amount || 0), 0) / 100;
+  return { count, revenue };
 }
 
 async function countCancellations(start: string, end: string): Promise<number> {
@@ -192,31 +216,33 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         clientsCount,
         mrrData,
         salesUsd,
-        newPayersCount,
-        renewalsCount,
+        newPayersData,
+        renewalsData,
+        trialConversionsData,
         cancellationsCount,
       ] = await Promise.all([
         countTrials(start, end),
         countClients(start, end),
         getMrrSummary(),
         getSalesTotal(start, end),
-        countNewPayers(start, end),
-        countRenewals(start, end),
+        getNewPayersData(start, end),
+        getRenewalsData(start, end),
+        getTrialConversionsData(start, end),
         countCancellations(start, end),
       ]);
 
       setKPIs({
         registrationsToday: clientsCount,
         trialsStartedToday: trialsCount,
-        trialConversionsToday: 0, // Simplified - not tracking conversions in real-time
-        newPayersToday: newPayersCount,
-        renewalsToday: renewalsCount,
+        trialConversionsToday: trialConversionsData.count,
+        newPayersToday: newPayersData.count,
+        renewalsToday: renewalsData.count,
         failuresToday: 0, // Simplified - using dashboard for this
         failureReasons: [],
         cancellationsToday: cancellationsCount,
         newRevenue: salesUsd,
-        conversionRevenue: 0,
-        renewalRevenue: 0,
+        conversionRevenue: trialConversionsData.revenue,
+        renewalRevenue: renewalsData.revenue,
         cancellationRevenue: 0,
         mrr: mrrData.mrr,
         mrrActiveCount: mrrData.mrrActiveCount,
