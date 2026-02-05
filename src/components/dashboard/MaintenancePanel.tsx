@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Trash2, Database, Clock, CheckCircle2, AlertCircle, Loader2, HardDrive } from "lucide-react";
+import { Trash2, Database, Clock, CheckCircle2, AlertCircle, Loader2, HardDrive, XCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
+import { supabase } from "@/integrations/supabase/client";
 
 interface CleanupResult {
   success: boolean;
@@ -25,8 +26,38 @@ interface CleanupResult {
 export default function MaintenancePanel() {
   const { toast } = useToast();
   const [isRunning, setIsRunning] = useState(false);
+  const [isClearingFailed, setIsClearingFailed] = useState(false);
   const [lastResult, setLastResult] = useState<CleanupResult | null>(null);
   const [lastRunAt, setLastRunAt] = useState<Date | null>(null);
+
+  const handleClearFailedSyncs = async () => {
+    setIsClearingFailed(true);
+    try {
+      // Delete all failed, canceled, and stuck syncs
+      const { data, error } = await supabase
+        .from("sync_runs")
+        .delete()
+        .in("status", ["failed", "canceled", "paused"])
+        .select("id");
+
+      if (error) throw error;
+
+      const count = data?.length || 0;
+      toast({
+        title: "Syncs limpiados",
+        description: `Se eliminaron ${count} registros de sincronizaciones fallidas/canceladas`,
+      });
+    } catch (error: any) {
+      console.error("Clear failed syncs error:", error);
+      toast({
+        title: "Error",
+        description: error.message || "No se pudieron limpiar los syncs",
+        variant: "destructive",
+      });
+    } finally {
+      setIsClearingFailed(false);
+    }
+  };
 
   const handleRunCleanup = async () => {
     setIsRunning(true);
@@ -80,6 +111,40 @@ export default function MaintenancePanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Quick Actions - Clear Failed Syncs */}
+        <div className="rounded-lg bg-destructive/10 border border-destructive/30 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="font-medium text-sm text-foreground flex items-center gap-2">
+                <XCircle className="h-4 w-4 text-destructive" />
+                Limpiar Syncs Fallidos
+              </h4>
+              <p className="text-xs text-muted-foreground mt-1">
+                Elimina todos los registros de syncs fallidos, cancelados o pausados
+              </p>
+            </div>
+            <Button
+              onClick={handleClearFailedSyncs}
+              disabled={isClearingFailed}
+              variant="destructive"
+              size="sm"
+              className="gap-2"
+            >
+              {isClearingFailed ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Limpiando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" />
+                  Borrar Fallidos
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+
         {/* Cleanup Policy Info */}
         <div className="rounded-lg bg-muted/30 border border-border/50 p-4 space-y-2">
           <h4 className="font-medium text-sm text-foreground flex items-center gap-2">
