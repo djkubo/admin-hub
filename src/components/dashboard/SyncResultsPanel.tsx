@@ -364,6 +364,13 @@ export function SyncResultsPanel() {
           endpoint = 'sync-manychat';
           payload = { resumeFromCursor: cursor };
           break;
+        case 'stripe_invoices':
+          endpoint = 'fetch-invoices';
+          payload = { 
+            syncRunId: sync.id,
+            resumeFromCursor: cursor 
+          };
+          break;
         default:
           toast.error('Fuente no soportada', {
             description: `No se puede reanudar syncs de ${sync.source}`,
