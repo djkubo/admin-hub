@@ -92,136 +92,140 @@ function classifyPlan(amount: number, interval: string, productName: string | nu
   return `Legacy Plan $${Math.round(amountUSD)}/${interval || 'unknown'}`;
 }
 
-// Background sync function
+// Background sync function with streaming/batching to prevent OOM
 async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
   try {
-    console.log("📊 Starting background sync (ALL subscriptions, no filtering)...");
+    console.log("📊 Starting background sync (ALL subscriptions, streaming mode)...");
     
-    let subscriptions: Stripe.Subscription[] = [];
+    const BATCH_SIZE = 100; // Upsert every 100 records to prevent OOM
     let hasMore = true;
     let startingAfter: string | undefined;
-    const limit = 100;
+    let totalFetched = 0;
+    let totalUpserted = 0;
+    const statusBreakdown: Record<string, number> = {};
+    let batch: any[] = [];
 
     while (hasMore) {
       const params: Stripe.SubscriptionListParams = {
-        limit,
+        limit: 100,
         expand: ["data.customer", "data.plan.product"],
-        // CRITICAL: Fetch ALL statuses, not just active
-        // Stripe returns all statuses by default, but we make it explicit
       };
       if (startingAfter) params.starting_after = startingAfter;
 
       const response = await stripe.subscriptions.list(params);
-      subscriptions = subscriptions.concat(response.data);
+      totalFetched += response.data.length;
       hasMore = response.has_more;
 
       if (response.data.length > 0) {
         startingAfter = response.data[response.data.length - 1].id;
       }
 
-      console.log(`📦 Fetched ${subscriptions.length} subscriptions so far...`);
+      console.log(`📦 Fetched page: ${response.data.length} (total: ${totalFetched})`);
 
-      // Update progress in sync_runs
-      await serviceClient.from("sync_runs").update({
-        total_fetched: subscriptions.length,
-        checkpoint: { last_id: startingAfter, lastUpdate: new Date().toISOString() },
-      }).eq("id", syncRunId);
+      // Transform and add to batch
+      for (const sub of response.data) {
+        const customer = sub.customer;
+        const plan = sub.plan;
+        const product = plan?.product;
 
-      if (subscriptions.length >= 10000) {
+        let rawProductName: string | null = null;
+        let rawNickname: string | null = plan?.nickname || null;
+        
+        if (typeof product === "object" && product?.name) {
+          rawProductName = product.name;
+        } else if (typeof product === "string") {
+          rawProductName = product;
+        }
+
+        const amount = plan?.amount || 0;
+        const interval = plan?.interval || 'month';
+        const planName = classifyPlan(amount, interval, rawProductName, rawNickname);
+
+        // Track status breakdown
+        statusBreakdown[sub.status] = (statusBreakdown[sub.status] || 0) + 1;
+
+        batch.push({
+          stripe_subscription_id: sub.id,
+          stripe_customer_id: typeof customer === "string" ? customer : customer?.id,
+          customer_email: typeof customer === "object" ? customer?.email : null,
+          plan_name: planName,
+          plan_id: plan?.id || null,
+          amount: amount,
+          currency: (plan?.currency || "usd").toLowerCase(),
+          interval: interval,
+          status: sub.status,
+          provider: 'stripe',
+          trial_start: sub.trial_start ? new Date(sub.trial_start * 1000).toISOString() : null,
+          trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
+          current_period_start: sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : null,
+          current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+          canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
+          cancel_reason: sub.cancellation_details?.reason || null,
+          updated_at: new Date().toISOString(),
+          raw_data: {
+            originalProductName: rawProductName,
+            originalNickname: rawNickname,
+            stripeStatus: sub.status,
+          }
+        });
+
+        // Flush batch when full (prevents OOM)
+        if (batch.length >= BATCH_SIZE) {
+          const { error: upsertError } = await serviceClient
+            .from("subscriptions")
+            .upsert(batch, { onConflict: "stripe_subscription_id" });
+
+          if (upsertError) {
+            console.error("❌ Batch upsert error:", upsertError);
+          } else {
+            totalUpserted += batch.length;
+          }
+          
+          batch = []; // Clear memory immediately
+          
+          // Update progress
+          await serviceClient.from("sync_runs").update({
+            total_fetched: totalFetched,
+            total_inserted: totalUpserted,
+            checkpoint: { last_id: startingAfter, lastUpdate: new Date().toISOString() },
+          }).eq("id", syncRunId);
+          
+          console.log(`✅ Upserted batch: ${totalUpserted} total`);
+        }
+      }
+
+      // Safety limit
+      if (totalFetched >= 10000) {
         console.log("⚠️ Reached 10000 subscription limit");
         break;
       }
     }
 
-    console.log(`✅ Total subscriptions fetched: ${subscriptions.length}`);
-
-    // Map subscriptions with improved plan classification
-    const records = subscriptions.map((sub) => {
-      const customer = sub.customer;
-      const plan = sub.plan;
-      const product = plan?.product;
-
-      // Extract raw product name and nickname
-      let rawProductName: string | null = null;
-      let rawNickname: string | null = plan?.nickname || null;
-      
-      if (typeof product === "object" && product?.name) {
-        rawProductName = product.name;
-      } else if (typeof product === "string") {
-        rawProductName = product;
-      }
-
-      // FIXED: Use amount-based classification instead of fragile string matching
-      const amount = plan?.amount || 0;
-      const interval = plan?.interval || 'month';
-      const planName = classifyPlan(amount, interval, rawProductName, rawNickname);
-
-      return {
-        stripe_subscription_id: sub.id,
-        stripe_customer_id: typeof customer === "string" ? customer : customer?.id,
-        customer_email: typeof customer === "object" ? customer?.email : null,
-        plan_name: planName,
-        plan_id: plan?.id || null,
-        amount: amount,
-        currency: (plan?.currency || "usd").toLowerCase(),
-        interval: interval,
-        status: sub.status, // ALL statuses preserved: active, past_due, unpaid, canceled, etc.
-        provider: 'stripe',
-        trial_start: sub.trial_start ? new Date(sub.trial_start * 1000).toISOString() : null,
-        trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
-        current_period_start: sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : null,
-        current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
-        canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-        cancel_reason: sub.cancellation_details?.reason || null,
-        updated_at: new Date().toISOString(),
-        raw_data: {
-          // Store raw data for debugging
-          originalProductName: rawProductName,
-          originalNickname: rawNickname,
-          stripeStatus: sub.status,
-        }
-      };
-    });
-
-    // Log status breakdown for debugging
-    const statusBreakdown: Record<string, number> = {};
-    for (const r of records) {
-      statusBreakdown[r.status] = (statusBreakdown[r.status] || 0) + 1;
-    }
-    console.log("📊 Status breakdown:", JSON.stringify(statusBreakdown));
-
-    const BATCH_SIZE = 500;
-    let upserted = 0;
-
-    for (let i = 0; i < records.length; i += BATCH_SIZE) {
-      const batch = records.slice(i, i + BATCH_SIZE);
+    // Flush remaining batch
+    if (batch.length > 0) {
       const { error: upsertError } = await serviceClient
         .from("subscriptions")
         .upsert(batch, { onConflict: "stripe_subscription_id" });
 
       if (upsertError) {
-        console.error("❌ Upsert error:", upsertError);
-        throw upsertError;
+        console.error("❌ Final batch upsert error:", upsertError);
+      } else {
+        totalUpserted += batch.length;
       }
-
-      upserted += batch.length;
-      
-      // Update progress
-      await serviceClient.from("sync_runs").update({
-        total_inserted: upserted,
-      }).eq("id", syncRunId);
-      
-      console.log(`📝 Upserted ${upserted}/${records.length} subscriptions`);
     }
+
+    console.log(`✅ Total subscriptions: ${totalFetched} fetched, ${totalUpserted} upserted`);
+    console.log("📊 Status breakdown:", JSON.stringify(statusBreakdown));
+
+    // Note: Batching is now done inline during fetch loop above
 
     // Mark as completed
     await serviceClient.from("sync_runs").update({
       status: "completed",
       completed_at: new Date().toISOString(),
-      total_fetched: subscriptions.length,
-      total_inserted: upserted,
+      total_fetched: totalFetched,
+      total_inserted: totalUpserted,
       metadata: { 
-        planCount: records.length,
         statusBreakdown,
       },
     }).eq("id", syncRunId);

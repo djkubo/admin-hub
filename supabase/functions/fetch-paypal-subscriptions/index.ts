@@ -2,21 +2,36 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Verify admin API key
-async function verifyAdminKey(req: Request, supabase: any): Promise<boolean> {
-  const adminKey = req.headers.get('x-admin-key');
-  if (!adminKey) return false;
+// SECURITY: JWT-based admin verification
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
   
-  const { data } = await supabase
-    .from('system_settings')
-    .select('value')
-    .eq('key', 'admin_api_key')
-    .single();
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
   
-  return data?.value === adminKey;
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'User is not an admin' };
+  }
+
+  return { valid: true };
 }
 
 // Get PayPal access token
@@ -40,38 +55,70 @@ async function getPayPalAccessToken(clientId: string, clientSecret: string): Pro
   return data.access_token;
 }
 
-// Map PayPal subscription status to our internal status
+// Map PayPal subscription status to Stripe-compatible status
 function mapPayPalStatus(status: string): string {
   const statusMap: Record<string, string> = {
-    'APPROVAL_PENDING': 'pending',
-    'APPROVED': 'approved',
+    'APPROVAL_PENDING': 'incomplete',
+    'APPROVED': 'incomplete',
     'ACTIVE': 'active',
     'SUSPENDED': 'paused',
     'CANCELLED': 'canceled',
-    'EXPIRED': 'expired',
+    'EXPIRED': 'canceled',
   };
   return statusMap[status] || status.toLowerCase();
 }
 
+// Classify plan by amount/interval (consistent with Stripe logic)
+function classifyPlan(amount: number, interval: string, productName: string | null): string {
+  const amountUSD = amount / 100;
+  
+  if (interval === 'YEAR' || interval === 'year') {
+    if (amountUSD >= 180 && amountUSD <= 220) return 'Plan Anual ~$195';
+    if (amountUSD >= 350 && amountUSD <= 450) return 'Plan Anual Premium ~$400';
+    return `Plan Anual $${Math.round(amountUSD)}`;
+  }
+  
+  if (interval === 'MONTH' || interval === 'month') {
+    if (amountUSD >= 30 && amountUSD <= 40) return 'Plan Mensual ~$35';
+    if (amountUSD >= 45 && amountUSD <= 55) return 'Plan Mensual ~$50';
+    if (amountUSD >= 95 && amountUSD <= 105) return 'Plan Mensual ~$100';
+    return `Plan Mensual $${Math.round(amountUSD)}`;
+  }
+  
+  if (productName) return productName;
+  return `PayPal Plan $${Math.round(amountUSD)}`;
+}
+
+// Map PayPal interval to Stripe interval
+function mapInterval(paypalInterval: string | undefined): string {
+  const intervalMap: Record<string, string> = {
+    'DAY': 'day',
+    'WEEK': 'week',
+    'MONTH': 'month',
+    'YEAR': 'year',
+  };
+  return intervalMap[paypalInterval || ''] || 'month';
+}
+
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // Verify admin
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
+      console.error("❌ Auth failed:", authCheck.error);
+      return new Response(
+        JSON.stringify({ error: "Forbidden", message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Verify admin key
-    const isAdmin = await verifyAdminKey(req, supabase);
-    if (!isAdmin) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
 
     const paypalClientId = Deno.env.get('PAYPAL_CLIENT_ID');
     const paypalClientSecret = Deno.env.get('PAYPAL_CLIENT_SECRET');
@@ -83,7 +130,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log('Getting PayPal access token...');
+    console.log('🔑 Getting PayPal access token...');
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalClientSecret);
 
     // Create sync run record
@@ -101,14 +148,17 @@ Deno.serve(async (req) => {
       console.error('Failed to create sync run:', syncRunError);
     }
 
-    let allSubscriptions: any[] = [];
     let page = 1;
     let hasMore = true;
     const pageSize = 20;
+    let totalFetched = 0;
+    let totalUpserted = 0;
+    const BATCH_SIZE = 50;
+    let batch: any[] = [];
 
-    console.log('Fetching PayPal subscriptions...');
+    console.log('📦 Fetching PayPal subscriptions...');
 
-    // Fetch all subscriptions with pagination
+    // Fetch and process in streaming fashion
     while (hasMore) {
       const url = `https://api-m.paypal.com/v1/billing/subscriptions?page=${page}&page_size=${pageSize}&total_required=true`;
       
@@ -120,7 +170,6 @@ Deno.serve(async (req) => {
       });
 
       if (!response.ok) {
-        // PayPal returns 404 when no subscriptions exist
         if (response.status === 404) {
           console.log('No subscriptions found in PayPal');
           hasMore = false;
@@ -132,9 +181,71 @@ Deno.serve(async (req) => {
 
       const data = await response.json();
       const subscriptions = data.subscriptions || [];
-      allSubscriptions = allSubscriptions.concat(subscriptions);
+      totalFetched += subscriptions.length;
 
-      console.log(`Fetched page ${page}: ${subscriptions.length} subscriptions`);
+      console.log(`📄 Page ${page}: ${subscriptions.length} subscriptions (total: ${totalFetched})`);
+
+      // Transform to unified subscriptions format
+      for (const sub of subscriptions) {
+        // Get billing amount from billing_info or plan
+        const lastPayment = sub.billing_info?.last_payment?.amount;
+        const amount = lastPayment?.value 
+          ? Math.round(parseFloat(lastPayment.value) * 100)
+          : 0;
+        
+        const interval = sub.billing_info?.cycle_executions?.[0]?.tenure_type || 
+                        sub.plan?.billing_cycles?.[0]?.frequency?.interval_unit || 
+                        'MONTH';
+        
+        const planName = classifyPlan(amount, interval, sub.plan?.name || null);
+        
+        batch.push({
+          stripe_subscription_id: sub.id, // PayPal subscription ID (e.g., 'I-12345')
+          stripe_customer_id: sub.subscriber?.payer_id || null,
+          customer_email: sub.subscriber?.email_address || null,
+          plan_name: planName,
+          plan_id: sub.plan_id || null,
+          amount: amount,
+          currency: (lastPayment?.currency_code || 'USD').toLowerCase(),
+          interval: mapInterval(interval),
+          status: mapPayPalStatus(sub.status),
+          provider: 'paypal',
+          trial_start: null,
+          trial_end: null,
+          current_period_start: sub.start_time ? new Date(sub.start_time).toISOString() : null,
+          current_period_end: sub.billing_info?.next_billing_time 
+            ? new Date(sub.billing_info.next_billing_time).toISOString() 
+            : null,
+          canceled_at: sub.status === 'CANCELLED' && sub.update_time 
+            ? new Date(sub.update_time).toISOString() 
+            : null,
+          cancel_reason: null,
+          updated_at: new Date().toISOString(),
+          raw_data: {
+            paypal_subscription_id: sub.id,
+            payer_name: sub.subscriber?.name 
+              ? `${sub.subscriber.name.given_name || ''} ${sub.subscriber.name.surname || ''}`.trim() 
+              : null,
+            billing_info: sub.billing_info,
+            create_time: sub.create_time,
+          },
+        });
+
+        // Flush batch when full
+        if (batch.length >= BATCH_SIZE) {
+          const { error: upsertError } = await supabase
+            .from('subscriptions')
+            .upsert(batch, { onConflict: 'stripe_subscription_id' });
+
+          if (upsertError) {
+            console.error('❌ Batch upsert error:', upsertError);
+          } else {
+            totalUpserted += batch.length;
+            console.log(`✅ Upserted batch: ${totalUpserted} total`);
+          }
+          batch = []; // Clear memory
+        }
+      }
 
       // Check if there are more pages
       hasMore = subscriptions.length === pageSize;
@@ -142,88 +253,57 @@ Deno.serve(async (req) => {
 
       // Safety limit
       if (page > 100) {
-        console.log('Reached pagination limit');
+        console.log('⚠️ Reached pagination limit');
         break;
+      }
+
+      // Update progress
+      if (syncRun) {
+        await supabase.from('sync_runs').update({
+          total_fetched: totalFetched,
+          total_inserted: totalUpserted,
+        }).eq('id', syncRun.id);
       }
     }
 
-    console.log(`Total subscriptions fetched: ${allSubscriptions.length}`);
+    // Flush remaining batch
+    if (batch.length > 0) {
+      const { error: upsertError } = await supabase
+        .from('subscriptions')
+        .upsert(batch, { onConflict: 'stripe_subscription_id' });
 
-    // Transform and upsert subscriptions
-    const subscriptionBatch = allSubscriptions.map((sub: any) => ({
-      paypal_subscription_id: sub.id,
-      status: mapPayPalStatus(sub.status),
-      plan_id: sub.plan_id,
-      plan_name: sub.plan?.name || null,
-      payer_id: sub.subscriber?.payer_id || null,
-      payer_email: sub.subscriber?.email_address || null,
-      payer_name: sub.subscriber?.name ? 
-        `${sub.subscriber.name.given_name || ''} ${sub.subscriber.name.surname || ''}`.trim() : null,
-      start_time: sub.start_time || null,
-      create_time: sub.create_time || null,
-      update_time: sub.update_time || null,
-      billing_info: sub.billing_info || null,
-      subscriber: sub.subscriber || null,
-      auto_renewal: sub.auto_renewal ?? true,
-      quantity: sub.quantity || 1,
-      shipping_amount: sub.shipping_amount?.value ? 
-        Math.round(parseFloat(sub.shipping_amount.value) * 100) : null,
-      tax_amount: sub.billing_info?.last_payment?.amount?.value ?
-        null : null, // PayPal doesn't separate tax in subscription
-      metadata: {
-        custom_id: sub.custom_id,
-        links: sub.links,
-      },
-      synced_at: new Date().toISOString(),
-    }));
-
-    let insertedCount = 0;
-    if (subscriptionBatch.length > 0) {
-      // Upsert in batches of 50
-      for (let i = 0; i < subscriptionBatch.length; i += 50) {
-        const batch = subscriptionBatch.slice(i, i + 50);
-        const { error: upsertError, count } = await supabase
-          .from('paypal_subscriptions')
-          .upsert(batch, { 
-            onConflict: 'paypal_subscription_id',
-            count: 'exact'
-          });
-
-        if (upsertError) {
-          console.error('Upsert error:', upsertError);
-        } else {
-          insertedCount += count || batch.length;
-        }
+      if (upsertError) {
+        console.error('❌ Final batch upsert error:', upsertError);
+      } else {
+        totalUpserted += batch.length;
       }
     }
 
     // Update sync run
     if (syncRun) {
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          total_fetched: allSubscriptions.length,
-          total_inserted: insertedCount,
-        })
-        .eq('id', syncRun.id);
+      await supabase.from('sync_runs').update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        total_fetched: totalFetched,
+        total_inserted: totalUpserted,
+      }).eq('id', syncRun.id);
     }
 
-    console.log(`Sync completed: ${allSubscriptions.length} fetched, ${insertedCount} upserted`);
+    console.log(`✅ PayPal sync completed: ${totalFetched} fetched, ${totalUpserted} upserted to unified subscriptions table`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        fetched: allSubscriptions.length,
-        upserted: insertedCount,
+        fetched: totalFetched,
+        upserted: totalUpserted,
         syncRunId: syncRun?.id,
+        message: 'PayPal subscriptions synced to unified subscriptions table',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    console.error('Error in fetch-paypal-subscriptions:', error);
+    console.error('❌ Error in fetch-paypal-subscriptions:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ error: message }),

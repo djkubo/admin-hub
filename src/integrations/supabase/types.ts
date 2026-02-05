@@ -2701,8 +2701,34 @@ export type Database = {
           status: string
         }[]
       }
+      get_revenue_by_plan: {
+        Args: { limit_count?: number }
+        Returns: {
+          percentage: number
+          plan_name: string
+          subscription_count: number
+          total_revenue: number
+        }[]
+      }
       get_staging_counts_accurate: { Args: never; Returns: Json }
       get_staging_counts_fast: { Args: never; Returns: Json }
+      get_subscription_metrics: {
+        Args: never
+        Returns: {
+          active_count: number
+          at_risk_amount: number
+          canceled_count: number
+          incomplete_count: number
+          mrr: number
+          past_due_count: number
+          paused_count: number
+          paypal_count: number
+          stripe_count: number
+          total_count: number
+          trialing_count: number
+          unpaid_count: number
+        }[]
+      }
       get_system_timezone: { Args: never; Returns: string }
       is_admin: { Args: never; Returns: boolean }
       kpi_cancellations: {

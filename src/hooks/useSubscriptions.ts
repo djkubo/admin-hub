@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 export interface Subscription {
   id: string;
@@ -15,7 +16,7 @@ export interface Subscription {
   currency: string | null;
   interval: string | null;
   status: string;
-  provider: string | null; // 'stripe' | 'paypal'
+  provider: string | null;
   trial_start: string | null;
   trial_end: string | null;
   current_period_start: string | null;
@@ -34,7 +35,6 @@ export interface PlanRevenue {
   cumulative: number;
 }
 
-// NEW: Status breakdown for dashboard display
 export interface StatusBreakdown {
   active: number;
   trialing: number;
@@ -56,25 +56,45 @@ interface SyncRun {
   error_message: string | null;
 }
 
-// Helper to normalize Stripe status to display category
-function getStatusCategory(status: string): keyof StatusBreakdown {
-  switch (status) {
-    case 'active': return 'active';
-    case 'trialing': return 'trialing';
-    case 'past_due': return 'past_due';
-    case 'unpaid': return 'unpaid';
-    case 'canceled': return 'canceled';
-    case 'incomplete': return 'incomplete';
-    case 'incomplete_expired': return 'incomplete_expired';
-    case 'paused': return 'paused';
-    default: return 'active'; // Default fallback
-  }
+interface SubscriptionMetrics {
+  total_count: number;
+  active_count: number;
+  trialing_count: number;
+  past_due_count: number;
+  unpaid_count: number;
+  canceled_count: number;
+  paused_count: number;
+  incomplete_count: number;
+  mrr: number;
+  at_risk_amount: number;
+  stripe_count: number;
+  paypal_count: number;
 }
 
-export function useSubscriptions() {
+interface UseSubscriptionsOptions {
+  page?: number;
+  pageSize?: number;
+  statusFilter?: string;
+  searchQuery?: string;
+  providerFilter?: 'all' | 'stripe' | 'paypal';
+}
+
+export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
+  const {
+    page = 1,
+    pageSize = 50,
+    statusFilter = 'all',
+    searchQuery = '',
+    providerFilter = 'all',
+  } = options;
+  
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [activeSyncId, setActiveSyncId] = useState<string | null>(null);
+
+  // Calculate range for pagination
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
   // Check for active sync on mount
   useEffect(() => {
@@ -92,7 +112,6 @@ export function useSubscriptions() {
         const startedAt = new Date(sync.started_at);
         const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
         
-        // Only show if started less than 10 minutes ago
         if (minutesAgo < 10) {
           setActiveSyncId(sync.id);
         }
@@ -117,13 +136,15 @@ export function useSubscriptions() {
       return data as SyncRun;
     },
     enabled: !!activeSyncId,
-    refetchInterval: activeSyncId ? 5000 : false, // OPTIMIZATION: Reduced from 2s to 5s
+    refetchInterval: activeSyncId ? 5000 : false,
   });
 
   // Handle sync completion
   useEffect(() => {
     if (syncStatus?.status === "completed") {
       queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+      queryClient.invalidateQueries({ queryKey: ["subscription-metrics"] });
+      queryClient.invalidateQueries({ queryKey: ["revenue-by-plan"] });
       toast({
         title: "Sincronización completada",
         description: `${syncStatus.total_inserted || 0} suscripciones actualizadas`,
@@ -139,124 +160,135 @@ export function useSubscriptions() {
     }
   }, [syncStatus?.status, syncStatus?.total_inserted, syncStatus?.error_message, queryClient, toast]);
 
-  const { data: subscriptions = [], isLoading, error, refetch } = useQuery({
-    queryKey: ["subscriptions"],
+  // Paginated subscriptions for table display
+  const { data: paginatedData, isLoading, error, refetch } = useQuery({
+    queryKey: ["subscriptions", page, pageSize, statusFilter, searchQuery, providerFilter],
     queryFn: async () => {
-      // FIXED: Fetch subscriptions for table display (limited for performance)
-      const { data, error } = await supabase
+      let query = supabase
         .from("subscriptions")
-        .select("*")
+        .select("*", { count: 'exact' })
         .order("amount", { ascending: false })
-        .limit(100); // Pagination for UI table
+        .range(from, to);
+
+      // Status filter
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'at_risk') {
+          query = query.in('status', ['past_due', 'unpaid']);
+        } else {
+          query = query.eq('status', statusFilter);
+        }
+      }
+
+      // Provider filter
+      if (providerFilter === 'stripe') {
+        query = query.or('provider.is.null,provider.eq.stripe');
+      } else if (providerFilter === 'paypal') {
+        query = query.eq('provider', 'paypal');
+      }
+
+      // Search filter
+      if (searchQuery) {
+        query = query.or(`customer_email.ilike.%${searchQuery}%,plan_name.ilike.%${searchQuery}%`);
+      }
+
+      const { data, error, count } = await query;
 
       if (error) throw error;
-      return data as Subscription[];
+      return { subscriptions: data as Subscription[], totalCount: count || 0 };
     },
-    refetchInterval: 120000, // Refetch every 2 minutes
-    staleTime: 60000, // Consider data fresh for 1 minute
+    refetchInterval: 120000,
+    staleTime: 60000,
   });
 
-  // OPTIMIZED: Fetch aggregate metrics from server-side RPC (100% accurate)
-  const { data: mrrSummary } = useQuery({
-    queryKey: ["mrr-summary"],
+  const subscriptions = paginatedData?.subscriptions || [];
+  const totalCount = paginatedData?.totalCount || 0;
+  const totalPages = Math.ceil(totalCount / pageSize);
+
+  // SERVER-SIDE METRICS: Use RPC for accurate totals across entire dataset
+  const { data: metrics } = useQuery({
+    queryKey: ["subscription-metrics"],
     queryFn: async () => {
-      // Cast to any to bypass TypeScript until types are regenerated
-      const { data, error } = await (supabase.rpc as any)('kpi_mrr_summary');
-      if (error) throw error;
-      return data?.[0] as { mrr: number; active_count: number; at_risk_amount: number; at_risk_count: number } | undefined;
+      const { data, error } = await (supabase.rpc as any)('get_subscription_metrics');
+      if (error) {
+        console.warn('get_subscription_metrics RPC error:', error);
+        return null;
+      }
+      return data?.[0] as SubscriptionMetrics | undefined;
     },
-    staleTime: 60000, // Consider data fresh for 1 minute
-    refetchInterval: 120000, // Refetch every 2 minutes
+    staleTime: 60000,
+    refetchInterval: 120000,
   });
 
-  // OPTIMIZATION: Debounced realtime subscription for subscriptions table
+  // SERVER-SIDE: Revenue by plan from RPC
+  const { data: revenueByPlanData } = useQuery({
+    queryKey: ["revenue-by-plan"],
+    queryFn: async () => {
+      const { data, error } = await (supabase.rpc as any)('get_revenue_by_plan', { limit_count: 10 });
+      if (error) {
+        console.warn('get_revenue_by_plan RPC error:', error);
+        return [];
+      }
+      return data as { plan_name: string; subscription_count: number; total_revenue: number; percentage: number }[];
+    },
+    staleTime: 60000,
+    refetchInterval: 120000,
+  });
+
+  // Transform revenue by plan to expected format
+  const revenueByPlan: PlanRevenue[] = (() => {
+    if (!revenueByPlanData) return [];
+    let cumulative = 0;
+    return revenueByPlanData.map(plan => {
+      cumulative += Number(plan.percentage) || 0;
+      return {
+        name: plan.plan_name,
+        count: Number(plan.subscription_count) || 0,
+        revenue: Number(plan.total_revenue) || 0,
+        percentage: Number(plan.percentage) || 0,
+        cumulative,
+      };
+    });
+  })();
+
+  // Status breakdown from RPC metrics
+  const statusBreakdown: StatusBreakdown = {
+    active: metrics?.active_count || 0,
+    trialing: metrics?.trialing_count || 0,
+    past_due: metrics?.past_due_count || 0,
+    unpaid: metrics?.unpaid_count || 0,
+    canceled: metrics?.canceled_count || 0,
+    incomplete: metrics?.incomplete_count || 0,
+    incomplete_expired: 0,
+    paused: metrics?.paused_count || 0,
+  };
+
+  // OPTIMIZATION: Debounced realtime subscription
   useEffect(() => {
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedRefetch = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => refetch(), 2000);
+      debounceTimer = setTimeout(() => {
+        refetch();
+        queryClient.invalidateQueries({ queryKey: ["subscription-metrics"] });
+        queryClient.invalidateQueries({ queryKey: ["revenue-by-plan"] });
+      }, 2000);
     };
     
     const channel = supabase.channel('subscriptions-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions' }, debouncedRefetch)
       .subscribe();
       
     return () => { 
       if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel); 
     };
-  }, [refetch]);
+  }, [refetch, queryClient]);
 
-  // NEW: Calculate status breakdown for all subscriptions
-  const statusBreakdown: StatusBreakdown = (() => {
-    const breakdown: StatusBreakdown = {
-      active: 0,
-      trialing: 0,
-      past_due: 0,
-      unpaid: 0,
-      canceled: 0,
-      incomplete: 0,
-      incomplete_expired: 0,
-      paused: 0,
-    };
-    
-    for (const sub of subscriptions) {
-      const category = getStatusCategory(sub.status);
-      breakdown[category]++;
-    }
-    
-    return breakdown;
-  })();
-
-  // Calculate revenue by plan with Pareto analysis
-  // FIXED: Include active + trialing for MRR (revenue-generating)
-  const revenueByPlan: PlanRevenue[] = (() => {
-    const activeSubscriptions = subscriptions.filter(
-      (s) => s.status === "active" || s.status === "trialing"
-    );
-
-    const planMap: Record<string, { count: number; revenue: number }> = {};
-
-    for (const sub of activeSubscriptions) {
-      const planName = sub.plan_name || "Unknown Plan";
-      if (!planMap[planName]) {
-        planMap[planName] = { count: 0, revenue: 0 };
-      }
-      planMap[planName].count += 1;
-      planMap[planName].revenue += sub.amount;
-    }
-
-    const sorted = Object.entries(planMap)
-      .map(([name, stats]) => ({ name, ...stats }))
-      .sort((a, b) => b.revenue - a.revenue);
-
-    const totalRevenue = sorted.reduce((sum, p) => sum + p.revenue, 0);
-    let cumulative = 0;
-
-    return sorted.map((plan) => {
-      const percentage = totalRevenue > 0 ? (plan.revenue / totalRevenue) * 100 : 0;
-      cumulative += percentage;
-      return {
-        ...plan,
-        percentage,
-        cumulative,
-      };
-    });
-  })();
-
-  // OPTIMIZED: Use server-side RPC for accurate totals (not limited to 100 rows)
-  const totalActiveRevenue = mrrSummary ? mrrSummary.mrr / 100 : 
-    subscriptions.filter((s) => s.status === "active").reduce((sum, s) => sum + s.amount, 0);
-  
-  const totalActiveCount = mrrSummary?.active_count ?? statusBreakdown.active;
-  
-  // Revenue at risk from server-side RPC
-  const revenueAtRisk = mrrSummary ? mrrSummary.at_risk_amount / 100 :
-    subscriptions.filter((s) => s.status === "past_due" || s.status === "unpaid").reduce((sum, s) => sum + s.amount, 0);
-  
-  const atRiskCount = mrrSummary?.at_risk_count ?? (statusBreakdown.past_due + statusBreakdown.unpaid);
+  // Use server-side metrics for accurate totals
+  const totalActiveRevenue = metrics?.mrr || 0;
+  const totalActiveCount = metrics?.active_count || 0;
+  const revenueAtRisk = metrics?.at_risk_amount || 0;
+  const atRiskCount = (metrics?.past_due_count || 0) + (metrics?.unpaid_count || 0);
 
   const syncSubscriptions = useMutation({
     mutationFn: async () => {
@@ -264,14 +296,15 @@ export function useSubscriptions() {
       return result;
     },
     onSuccess: (data) => {
-      if (data.status === "running" && data.syncRunId) {
+      if (data?.status === "running" && data?.syncRunId) {
         setActiveSyncId(data.syncRunId);
         toast({
           title: "Sincronización iniciada",
-          description: "El proceso continúa en segundo plano. Puedes recargar la página.",
+          description: "El proceso continúa en segundo plano.",
         });
-      } else if (data.status === "completed") {
+      } else if (data?.status === "completed") {
         queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+        queryClient.invalidateQueries({ queryKey: ["subscription-metrics"] });
         toast({
           title: "Suscripciones sincronizadas",
           description: `Sincronización completada`,
@@ -287,8 +320,32 @@ export function useSubscriptions() {
     },
   });
 
-  // Check if sync is in progress
-  const isSyncing = !!activeSyncId || syncSubscriptions.isPending;
+  // Sync PayPal subscriptions
+  const syncPayPalSubscriptions = useMutation({
+    mutationFn: async () => {
+      const result = await invokeWithAdminKey<{ success?: boolean; syncRunId?: string; upserted?: number }>("fetch-paypal-subscriptions", {});
+      return result;
+    },
+    onSuccess: (data) => {
+      if (data?.success) {
+        queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+        queryClient.invalidateQueries({ queryKey: ["subscription-metrics"] });
+        toast({
+          title: "PayPal sincronizado",
+          description: `${data.upserted || 0} suscripciones de PayPal actualizadas`,
+        });
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error de sincronización PayPal",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const isSyncing = !!activeSyncId || syncSubscriptions.isPending || syncPayPalSubscriptions.isPending;
   const syncProgress = syncStatus ? {
     fetched: syncStatus.total_fetched || 0,
     inserted: syncStatus.total_inserted || 0,
@@ -299,14 +356,25 @@ export function useSubscriptions() {
     subscriptions,
     isLoading,
     error,
+    refetch,
     syncSubscriptions,
+    syncPayPalSubscriptions,
+    // Pagination
+    page,
+    pageSize,
+    totalCount,
+    totalPages,
+    // Server-side metrics (accurate for entire dataset)
     revenueByPlan,
     totalActiveRevenue,
     totalActiveCount,
-    // NEW exports
     statusBreakdown,
     revenueAtRisk,
     atRiskCount,
+    // Provider breakdown
+    stripeCount: metrics?.stripe_count || 0,
+    paypalCount: metrics?.paypal_count || 0,
+    // Sync state
     isSyncing,
     syncProgress,
   };

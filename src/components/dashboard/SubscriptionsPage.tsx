@@ -1,25 +1,67 @@
-import { useMemo } from 'react';
-import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, RefreshCw, Loader2, CloudCog, DollarSign } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { CreditCard, Clock, CheckCircle, XCircle, AlertTriangle, TrendingUp, RefreshCw, Loader2, CloudCog, DollarSign, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { useSubscriptions, Subscription } from '@/hooks/useSubscriptions';
 import { formatDistanceToNow, addDays, isAfter, isBefore } from 'date-fns';
 import { es } from 'date-fns/locale';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+
+// PayPal icon
+const PayPalIcon = () => (
+  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.771.771 0 0 1 .762-.655h6.99c2.321 0 4.072.589 5.204 1.75.537.55.913 1.2 1.122 1.938.216.764.256 1.649.119 2.634-.288 2.018-1.227 3.523-2.795 4.476-1.474.894-3.348 1.348-5.572 1.348H8.97a.762.762 0 0 0-.752.64l-.774 4.875-.367 2.321a.405.405 0 0 1-.001.29z"/>
+  </svg>
+);
+
+// Stripe icon
+const StripeIcon = () => (
+  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+    <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z"/>
+  </svg>
+);
 
 export function SubscriptionsPage() {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState<'all' | 'stripe' | 'paypal'>('all');
+  const [searchInput, setSearchInput] = useState('');
+  
+  const searchQuery = useDebouncedValue(searchInput, 400);
+
   const { 
     subscriptions, 
-    isLoading, 
-    syncSubscriptions, 
+    isLoading,
+    totalCount,
+    totalPages,
+    syncSubscriptions,
+    syncPayPalSubscriptions,
     revenueByPlan, 
     totalActiveRevenue, 
     totalActiveCount, 
     statusBreakdown,
     revenueAtRisk,
     atRiskCount,
+    stripeCount,
+    paypalCount,
     isSyncing, 
     syncProgress 
-  } = useSubscriptions();
+  } = useSubscriptions({
+    page,
+    pageSize,
+    statusFilter,
+    searchQuery,
+    providerFilter,
+  });
 
   const now = new Date();
   const in3Days = addDays(now, 3);
@@ -105,16 +147,39 @@ export function SubscriptionsPage() {
               <p className="text-[10px] md:text-xs text-red-400/70">En Riesgo ({atRiskCount})</p>
             </div>
           )}
-          <Button
-            onClick={() => syncSubscriptions.mutate()}
-            disabled={isSyncing}
-            variant="outline"
-            size="sm"
-            className="touch-feedback h-8"
-          >
-            {isSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            <span className="hidden sm:inline ml-2">Sync</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Provider breakdown */}
+            <div className="hidden sm:flex items-center gap-2 text-xs mr-2">
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <StripeIcon />
+                <span>{stripeCount}</span>
+              </div>
+              <div className="flex items-center gap-1 text-[#0070ba]">
+                <PayPalIcon />
+                <span>{paypalCount}</span>
+              </div>
+            </div>
+            <Button
+              onClick={() => syncSubscriptions.mutate()}
+              disabled={isSyncing}
+              variant="outline"
+              size="sm"
+              className="touch-feedback h-8"
+              title="Sync Stripe"
+            >
+              {isSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <StripeIcon />}
+            </Button>
+            <Button
+              onClick={() => syncPayPalSubscriptions.mutate()}
+              disabled={isSyncing}
+              variant="outline"
+              size="sm"
+              className="touch-feedback h-8"
+              title="Sync PayPal"
+            >
+              <PayPalIcon />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -169,6 +234,41 @@ export function SubscriptionsPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Buscar email o plan..."
+            value={searchInput}
+            onChange={(e) => { setSearchInput(e.target.value); setPage(1); }}
+            className="pl-8 h-8 bg-muted/50 border-border/50 text-sm"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+          <SelectTrigger className="w-32 h-8 text-xs">
+            <SelectValue placeholder="Estado" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos ({statusBreakdown.active + statusBreakdown.trialing + statusBreakdown.past_due + statusBreakdown.unpaid + statusBreakdown.canceled})</SelectItem>
+            <SelectItem value="active">Activos ({statusBreakdown.active})</SelectItem>
+            <SelectItem value="trialing">Trials ({statusBreakdown.trialing})</SelectItem>
+            <SelectItem value="at_risk">En Riesgo ({statusBreakdown.past_due + statusBreakdown.unpaid})</SelectItem>
+            <SelectItem value="canceled">Cancelados ({statusBreakdown.canceled})</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={providerFilter} onValueChange={(v: any) => { setProviderFilter(v); setPage(1); }}>
+          <SelectTrigger className="w-28 h-8 text-xs">
+            <SelectValue placeholder="Proveedor" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos</SelectItem>
+            <SelectItem value="stripe">Stripe</SelectItem>
+            <SelectItem value="paypal">PayPal</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Three Lists - Stack on mobile */}
@@ -313,6 +413,50 @@ export function SubscriptionsPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalCount > pageSize && (
+        <div className="flex items-center justify-between p-3 rounded-xl border border-border/50 bg-card">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>Mostrando {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, totalCount)} de {totalCount.toLocaleString()}</span>
+            <Select value={pageSize.toString()} onValueChange={(v) => { setPageSize(parseInt(v)); setPage(1); }}>
+              <SelectTrigger className="w-20 h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+                <SelectItem value="200">200</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="h-8"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Anterior
+            </Button>
+            <span className="text-sm text-muted-foreground px-2">
+              {page} / {totalPages || 1}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="h-8"
+            >
+              Siguiente
+              <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       )}
