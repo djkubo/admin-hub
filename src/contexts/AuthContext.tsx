@@ -84,7 +84,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
         console.log('[Auth] State change event:', event);
         
-        // Only update state after initialization to prevent race conditions
+        // CRITICAL: Only accept SIGNED_OUT if it's an explicit user action
+        // This prevents edge function errors or network issues from logging out the user
+        if (event === 'SIGNED_OUT') {
+          // Check if we still have a valid session in storage
+          supabase.auth.getSession().then(({ data: { session: storedSession } }) => {
+            if (storedSession) {
+              // We still have a session! Don't log out - this was likely a spurious event
+              console.log('[Auth] SIGNED_OUT event ignored - session still valid in storage');
+              sessionRef.current = storedSession;
+              setSession(storedSession);
+              setUser(storedSession.user);
+            } else if (!sessionRef.current) {
+              // Only log out if we truly have no session anywhere
+              console.log('[Auth] SIGNED_OUT confirmed - no session found');
+              sessionRef.current = null;
+              setSession(null);
+              setUser(null);
+            } else {
+              // We had a session ref but storage is empty - try to recover before giving up
+              console.log('[Auth] SIGNED_OUT with stale ref - attempting recovery');
+              supabase.auth.refreshSession().then(({ data }) => {
+                if (data.session) {
+                  console.log('[Auth] Session recovered after SIGNED_OUT event');
+                  sessionRef.current = data.session;
+                  setSession(data.session);
+                  setUser(data.session.user);
+                } else {
+                  // Truly logged out
+                  sessionRef.current = null;
+                  setSession(null);
+                  setUser(null);
+                }
+              }).catch(() => {
+                sessionRef.current = null;
+                setSession(null);
+                setUser(null);
+              });
+            }
+          });
+          return; // Don't process SIGNED_OUT normally
+        }
+        
+        // For all other events, update state normally
         sessionRef.current = newSession;
         setSession(newSession);
         setUser(newSession?.user ?? null);
