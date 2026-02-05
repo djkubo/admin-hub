@@ -47,40 +47,58 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
   const fetchSourceMetrics = async () => {
     setLoading(true);
     try {
-      // OPTIMIZATION: Limit client fetches to prevent timeout
-      // Get clients with acquisition_source (limit to 10000)
+      // Get clients with acquisition_source
       const { data: clients } = await supabase
         .from('clients')
-        .select('id, acquisition_source, lifecycle_stage, total_spend, email')
+        .select('id, acquisition_source, lifecycle_stage, total_spend, email, trial_started_at')
         .order('created_at', { ascending: false })
         .limit(10000);
 
-      // Get transactions for revenue calculation based on period
-      // OPTIMIZATION: Limit to 5000 transactions
-      const periodDays = getDaysForPeriod(period);
-      const periodStart = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
-      const { data: transactions } = await supabase
+      // Get ALL transactions (not filtered by period) to determine who is a customer
+      const { data: allTransactions } = await supabase
         .from('transactions')
         .select('customer_email, amount, status, currency, stripe_created_at')
         .in('status', ['succeeded', 'paid'])
-        .gte('stripe_created_at', periodStart)
         .order('stripe_created_at', { ascending: false })
-        .limit(5000);
+        .limit(10000);
+
+      // Get transactions for period-specific revenue
+      const periodDays = getDaysForPeriod(period);
+      const periodStart = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
+      const periodTransactions = allTransactions?.filter(tx => 
+        tx.stripe_created_at && new Date(tx.stripe_created_at) >= new Date(periodStart)
+      ) || [];
 
       if (!clients) {
         setMetrics([]);
         return;
       }
 
-      // Build email to source mapping from the same clients query
+      // Build email→source mapping AND identify paying customers from transactions
       const emailToSource: Record<string, string> = {};
+      const payingCustomerEmails = new Set<string>();
+      const emailToTotalSpend: Record<string, number> = {};
+
       clients.forEach(c => {
-        if (c.email && c.acquisition_source) {
-          emailToSource[c.email.toLowerCase()] = c.acquisition_source;
+        if (c.email) {
+          const emailLower = c.email.toLowerCase();
+          emailToSource[emailLower] = c.acquisition_source || 'unknown';
         }
       });
 
-      // Aggregate by source
+      // Calculate who has paid (CUSTOMER) based on actual transactions
+      allTransactions?.forEach(tx => {
+        if (tx.customer_email) {
+          const emailLower = tx.customer_email.toLowerCase();
+          payingCustomerEmails.add(emailLower);
+          
+          let amountUSD = (tx.amount || 0) / 100;
+          if (tx.currency === 'mxn') amountUSD = amountUSD / 17;
+          emailToTotalSpend[emailLower] = (emailToTotalSpend[emailLower] || 0) + amountUSD;
+        }
+      });
+
+      // Aggregate by source - DYNAMIC classification
       const sourceMap = new Map<string, {
         leads: number;
         trials: number;
@@ -96,24 +114,27 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
           sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
         }
         const data = sourceMap.get(source)!;
+        const emailLower = client.email?.toLowerCase();
         
-        if (client.lifecycle_stage === 'LEAD') data.leads++;
-        else if (client.lifecycle_stage === 'TRIAL') data.trials++;
-        else if (client.lifecycle_stage === 'CUSTOMER') {
+        // DYNAMIC: Check if this email has transactions = CUSTOMER
+        if (emailLower && payingCustomerEmails.has(emailLower)) {
           data.customers++;
           data.customerCount++;
-          data.totalSpend += client.total_spend || 0;
+          data.totalSpend += (emailToTotalSpend[emailLower] || 0) * 100; // Back to cents for consistency
+        } else if (client.trial_started_at || client.lifecycle_stage === 'TRIAL') {
+          data.trials++;
+        } else {
+          data.leads++;
         }
       });
 
-      // Add transaction revenue
-      transactions?.forEach(tx => {
+      // Add PERIOD revenue (only transactions within selected period)
+      periodTransactions.forEach(tx => {
         if (tx.customer_email) {
           const source = emailToSource[tx.customer_email.toLowerCase()] || 'unknown';
           if (!sourceMap.has(source)) {
             sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
           }
-          // Convert to USD (rough MXN conversion)
           let amountUSD = (tx.amount || 0) / 100;
           if (tx.currency === 'mxn') amountUSD = amountUSD / 17;
           sourceMap.get(source)!.revenue += amountUSD;
@@ -137,7 +158,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
               : 0,
           };
         })
-        .filter(m => m.leads + m.trials + m.customers > 0)
+        .filter(m => m.leads + m.trials + m.customers > 0 || m.revenue > 0)
         .sort((a, b) => b.revenue - a.revenue);
 
       setMetrics(result);
