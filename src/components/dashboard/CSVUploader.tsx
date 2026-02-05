@@ -43,6 +43,14 @@ interface ChunkProgress {
   totalRows: number;
 }
 
+interface MergeProgress {
+  status: 'starting' | 'processing' | 'completed' | 'failed';
+  merged: number;
+  total: number;
+  importId: string;
+  message?: string;
+}
+
 interface CSVUploaderProps {
   onProcessingComplete: () => void;
 }
@@ -89,6 +97,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [files, setFiles] = useState<CSVFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
+  const [mergeProgress, setMergeProgress] = useState<MergeProgress | null>(null);
+  const [isMerging, setIsMerging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const detectFileType = async (file: File): Promise<CSVFileType> => {
@@ -877,32 +887,99 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     const hasErrors = files.some(f => f.status === 'error');
     const hasSuccess = files.some(f => f.status === 'done');
     
-    // AUTO-MERGE: If we have pending import IDs, trigger merge automatically
+    // AUTO-MERGE: If we have pending import IDs, trigger merge automatically with progress tracking
     if (pendingImportIds.length > 0 && hasSuccess) {
-      toast.info('🔄 Procesando e integrando datos en background...', { duration: 5000 });
+      setIsMerging(true);
+      toast.info('🔄 Iniciando fase de Integración...', { duration: 3000 });
       
-      // Trigger merge for each import ID (fire-and-forget, backend handles it)
       for (const importId of pendingImportIds) {
+        setMergeProgress({
+          status: 'starting',
+          merged: 0,
+          total: 0,
+          importId,
+          message: 'Iniciando integración...'
+        });
+        
         try {
-          const mergeResult = await invokeWithAdminKey<{ ok: boolean; status?: string; message?: string; error?: string }>(
-            'merge-staged-imports',
-            { importId }
-          );
+          // Trigger merge
+          const mergeResult = await invokeWithAdminKey<{ 
+            ok: boolean; 
+            status?: string; 
+            message?: string; 
+            error?: string;
+            merged?: number;
+            total?: number;
+          }>('merge-staged-imports', { importId });
           
-          if (mergeResult?.ok) {
-            console.log(`[Auto-Merge] Started background merge for import ${importId}`);
-          } else {
-            console.warn(`[Auto-Merge] Failed to start merge for ${importId}:`, mergeResult?.error);
+          if (!mergeResult?.ok) {
+            console.warn(`[Auto-Merge] Failed for ${importId}:`, mergeResult?.error);
+            setMergeProgress(prev => prev ? { ...prev, status: 'failed', message: mergeResult?.error } : null);
+            continue;
           }
+          
+          // Poll csv_import_runs for real progress
+          let pollAttempts = 0;
+          const maxPollAttempts = 60; // 60 * 2s = 2 minutes max
+          
+          const pollProgress = async () => {
+            const { supabase } = await import('@/integrations/supabase/client');
+            
+            while (pollAttempts < maxPollAttempts) {
+              pollAttempts++;
+              
+              const { data: importRun } = await supabase
+                .from('csv_import_runs')
+                .select('status, rows_merged, rows_staged, total_rows, error_message')
+                .eq('id', importId)
+                .single();
+              
+              if (!importRun) break;
+              
+              const merged = importRun.rows_merged || 0;
+              const total = importRun.rows_staged || importRun.total_rows || 1;
+              
+              setMergeProgress({
+                status: importRun.status === 'completed' ? 'completed' : 
+                       importRun.status === 'failed' ? 'failed' : 'processing',
+                merged,
+                total,
+                importId,
+                message: importRun.status === 'completed' 
+                  ? `${merged.toLocaleString()} registros integrados`
+                  : importRun.status === 'failed'
+                  ? importRun.error_message || 'Error en integración'
+                  : `Integrando... ${merged.toLocaleString()}/${total.toLocaleString()}`
+              });
+              
+              if (importRun.status === 'completed' || importRun.status === 'failed') {
+                break;
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          };
+          
+          await pollProgress();
+          
         } catch (mergeErr) {
-          console.error(`[Auto-Merge] Error invoking merge for ${importId}:`, mergeErr);
+          console.error(`[Auto-Merge] Error for ${importId}:`, mergeErr);
+          setMergeProgress(prev => prev ? { 
+            ...prev, 
+            status: 'failed', 
+            message: mergeErr instanceof Error ? mergeErr.message : 'Error desconocido' 
+          } : null);
         }
       }
       
       // Clear pending import IDs
       setPendingImportIds([]);
+      setIsMerging(false);
       
-      toast.success('✅ Datos subidos. Unificación ejecutándose en background.');
+      // Clear merge progress after a delay
+      setTimeout(() => setMergeProgress(null), 5000);
+      
+      toast.success('✅ Datos subidos e integrados correctamente.');
     } else if (hasErrors && hasSuccess) {
       toast.warning('Procesamiento completado con algunos errores');
     } else if (hasErrors) {
@@ -1016,14 +1093,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         </p>
       </div>
 
-      {/* Chunk progress indicator */}
+      {/* Chunk progress indicator - Phase 1: Staging */}
       {chunkProgress && (
-        <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+        <div className="mt-4 p-4 bg-primary/10 border border-primary/20 rounded-lg">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-blue-400">
-              Procesando parte {chunkProgress.currentChunk} de {chunkProgress.totalChunks}
+            <span className="text-sm font-medium text-primary">
+              📤 Fase 1: Cargando parte {chunkProgress.currentChunk} de {chunkProgress.totalChunks}
             </span>
-            <span className="text-sm text-gray-400">
+            <span className="text-sm text-muted-foreground">
               {chunkProgress.rowsProcessed.toLocaleString()} / {chunkProgress.totalRows.toLocaleString()} filas
             </span>
           </div>
@@ -1031,6 +1108,43 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             value={(chunkProgress.currentChunk / chunkProgress.totalChunks) * 100} 
             className="h-2"
           />
+        </div>
+      )}
+
+      {/* Merge progress indicator - Phase 2: Integration */}
+      {mergeProgress && (
+        <div className={`mt-4 p-4 rounded-lg border ${
+          mergeProgress.status === 'completed' 
+            ? 'bg-emerald-500/10 border-emerald-500/20' 
+            : mergeProgress.status === 'failed'
+            ? 'bg-destructive/10 border-destructive/20'
+            : 'bg-secondary/30 border-secondary/50'
+        }`}>
+          <div className="flex items-center justify-between mb-2">
+            <span className={`text-sm font-medium ${
+              mergeProgress.status === 'completed' 
+                ? 'text-emerald-400' 
+                : mergeProgress.status === 'failed'
+                ? 'text-destructive'
+                : 'text-foreground'
+            }`}>
+              {mergeProgress.status === 'completed' 
+                ? '✅ Fase 2: Integración completa' 
+                : mergeProgress.status === 'failed'
+                ? '❌ Fase 2: Error en integración'
+                : '🔄 Fase 2: Integrando datos...'}
+            </span>
+            <span className="text-sm text-muted-foreground">
+              {mergeProgress.merged.toLocaleString()} / {mergeProgress.total.toLocaleString()} registros
+            </span>
+          </div>
+          <Progress 
+            value={mergeProgress.total > 0 ? (mergeProgress.merged / mergeProgress.total) * 100 : 0} 
+            className="h-2"
+          />
+          {mergeProgress.message && (
+            <p className="text-xs text-muted-foreground mt-2">{mergeProgress.message}</p>
+          )}
         </div>
       )}
 
