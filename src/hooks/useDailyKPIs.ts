@@ -112,8 +112,12 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
           .lte('created_at', end),
         // MRR from kpi_mrr_summary RPC
         (supabase.rpc as any)('kpi_mrr_summary'),
-        // Sales from kpi_sales_summary RPC
-        (supabase.rpc as any)('kpi_sales_summary'),
+        // Sales: Direct query to transactions with date filtering
+        supabase.from('transactions')
+          .select('amount')
+          .in('status', ['succeeded', 'paid'])
+          .gte('stripe_created_at', start)
+          .lte('stripe_created_at', end),
       ]);
 
       // Extract trial count
@@ -150,9 +154,10 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
       // Extract sales data
       let salesUsd = 0;
-      if (promises[3].status === 'fulfilled' && promises[3].value?.data) {
-        const salesData = promises[3].value.data;
-        salesUsd = salesData?.total_usd || salesData?.today_usd || 0;
+      if (promises[3].status === 'fulfilled' && promises[3].value?.data && Array.isArray(promises[3].value.data)) {
+        const transactionsData = promises[3].value.data as { amount: number }[];
+        const totalCents = transactionsData.reduce((sum, tx) => sum + (tx.amount || 0), 0);
+        salesUsd = totalCents / 100; // Convert cents to dollars
       }
 
       const failedQueries = promises.filter(p => p.status === 'rejected').length;
