@@ -96,28 +96,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     );
 
-    // Auto-refresh session every 10 minutes to prevent expiration
+    // Auto-refresh session every 5 minutes to prevent expiration
     const refreshInterval = setInterval(() => {
       if (sessionRef.current) {
         console.log('[Auth] Auto-refresh interval triggered');
-        supabase.auth.refreshSession();
+        supabase.auth.refreshSession().catch(console.error);
       }
-    }, 10 * 60 * 1000); // 10 minutes
+    }, 5 * 60 * 1000); // 5 minutes (more aggressive)
 
-    // Also refresh on visibility change (when user returns to tab)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && sessionRef.current) {
-        console.log('[Auth] Tab visible - refreshing session');
-        supabase.auth.refreshSession();
+    // Refresh on visibility change (when user returns to tab after being away)
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        // Always try to recover session when tab becomes visible
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (currentSession) {
+          console.log('[Auth] Tab visible - session exists, refreshing');
+          sessionRef.current = currentSession;
+          setSession(currentSession);
+          setUser(currentSession.user);
+          // Refresh to extend the session
+          supabase.auth.refreshSession().catch(console.error);
+        } else if (sessionRef.current) {
+          // Had session but lost it - try to recover
+          console.log('[Auth] Tab visible - attempting session recovery');
+          const { data } = await supabase.auth.refreshSession();
+          if (data.session) {
+            sessionRef.current = data.session;
+            setSession(data.session);
+            setUser(data.session.user);
+          }
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Also refresh on window focus
+    const handleFocus = () => {
+      if (sessionRef.current) {
+        supabase.auth.refreshSession().catch(console.error);
+      }
+    };
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
       clearInterval(refreshInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
     };
   }, []); // Empty dependencies - run once on mount
 
