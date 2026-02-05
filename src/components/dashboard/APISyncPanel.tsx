@@ -738,6 +738,12 @@ export function APISyncPanel() {
     setInvoicesProgress(null);
     
     try {
+      // Calculate date range for 'recent' mode (last 90 days)
+      const endDate = new Date();
+      const startDate = mode === 'recent' 
+        ? new Date(endDate.getTime() - 90 * 24 * 60 * 60 * 1000) 
+        : undefined;
+
       // ONE single call with fetchAll=true - backend handles all pagination in background
       const data = await invokeWithAdminKey<{
         success: boolean;
@@ -750,8 +756,12 @@ export function APISyncPanel() {
         stats?: { draft: number; open: number; paid: number; void: number; uncollectible: number };
         error?: string;
       }>('fetch-invoices', {
-        mode,
-        fetchAll: true, // NEW: Process all pages in background
+        mode: mode === 'recent' ? 'range' : 'all', // Use 'range' for recent, 'all' for full
+        fetchAll: true, // CRÍTICO: Process all pages in background
+        ...(mode === 'recent' && {
+          startDate: startDate?.toISOString(),
+          endDate: endDate.toISOString()
+        })
       });
 
       if (!data.success && data.error) {
