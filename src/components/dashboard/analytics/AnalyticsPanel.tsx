@@ -177,9 +177,9 @@ export function AnalyticsPanel() {
         </TabsContent>
 
         <TabsContent value="ltv" className="space-y-4 sm:space-y-6">
-          {/* LTV Metrics Row */}
+          {/* LTV Metrics Row - Usa historial completo para calcular Churn/LTV correctamente */}
           <LTVMetrics 
-            transactions={filteredTransactions} 
+            transactions={transactions} 
             subscriptions={subscriptions} 
           />
 
