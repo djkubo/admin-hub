@@ -279,6 +279,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Track import IDs for auto-merge at the end
+  const [pendingImportIds, setPendingImportIds] = useState<string[]>([]);
+
   // Process a large file in chunks - MICRO CHUNKS for guaranteed success
   const processInChunks = async (
     csvText: string, 
@@ -451,14 +454,15 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     
     // If we processed at least some rows, consider it a partial success
     if (rowsProcessed > 0) {
-      return { ok: true, result: accumulatedResult };
+      return { ok: true, result: accumulatedResult, importId };
     }
     
     return { 
       ok: false, 
       error: accumulatedResult.errors.length > 0 
         ? accumulatedResult.errors.join('; ') 
-        : 'No se pudieron procesar las filas' 
+        : 'No se pudieron procesar las filas',
+      importId 
     };
   };
 
@@ -507,7 +511,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`🗂️ Procesando CSV Maestro (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
           
-          const { ok, result: masterResult, error } = await processInChunks(text, 'master', file.name);
+          const { ok, result: masterResult, error, importId } = await processInChunks(text, 'master', file.name);
 
           if (!ok || !masterResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -515,6 +519,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`❌ Error procesando CSV Maestro: ${error || 'Error desconocido'}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -539,7 +548,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`📋 Procesando suscripciones (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
           
-          const { ok, result: subsResult, error } = await processInChunks(text, 'subscriptions', file.name);
+          const { ok, result: subsResult, error, importId } = await processInChunks(text, 'subscriptions', file.name);
 
           if (!ok || !subsResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -547,6 +556,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`❌ Error procesando suscripciones: ${error || 'Error desconocido'}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -574,7 +588,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (useEdgeFunction) {
             toast.info(`Procesando CSV grande (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
             
-            const { ok, result: ghlResult, error } = await processInChunks(text, 'ghl', file.name);
+            const { ok, result: ghlResult, error, importId } = await processInChunks(text, 'ghl', file.name);
 
             if (!ok || !ghlResult) {
               setFiles(prev => prev.map((f, idx) => 
@@ -582,6 +596,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               ));
               toast.error(`Error procesando CSV: ${error}`);
               continue;
+            }
+
+            // Capture importId for auto-merge
+            if (importId) {
+              setPendingImportIds(prev => [...prev, importId]);
             }
 
             setFiles(prev => prev.map((f, idx) => 
@@ -657,7 +676,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`💳 Procesando Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
           
-          const { ok, result: processingResult, error } = await processInChunks(text, 'stripe_payments', file.name);
+          const { ok, result: processingResult, error, importId } = await processInChunks(text, 'stripe_payments', file.name);
 
           if (!ok || !processingResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -665,6 +684,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`Error procesando CSV: ${error}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -693,7 +717,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`👤 Procesando Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-          const { ok, result: customerResult, error } = await processInChunks(text, 'stripe_customers', file.name);
+          const { ok, result: customerResult, error, importId } = await processInChunks(text, 'stripe_customers', file.name);
 
           if (!ok || !customerResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -701,6 +725,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`Error procesando CSV: ${error}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -724,7 +753,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`👥 Procesando usuarios (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
           
-          const { ok, result: webResult, error } = await processInChunks(text, 'web', file.name);
+          const { ok, result: webResult, error, importId } = await processInChunks(text, 'web', file.name);
 
           if (!ok || !webResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -732,6 +761,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`❌ Error procesando usuarios: ${error || 'Error desconocido'}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -755,7 +789,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`💰 Procesando PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-          const { ok, result: paypalResult, error } = await processInChunks(text, 'paypal', file.name);
+          const { ok, result: paypalResult, error, importId } = await processInChunks(text, 'paypal', file.name);
 
           if (!ok || !paypalResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -763,6 +797,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`Error procesando CSV: ${error}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -782,7 +821,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.info(`💳 Procesando Stripe (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-          const { ok, result: stripeResult, error } = await processInChunks(text, 'stripe', file.name);
+          const { ok, result: stripeResult, error, importId } = await processInChunks(text, 'stripe', file.name);
 
           if (!ok || !stripeResult) {
             setFiles(prev => prev.map((f, idx) => 
@@ -790,6 +829,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             ));
             toast.error(`Error procesando CSV: ${error}`);
             continue;
+          }
+
+          // Capture importId for auto-merge
+          if (importId) {
+            setPendingImportIds(prev => [...prev, importId]);
           }
 
           setFiles(prev => prev.map((f, idx) => 
@@ -833,7 +877,33 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     const hasErrors = files.some(f => f.status === 'error');
     const hasSuccess = files.some(f => f.status === 'done');
     
-    if (hasErrors && hasSuccess) {
+    // AUTO-MERGE: If we have pending import IDs, trigger merge automatically
+    if (pendingImportIds.length > 0 && hasSuccess) {
+      toast.info('🔄 Procesando e integrando datos en background...', { duration: 5000 });
+      
+      // Trigger merge for each import ID (fire-and-forget, backend handles it)
+      for (const importId of pendingImportIds) {
+        try {
+          const mergeResult = await invokeWithAdminKey<{ ok: boolean; status?: string; message?: string; error?: string }>(
+            'merge-staged-imports',
+            { importId }
+          );
+          
+          if (mergeResult?.ok) {
+            console.log(`[Auto-Merge] Started background merge for import ${importId}`);
+          } else {
+            console.warn(`[Auto-Merge] Failed to start merge for ${importId}:`, mergeResult?.error);
+          }
+        } catch (mergeErr) {
+          console.error(`[Auto-Merge] Error invoking merge for ${importId}:`, mergeErr);
+        }
+      }
+      
+      // Clear pending import IDs
+      setPendingImportIds([]);
+      
+      toast.success('✅ Datos subidos. Unificación ejecutándose en background.');
+    } else if (hasErrors && hasSuccess) {
       toast.warning('Procesamiento completado con algunos errores');
     } else if (hasErrors) {
       toast.error('Procesamiento completado con errores');

@@ -347,14 +347,15 @@ Deno.serve(async (req) => {
         .eq('id', currentSyncRunId);
       
       // CRITICAL: Use EdgeRuntime.waitUntil for background processing
-      const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-manychat`;
+      const nextChunkUrl = `${Deno.env.get('SUPABASE_URL')!}/functions/v1/sync-manychat`;
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
       const invokeNextChunk = async () => {
         try {
           await fetch(nextChunkUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${supabaseServiceKey}`
+              'Authorization': `Bearer ${serviceKey}`
             },
             body: JSON.stringify({
               syncRunId: currentSyncRunId,
@@ -402,6 +403,37 @@ Deno.serve(async (req) => {
     
     logger.info(`=== ManyChat Sync Complete: ${newAccumulatedStored} stored ===`);
     
+    // AUTO-UNIFY: Trigger identity unification in background after sync completes
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    
+    const triggerUnification = async () => {
+      try {
+        logger.info('Triggering automatic identity unification after ManyChat sync');
+        await fetch(`${supabaseUrl}/functions/v1/bulk-unify-contacts`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseServiceKey}`
+          },
+          body: JSON.stringify({
+            source: 'manychat',
+            autoTriggered: true
+          })
+        });
+        logger.info('Auto-unification triggered successfully');
+      } catch (err) {
+        logger.warn('Failed to trigger auto-unification', { error: String(err) });
+      }
+    };
+    
+    // Fire-and-forget unification trigger
+    if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
+      EdgeRuntime.waitUntil(triggerUnification());
+    } else {
+      triggerUnification();
+    }
+    
     return new Response(JSON.stringify({
       ok: true,
       success: true,
@@ -409,7 +441,8 @@ Deno.serve(async (req) => {
       syncRunId: currentSyncRunId,
       total: newAccumulatedTotal,
       stored: newAccumulatedStored,
-      message: `Fetched ${newAccumulatedTotal} subscribers, stored ${newAccumulatedStored} in staging`
+      autoUnifyTriggered: true,
+      message: `Fetched ${newAccumulatedTotal} subscribers, stored ${newAccumulatedStored} in staging. Auto-unification triggered.`
     }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     
   } catch (error) {

@@ -589,54 +589,55 @@ export function APISyncPanel() {
     };
   }
 
+  // REFACTORED: Fire & Forget + Polling (no more frontend loops)
   const syncManyChat = async () => {
     setManychatSyncing(true);
     setManychatResult(null);
+    setManychatProgress({ current: 0, total: 0 });
     
     try {
-      let totalProcessed = 0;
-      let totalInserted = 0;
-      let totalUpdated = 0;
-      let hasMore = true;
-      let cursor: number | undefined = undefined;
-      let syncRunId: string | undefined = undefined;
+      // Single "Fire and Forget" call - backend handles all pagination in background
+      const data = await invokeWithAdminKey<StandardSyncResponse>(
+        'sync-manychat', 
+        { dry_run: false }
+      );
 
-      // Paginated sync loop
-      while (hasMore) {
-        const data = await invokeWithAdminKey<StandardSyncResponse>(
-          'sync-manychat', 
-          { dry_run: false, cursor, syncRunId }
-        );
-
-        if (!data?.ok) {
-          throw new Error(data?.error || 'Sync failed');
+      if (!data?.ok) {
+        // Check for paused state
+        if ((data as { paused?: boolean })?.paused) {
+          toast.warning('ManyChat sync está pausado. Actívalo en Settings.');
+          setManychatSyncing(false);
+          return;
         }
-
-        syncRunId = data.syncRunId;
-        totalProcessed += data.processed ?? 0;
-        totalInserted += data.stats?.total_inserted ?? 0;
-        totalUpdated += data.stats?.total_updated ?? 0;
-        
-        hasMore = data.hasMore ?? false;
-        cursor = data.nextCursor ? parseInt(data.nextCursor) : undefined;
+        throw new Error(data?.error || 'Sync failed');
       }
 
+      // If it returned a syncRunId, start polling for progress
+      if (data.syncRunId) {
+        toast.info('ManyChat: Sincronización iniciada en background...', { id: 'manychat-sync' });
+        pollManyChatProgress(data.syncRunId);
+        // Don't set syncing=false - polling will handle it when complete
+        return;
+      }
+
+      // If no syncRunId (immediate completion), set result directly
+      setManychatProgress(null);
       setManychatResult({
         success: true,
-        total_fetched: totalProcessed,
-        total_inserted: totalInserted,
-        total_updated: totalUpdated,
+        total_fetched: data.processed ?? 0,
+        total_inserted: data.stats?.total_inserted ?? 0,
+        total_updated: data.stats?.total_updated ?? 0,
       });
       
-      toast.success(`ManyChat: ${totalProcessed} contactos sincronizados (${totalInserted} nuevos, ${totalUpdated} actualizados)`);
-      
+      toast.success(`ManyChat: ${data.processed ?? 0} contactos sincronizados`);
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+      setManychatSyncing(false);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
       setManychatResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando ManyChat: ${errorMessage}`);
-    } finally {
+      setManychatProgress(null);
       setManychatSyncing(false);
     }
   };
@@ -649,85 +650,65 @@ export function APISyncPanel() {
     nextStartAfter?: number | null;
   }
 
+  // REFACTORED: Fire & Forget + Polling (no more frontend loops)
   const syncGHL = async () => {
     setGhlSyncing(true);
     setGhlResult(null);
+    setGhlProgress({ current: 0, total: 0 });
     
     try {
-      let totalProcessed = 0;
-      let totalStaged = 0;
-      let hasMore = true;
-      let startAfterId: string | null = null;
-      let startAfter: number | null = null;
-      let syncRunId: string | undefined = undefined;
-      let page = 0;
+      // Single "Fire and Forget" call - backend handles all pagination via EdgeRuntime.waitUntil
+      const data = await invokeWithAdminKey<GHLSyncResponse>(
+        'sync-ghl', 
+        { 
+          dry_run: false, 
+          stageOnly: true // Stage only - no immediate merge
+        }
+      );
 
-      // Paginated sync loop - handles 150k+ contacts
-      // Using stageOnly mode for "stage first, merge later" architecture
-      while (hasMore) {
-        page++;
-        
-        const data = await invokeWithAdminKey<GHLSyncResponse>(
-          'sync-ghl', 
-          { 
-            dry_run: false, 
-            stageOnly: true, // Stage only - no immediate merge
-            startAfterId,
-            startAfter,
-            syncRunId 
+      if (!data?.ok) {
+        // Check for already running
+        if (data?.status === 'already_running') {
+          toast.info('Ya hay un sync de GHL en progreso. Monitoreando...');
+          if (data.syncRunId) {
+            pollGHLProgress(data.syncRunId);
           }
-        );
-
-        if (!data?.ok) {
-          // Check for already running
-          if (data?.status === 'already_running') {
-            toast.info('Ya hay un sync de GHL en progreso');
-            setGhlResult({ success: true, message: 'Sync en progreso...' });
-            return;
-          }
-          throw new Error(data?.error || 'Sync failed');
+          return;
         }
-
-        syncRunId = data.syncRunId;
-        totalProcessed += data.processed ?? 0;
-        totalStaged += data.staged ?? data.processed ?? 0;
-        
-        hasMore = data.hasMore ?? false;
-        startAfterId = data.nextStartAfterId ?? null;
-        startAfter = data.nextStartAfter ?? null;
-
-        // Progress toast every 5 pages
-        if (page % 5 === 0) {
-          toast.info(`GHL: ${totalStaged} contactos descargados...`, { id: 'ghl-progress' });
+        // Check for paused state (status comes as string from backend)
+        if ((data as { status?: string })?.status === 'paused') {
+          toast.warning('GoHighLevel está pausado. Actívalo en Settings.');
+          setGhlSyncing(false);
+          return;
         }
-
-        // Small delay between pages to avoid rate limits
-        if (hasMore) {
-          await new Promise(r => setTimeout(r, 150));
-        }
-
-        // Safety limit: 2000 pages = 200k contacts
-        if (page >= 2000) {
-          console.log('GHL sync reached page limit');
-          break;
-        }
+        throw new Error(data?.error || 'Sync failed');
       }
 
+      // If it returned a syncRunId and has more pages, start polling
+      if (data.syncRunId) {
+        toast.info('GoHighLevel: Sincronización iniciada en background...', { id: 'ghl-sync' });
+        pollGHLProgress(data.syncRunId);
+        // Don't set syncing=false - polling will handle it when complete
+        return;
+      }
+
+      // If no syncRunId (unlikely), set result directly
+      setGhlProgress(null);
       setGhlResult({
         success: true,
-        total_fetched: totalStaged,
-        message: `${totalStaged} contactos descargados a staging`
+        total_fetched: data.staged ?? data.processed ?? 0,
+        message: `${data.staged ?? data.processed ?? 0} contactos descargados a staging`
       });
       
-      toast.success(`GoHighLevel: ${totalStaged} contactos descargados (listos para unificar)`, { id: 'ghl-progress' });
-      
+      toast.success(`GoHighLevel: ${data.staged ?? data.processed ?? 0} contactos sincronizados`, { id: 'ghl-sync' });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+      setGhlSyncing(false);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
       setGhlResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando GoHighLevel: ${errorMessage}`);
-    } finally {
+      setGhlProgress(null);
       setGhlSyncing(false);
     }
   };
