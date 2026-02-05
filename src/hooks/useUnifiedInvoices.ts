@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 
-export type SourceFilter = 'stripe' | 'unified';
+export type SourceFilter = 'stripe' | 'unified' | 'paypal';
 export type UnifiedInvoiceStatus = 'all' | 'draft' | 'open' | 'paid' | 'void' | 'uncollectible' | 'pending' | 'failed';
 
 export interface UnifiedInvoice {
@@ -37,7 +37,6 @@ export interface UnifiedInvoice {
   finalized_at: string | null;
   subscription_id: string | null;
   last_finalization_error: string | null;
-  // For PayPal - no charge action available
   can_charge: boolean;
 }
 
@@ -47,24 +46,35 @@ interface UseUnifiedInvoicesOptions {
   searchQuery?: string;
   startDate?: string;
   endDate?: string;
+  page?: number;
+  pageSize?: number;
 }
 
+/**
+ * REFACTORED: Single Source of Truth
+ * Now queries ONLY the `invoices` table (Stripe + PayPal are both stored there).
+ * Implements real server-side pagination using .range()
+ */
 export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
   const { 
     sourceFilter = 'unified', 
     statusFilter = 'all', 
     searchQuery = '', 
     startDate, 
-    endDate 
+    endDate,
+    page = 1,
+    pageSize = 50,
   } = options;
 
-  const { data, isLoading, refetch } = useQuery({
-    queryKey: ["unified-invoices", sourceFilter, statusFilter, searchQuery, startDate, endDate],
-    queryFn: async () => {
-      const results: UnifiedInvoice[] = [];
+  // Calculate range for pagination
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
-      // ===== STRIPE INVOICES =====
-      let stripeQuery = supabase
+  // Fetch paginated invoices
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["unified-invoices", sourceFilter, statusFilter, searchQuery, startDate, endDate, page, pageSize],
+    queryFn: async () => {
+      let query = supabase
         .from("invoices")
         .select(`
           *,
@@ -74,23 +84,48 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
             email,
             phone_e164
           )
-        `)
+        `, { count: 'exact' })
         .order("stripe_created_at", { ascending: false, nullsFirst: false })
-        .limit(1000);
+        .range(from, to);
 
-      if (statusFilter !== 'all' && !['pending', 'failed'].includes(statusFilter)) {
-        stripeQuery = stripeQuery.eq('status', statusFilter);
+      // Source filter: stripe_invoice_id starts with 'in_' for Stripe, 'paypal_' for PayPal
+      if (sourceFilter === 'stripe') {
+        query = query.like('stripe_invoice_id', 'in_%');
+      } else if (sourceFilter === 'paypal') {
+        query = query.like('stripe_invoice_id', 'paypal_%');
       }
-      if (startDate) stripeQuery = stripeQuery.gte('stripe_created_at', startDate);
-      if (endDate) stripeQuery = stripeQuery.lte('stripe_created_at', endDate);
+      // 'unified' = all sources, no filter
+
+      // Status filter - map UI statuses to DB values
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'open') {
+          // 'open' in UI means both 'open' and 'pending' in DB
+          query = query.in('status', ['open', 'pending']);
+        } else if (statusFilter === 'uncollectible') {
+          // Include failed as uncollectible
+          query = query.in('status', ['uncollectible', 'failed']);
+        } else {
+          query = query.eq('status', statusFilter);
+        }
+      }
+
+      // Date filters
+      if (startDate) query = query.gte('stripe_created_at', startDate);
+      if (endDate) query = query.lte('stripe_created_at', endDate);
+
+      // Search filter
       if (searchQuery) {
-        stripeQuery = stripeQuery.or(`customer_email.ilike.%${searchQuery}%,customer_name.ilike.%${searchQuery}%,invoice_number.ilike.%${searchQuery}%`);
+        query = query.or(`customer_email.ilike.%${searchQuery}%,customer_name.ilike.%${searchQuery}%,invoice_number.ilike.%${searchQuery}%`);
       }
 
-      const { data: stripeData } = await stripeQuery;
+      const { data: invoices, error, count } = await query;
 
-      for (const inv of stripeData || []) {
-        results.push({
+      if (error) throw error;
+
+      // Transform to UnifiedInvoice format
+      const results: UnifiedInvoice[] = (invoices || []).map(inv => {
+        const isPayPal = inv.stripe_invoice_id?.startsWith('paypal_');
+        return {
           id: inv.id,
           external_id: inv.stripe_invoice_id,
           invoice_number: inv.invoice_number,
@@ -104,7 +139,7 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
           total: inv.total,
           currency: inv.currency || 'usd',
           status: inv.status,
-          source: 'stripe',
+          source: isPayPal ? 'paypal' : 'stripe',
           created_at: inv.stripe_created_at,
           due_date: inv.due_date,
           paid_at: inv.paid_at,
@@ -118,157 +153,135 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
           finalized_at: inv.finalized_at,
           subscription_id: inv.subscription_id,
           last_finalization_error: inv.last_finalization_error,
-          can_charge: inv.status === 'open',
-        });
-      }
-
-      // ===== PAYPAL TRANSACTIONS (only if unified mode) =====
-      if (sourceFilter === 'unified') {
-        // Map unified status to PayPal transaction statuses
-        let paypalStatusFilter: string[] = [];
-        if (statusFilter === 'all') {
-          paypalStatusFilter = ['paid', 'pending', 'failed'];
-        } else if (statusFilter === 'paid') {
-          paypalStatusFilter = ['paid'];
-        } else if (statusFilter === 'pending' || statusFilter === 'open') {
-          paypalStatusFilter = ['pending'];
-        } else if (statusFilter === 'failed' || statusFilter === 'uncollectible') {
-          paypalStatusFilter = ['failed'];
-        }
-
-        if (paypalStatusFilter.length > 0) {
-          let paypalQuery = supabase
-            .from("transactions")
-            .select("*")
-            .eq('source', 'paypal')
-            .in('status', paypalStatusFilter)
-            .order("stripe_created_at", { ascending: false })
-            .limit(1000);
-
-          if (startDate) paypalQuery = paypalQuery.gte('stripe_created_at', startDate);
-          if (endDate) paypalQuery = paypalQuery.lte('stripe_created_at', endDate);
-          if (searchQuery) {
-            paypalQuery = paypalQuery.ilike('customer_email', `%${searchQuery}%`);
-          }
-
-          const { data: paypalData } = await paypalQuery;
-
-          for (const tx of paypalData || []) {
-            const meta = tx.metadata as Record<string, unknown> | null;
-            const rawData = tx.raw_data as Record<string, unknown> | null;
-            
-            results.push({
-              id: tx.id,
-              external_id: tx.stripe_payment_intent_id,
-              invoice_number: tx.stripe_payment_intent_id, // PayPal transaction ID as invoice number
-              customer_email: tx.customer_email,
-              customer_name: (meta?.payer_name as string) || (meta?.customer_name as string) || null,
-              customer_phone: null,
-              client_id: null,
-              client: null,
-              amount_due: tx.amount,
-              amount_paid: tx.status === 'paid' ? tx.amount : null,
-              total: tx.amount,
-              currency: tx.currency || 'usd',
-              status: tx.status === 'paid' ? 'paid' : tx.status === 'pending' ? 'open' : 'uncollectible',
-              source: 'paypal',
-              created_at: tx.stripe_created_at,
-              due_date: null,
-              paid_at: tx.status === 'paid' ? tx.stripe_created_at : null,
-              product_name: (meta?.product_name as string) || (rawData?.item_name as string) || null,
-              plan_name: null,
-              plan_interval: null,
-              attempt_count: null,
-              pdf_url: null,
-              hosted_url: null,
-              automatically_finalizes_at: null,
-              finalized_at: tx.status === 'paid' ? tx.stripe_created_at : null,
-              subscription_id: tx.subscription_id,
-              last_finalization_error: tx.failure_message,
-              can_charge: false, // PayPal transactions cannot be force-charged
-            });
-          }
-        }
-      }
-
-      // Sort by date descending
-      results.sort((a, b) => {
-        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-        return dateB - dateA;
+          can_charge: !isPayPal && inv.status === 'open',
+        };
       });
 
-      return results;
+      return { invoices: results, totalCount: count || 0 };
     },
   });
 
-  const invoices = data || [];
+  const invoices = data?.invoices || [];
+  const totalCount = data?.totalCount || 0;
+  const totalPages = Math.ceil(totalCount / pageSize);
 
-  // Calculate totals
-  const totalPending = invoices
-    .filter(inv => ['open', 'draft', 'pending'].includes(inv.status))
-    .reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
+  // Fetch summary stats (status counts + totals) - separate query for accurate counts
+  const { data: summaryData } = useQuery({
+    queryKey: ["unified-invoices-summary", sourceFilter, startDate, endDate],
+    queryFn: async () => {
+      // Build base query for summary (no pagination, just counts)
+      let baseFilter = supabase.from("invoices").select("status, amount_due, amount_paid, stripe_invoice_id, automatically_finalizes_at", { count: 'exact' });
+      
+      if (sourceFilter === 'stripe') {
+        baseFilter = baseFilter.like('stripe_invoice_id', 'in_%');
+      } else if (sourceFilter === 'paypal') {
+        baseFilter = baseFilter.like('stripe_invoice_id', 'paypal_%');
+      }
+      
+      if (startDate) baseFilter = baseFilter.gte('stripe_created_at', startDate);
+      if (endDate) baseFilter = baseFilter.lte('stripe_created_at', endDate);
 
-  const totalPaid = invoices
-    .filter(inv => inv.status === 'paid')
-    .reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) / 100;
+      const { data: allInvoices, count } = await baseFilter.limit(10000);
+      
+      if (!allInvoices) return null;
 
-  const totalUncollectible = invoices
-    .filter(inv => inv.status === 'uncollectible')
-    .reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
+      const statusCounts = {
+        all: count || allInvoices.length,
+        draft: 0,
+        open: 0,
+        paid: 0,
+        void: 0,
+        uncollectible: 0,
+      };
 
-  // Calculate by source
-  const stripeInvoices = invoices.filter(inv => inv.source === 'stripe');
-  const paypalInvoices = invoices.filter(inv => inv.source === 'paypal');
+      let totalPending = 0;
+      let totalPaid = 0;
+      let totalUncollectible = 0;
+      let stripeCount = 0;
+      let paypalCount = 0;
+      let stripePaid = 0;
+      let paypalPaid = 0;
+      let stripePending = 0;
+      let paypalPending = 0;
 
-  const stripeTotals = {
-    pending: stripeInvoices.filter(i => ['open', 'draft'].includes(i.status)).reduce((s, i) => s + i.amount_due, 0) / 100,
-    paid: stripeInvoices.filter(i => i.status === 'paid').reduce((s, i) => s + (i.amount_paid || 0), 0) / 100,
-  };
+      const next72Hours = new Date();
+      next72Hours.setHours(next72Hours.getHours() + 72);
+      let totalNext72h = 0;
+      let invoicesNext72hCount = 0;
 
-  const paypalTotals = {
-    pending: paypalInvoices.filter(i => ['open', 'pending'].includes(i.status)).reduce((s, i) => s + i.amount_due, 0) / 100,
-    paid: paypalInvoices.filter(i => i.status === 'paid').reduce((s, i) => s + (i.amount_paid || 0), 0) / 100,
-  };
+      for (const inv of allInvoices) {
+        const isPayPal = inv.stripe_invoice_id?.startsWith('paypal_');
+        if (isPayPal) paypalCount++;
+        else stripeCount++;
 
-  // Status counts
-  const statusCounts = {
-    all: invoices.length,
-    draft: invoices.filter(i => i.status === 'draft').length,
-    open: invoices.filter(i => ['open', 'pending'].includes(i.status)).length,
-    paid: invoices.filter(i => i.status === 'paid').length,
-    void: invoices.filter(i => i.status === 'void').length,
-    uncollectible: invoices.filter(i => ['uncollectible', 'failed'].includes(i.status)).length,
-  };
+        // Status counts
+        if (inv.status === 'draft') statusCounts.draft++;
+        else if (inv.status === 'open' || inv.status === 'pending') statusCounts.open++;
+        else if (inv.status === 'paid') statusCounts.paid++;
+        else if (inv.status === 'void') statusCounts.void++;
+        else if (inv.status === 'uncollectible' || inv.status === 'failed') statusCounts.uncollectible++;
 
-  // Invoices in next 72 hours (only Stripe has this data)
-  const next72Hours = new Date();
-  next72Hours.setHours(next72Hours.getHours() + 72);
+        // Totals
+        if (inv.status === 'open' || inv.status === 'draft' || inv.status === 'pending') {
+          totalPending += inv.amount_due;
+          if (isPayPal) paypalPending += inv.amount_due;
+          else stripePending += inv.amount_due;
+        } else if (inv.status === 'paid') {
+          totalPaid += inv.amount_paid || 0;
+          if (isPayPal) paypalPaid += inv.amount_paid || 0;
+          else stripePaid += inv.amount_paid || 0;
+        } else if (inv.status === 'uncollectible' || inv.status === 'failed') {
+          totalUncollectible += inv.amount_due;
+        }
 
-  const invoicesNext72h = stripeInvoices.filter((inv) => {
-    if (!['open', 'draft'].includes(inv.status)) return false;
-    const targetDate = inv.automatically_finalizes_at;
-    if (!targetDate) return false;
-    return new Date(targetDate) <= next72Hours;
+        // Next 72 hours (Stripe drafts)
+        if (!isPayPal && ['open', 'draft'].includes(inv.status) && inv.automatically_finalizes_at) {
+          if (new Date(inv.automatically_finalizes_at) <= next72Hours) {
+            totalNext72h += inv.amount_due;
+            invoicesNext72hCount++;
+          }
+        }
+      }
+
+      return {
+        statusCounts,
+        totalPending: totalPending / 100,
+        totalPaid: totalPaid / 100,
+        totalUncollectible: totalUncollectible / 100,
+        uncollectibleCount: statusCounts.uncollectible,
+        totalNext72h: totalNext72h / 100,
+        invoicesNext72hCount,
+        stripeCount,
+        paypalCount,
+        stripeTotals: { pending: stripePending / 100, paid: stripePaid / 100 },
+        paypalTotals: { pending: paypalPending / 100, paid: paypalPaid / 100 },
+      };
+    },
+    staleTime: 30000, // Cache for 30 seconds
   });
-
-  const totalNext72h = invoicesNext72h.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
 
   return {
     invoices,
     isLoading,
     refetch,
-    totalPending,
-    totalPaid,
-    totalUncollectible,
-    uncollectibleCount: invoices.filter(i => ['uncollectible', 'failed'].includes(i.status)).length,
-    statusCounts,
-    totalNext72h,
-    invoicesNext72h,
+    // Pagination
+    page,
+    pageSize,
+    totalCount,
+    totalPages,
+    // Summary stats (from cached summary query)
+    totalPending: summaryData?.totalPending || 0,
+    totalPaid: summaryData?.totalPaid || 0,
+    totalUncollectible: summaryData?.totalUncollectible || 0,
+    uncollectibleCount: summaryData?.uncollectibleCount || 0,
+    statusCounts: summaryData?.statusCounts || { all: 0, draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 },
+    totalNext72h: summaryData?.totalNext72h || 0,
+    invoicesNext72h: [], // Deprecated - use invoicesNext72hCount
+    invoicesNext72hCount: summaryData?.invoicesNext72hCount || 0,
     // Source breakdown
-    stripeTotals,
-    paypalTotals,
-    stripeCount: stripeInvoices.length,
-    paypalCount: paypalInvoices.length,
+    stripeTotals: summaryData?.stripeTotals || { pending: 0, paid: 0 },
+    paypalTotals: summaryData?.paypalTotals || { pending: 0, paid: 0 },
+    stripeCount: summaryData?.stripeCount || 0,
+    paypalCount: summaryData?.paypalCount || 0,
   };
 }

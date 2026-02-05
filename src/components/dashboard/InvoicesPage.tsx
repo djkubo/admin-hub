@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar, Download, User, Package, RefreshCw, Search, FileDown, CreditCard } from 'lucide-react';
+import { FileText, DollarSign, Clock, ExternalLink, Loader2, CheckCircle, Calendar, Download, User, Package, RefreshCw, Search, FileDown, CreditCard, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -34,6 +34,7 @@ import { es } from 'date-fns/locale';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { IncomingRevenueCard } from './IncomingRevenueCard';
 import { UncollectibleAlertCard } from './UncollectibleAlertCard';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 
 type DateRange = 'all' | '7d' | '30d' | '90d' | '365d';
 
@@ -53,12 +54,33 @@ const StripeIcon = () => (
 
 export function InvoicesPage() {
   const [statusFilter, setStatusFilter] = useState<UnifiedInvoiceStatus>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [dateRange, setDateRange] = useState<DateRange>('90d');
   const [chargingInvoice, setChargingInvoice] = useState<string | null>(null);
   const [isChargingAll, setIsChargingAll] = useState(false);
   const [chargeProgress, setChargeProgress] = useState<{ current: number; total: number; recovered: number } | null>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('unified');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  // Debounce search to avoid excessive queries
+  const searchQuery = useDebouncedValue(searchInput, 400);
+
+  // Reset page when filters change
+  const handleStatusChange = (value: UnifiedInvoiceStatus) => {
+    setStatusFilter(value);
+    setPage(1);
+  };
+
+  const handleSourceChange = (checked: boolean) => {
+    setSourceFilter(checked ? 'unified' : 'stripe');
+    setPage(1);
+  };
+
+  const handleDateChange = (value: DateRange) => {
+    setDateRange(value);
+    setPage(1);
+  };
 
   // Calculate date range
   const dateRangeValues = useMemo(() => {
@@ -70,15 +92,17 @@ export function InvoicesPage() {
     };
   }, [dateRange]);
 
-  // Use unified invoices hook
+  // Use unified invoices hook with server-side pagination
   const { 
     invoices, 
     isLoading, 
     refetch,
+    totalCount,
+    totalPages,
     totalPending, 
     totalPaid,
     totalNext72h,
-    invoicesNext72h,
+    invoicesNext72hCount,
     totalUncollectible,
     uncollectibleCount,
     statusCounts,
@@ -92,24 +116,17 @@ export function InvoicesPage() {
     searchQuery,
     startDate: dateRangeValues.startDate,
     endDate: dateRangeValues.endDate,
+    page,
+    pageSize,
   });
 
   // Also get sync functions from original hook
-  const { syncInvoices, syncInvoicesFull, syncProgress, exportToCSV } = useInvoices({
+  const { syncInvoices, syncInvoicesFull, syncProgress } = useInvoices({
     statusFilter: statusFilter as any,
     searchQuery,
     startDate: dateRangeValues.startDate,
     endDate: dateRangeValues.endDate,
   });
-
-  // Sort invoices
-  const sortedInvoices = useMemo(() => {
-    return [...invoices].sort((a, b) => {
-      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-      return dateB - dateA;
-    });
-  }, [invoices]);
 
   const handleChargeInvoice = async (invoice: UnifiedInvoice) => {
     if (!invoice.can_charge || invoice.source !== 'stripe') {
@@ -136,10 +153,10 @@ export function InvoicesPage() {
   };
 
   const handleChargeAll = async () => {
-    const toCharge = sortedInvoices.filter((i) => i.can_charge && i.source === 'stripe');
+    const toCharge = invoices.filter((i) => i.can_charge && i.source === 'stripe');
 
     if (toCharge.length === 0) {
-      toast.error('No hay facturas elegibles para cobrar');
+      toast.error('No hay facturas elegibles para cobrar en esta página');
       return;
     }
 
@@ -176,15 +193,14 @@ export function InvoicesPage() {
   };
 
   const getStatusBadge = (status: string) => {
-    // VRP Style: Semantic colors only (emerald=paid, amber=pending, red=error, zinc=neutral)
     const styles: Record<string, string> = {
-      draft: 'bg-zinc-800 text-zinc-400 border-zinc-700',           // Neutro
-      open: 'bg-amber-500/10 text-amber-400 border-amber-500/30',   // Pendiente
-      pending: 'bg-amber-500/10 text-amber-400 border-amber-500/30', // Pendiente
-      paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', // Éxito
-      void: 'bg-red-500/10 text-red-400 border-red-500/30',         // Error
-      uncollectible: 'bg-red-500/10 text-red-400 border-red-500/30', // Error (deuda perdida)
-      failed: 'bg-red-500/10 text-red-400 border-red-500/30',       // Error
+      draft: 'bg-zinc-800 text-zinc-400 border-zinc-700',
+      open: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+      pending: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+      paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+      void: 'bg-red-500/10 text-red-400 border-red-500/30',
+      uncollectible: 'bg-red-500/10 text-red-400 border-red-500/30',
+      failed: 'bg-red-500/10 text-red-400 border-red-500/30',
     };
     const labels: Record<string, string> = {
       draft: 'Borrador',
@@ -202,7 +218,6 @@ export function InvoicesPage() {
     );
   };
 
-  // VRP Style: Neutral badges for all sources
   const getSourceBadge = (source: 'stripe' | 'paypal') => {
     return (
       <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700 gap-1">
@@ -249,7 +264,7 @@ export function InvoicesPage() {
     link.download = `invoices_unified_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
 
-    toast.success(`CSV exportado: ${invoices.length} registros`);
+    toast.success(`CSV exportado: ${invoices.length} registros (página actual)`);
   }, [invoices]);
 
   return (
@@ -263,10 +278,10 @@ export function InvoicesPage() {
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">
             {sourceFilter === 'unified' ? 'Vista unificada: Stripe + PayPal' : 'Solo Stripe Invoices'}
+            {totalCount > 0 && ` · ${totalCount.toLocaleString()} total`}
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* Source breakdown when unified */}
           {sourceFilter === 'unified' && (
             <div className="hidden sm:flex items-center gap-3 text-xs">
               <div className="flex items-center gap-1.5">
@@ -297,7 +312,7 @@ export function InvoicesPage() {
         <IncomingRevenueCard
           totalNext72h={totalNext72h}
           totalPending={totalPending}
-          invoiceCount={invoicesNext72h.length}
+          invoiceCount={invoicesNext72hCount}
           isLoading={isLoading}
         />
         <UncollectibleAlertCard
@@ -317,7 +332,6 @@ export function InvoicesPage() {
         </div>
       )}
 
-      {/* Charge Progress */}
       {chargeProgress && (
         <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
           <div className="flex items-center justify-between mb-2">
@@ -332,7 +346,6 @@ export function InvoicesPage() {
       {/* Filters */}
       <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
         <div className="flex flex-col gap-3">
-          {/* Source Toggle + Status Tabs */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             {/* Source Toggle */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 border border-border/50">
@@ -343,7 +356,7 @@ export function InvoicesPage() {
               <Switch
                 id="source-toggle"
                 checked={sourceFilter === 'unified'}
-                onCheckedChange={(checked) => setSourceFilter(checked ? 'unified' : 'stripe')}
+                onCheckedChange={handleSourceChange}
                 className="data-[state=checked]:bg-gradient-to-r data-[state=checked]:from-[#635bff] data-[state=checked]:to-[#0070ba]"
               />
               <Label htmlFor="source-toggle" className="text-xs text-muted-foreground cursor-pointer flex items-center gap-1.5">
@@ -356,7 +369,7 @@ export function InvoicesPage() {
             
             {/* Status Tabs */}
             <div className="overflow-x-auto -mx-3 px-3 flex-1">
-              <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as UnifiedInvoiceStatus)}>
+              <Tabs value={statusFilter} onValueChange={(v) => handleStatusChange(v as UnifiedInvoiceStatus)}>
                 <TabsList className="bg-muted/50 h-8 min-w-max">
                   <TabsTrigger value="all" className="text-xs px-2 md:px-3">Todas ({statusCounts.all})</TabsTrigger>
                   <TabsTrigger value="open" className="text-xs px-2 md:px-3">Abiertas ({statusCounts.open})</TabsTrigger>
@@ -375,12 +388,12 @@ export function InvoicesPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Buscar email, nombre, factura..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => { setSearchInput(e.target.value); setPage(1); }}
                   className="pl-8 h-8 w-full sm:w-64 bg-muted/50 border-border/50 text-sm"
                 />
               </div>
-              <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
+              <Select value={dateRange} onValueChange={handleDateChange}>
                 <SelectTrigger className="w-28 bg-muted/50 border-border/50 text-xs h-8">
                   <Calendar className="h-3.5 w-3.5 mr-1.5" />
                   <SelectValue placeholder="Período" />
@@ -428,7 +441,7 @@ export function InvoicesPage() {
               {statusFilter === 'open' && (
                 <Button
                   onClick={handleChargeAll}
-                  disabled={isChargingAll || sortedInvoices.filter(i => i.can_charge).length === 0}
+                  disabled={isChargingAll || invoices.filter(i => i.can_charge).length === 0}
                   size="sm"
                   className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs h-8"
                 >
@@ -447,7 +460,7 @@ export function InvoicesPage() {
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
           <p className="text-sm text-muted-foreground">Cargando facturas...</p>
         </div>
-      ) : sortedInvoices.length === 0 ? (
+      ) : invoices.length === 0 ? (
         <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
           <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
           <p className="text-sm text-muted-foreground mb-1">Sin facturas en este filtro</p>
@@ -457,7 +470,7 @@ export function InvoicesPage() {
         <>
           {/* Mobile Cards */}
           <div className="md:hidden space-y-3">
-            {sortedInvoices.slice(0, 50).map((invoice) => (
+            {invoices.map((invoice) => (
               <div key={invoice.id} className="rounded-xl border border-border/50 bg-card p-4 touch-feedback">
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0">
@@ -539,11 +552,6 @@ export function InvoicesPage() {
                 </div>
               </div>
             ))}
-            {sortedInvoices.length > 50 && (
-              <p className="text-center text-xs text-muted-foreground py-4">
-                Mostrando 50 de {sortedInvoices.length} facturas. Usa el buscador para filtrar.
-              </p>
-            )}
           </div>
 
           {/* Desktop Table */}
@@ -563,7 +571,7 @@ export function InvoicesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortedInvoices.slice(0, 100).map((invoice) => (
+                  {invoices.map((invoice) => (
                     <TableRow key={invoice.id} className="border-border/50 hover:bg-muted/20">
                       <TableCell>{getSourceBadge(invoice.source)}</TableCell>
                       <TableCell>
@@ -646,13 +654,72 @@ export function InvoicesPage() {
                 </TableBody>
               </Table>
             </div>
-            {sortedInvoices.length > 100 && (
-              <div className="p-4 border-t border-border/50 text-center">
-                <p className="text-sm text-muted-foreground">
-                  Mostrando 100 de {sortedInvoices.length} facturas. Usa filtros o exporta CSV para ver todas.
-                </p>
+
+            {/* Pagination Controls */}
+            <div className="p-4 border-t border-border/50 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span>Mostrando {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, totalCount)} de {totalCount.toLocaleString()}</span>
+                <Select value={pageSize.toString()} onValueChange={(v) => { setPageSize(parseInt(v)); setPage(1); }}>
+                  <SelectTrigger className="w-20 h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                    <SelectItem value="200">200</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span>por página</span>
               </div>
-            )}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="h-8"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Anterior
+                </Button>
+                <span className="text-sm text-muted-foreground px-2">
+                  Página {page} de {totalPages || 1}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="h-8"
+                >
+                  Siguiente
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile Pagination */}
+          <div className="md:hidden flex items-center justify-between p-3 rounded-xl border border-border/50 bg-card">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              {page} / {totalPages || 1} ({totalCount.toLocaleString()} total)
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </>
       )}

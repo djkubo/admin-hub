@@ -184,7 +184,10 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     };
   }, [refetch]);
 
-  // Full paginated sync - handles 10,000+ invoices
+  /**
+   * REFACTORED: Fire-and-Forget sync
+   * Single call to backend - pagination runs in background via EdgeRuntime.waitUntil
+   */
   const syncInvoicesFull = useCallback(async (mode: 'full' | 'recent' = 'recent') => {
     if (isSyncing) {
       toast({
@@ -197,63 +200,40 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
 
     setIsSyncing(true);
     setSyncProgress({ current: 0, total: null, hasMore: true, page: 0 });
-    
-    let cursor: string | null = null;
-    let totalSynced = 0;
-    let syncRunId: string | null = null;
-    let pageCount = 0;
-    const maxPages = 200; // Safety limit: 200 pages * 100/page = 20,000 invoices max
 
     try {
-      while (pageCount < maxPages) {
-        pageCount++;
-        
-        const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
-          mode,
-          cursor,
-          syncRunId,
+      const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
+        mode,
+        fetchAll: true, // CRITICAL: Activates background worker in backend
+        syncRunId: undefined, // Let backend create a new one
+      });
+
+      // Handle background processing response
+      if ((result as any)?.backgroundProcessing || (result as any)?.status === 'background') {
+        toast({
+          title: "Sincronización iniciada",
+          description: "El proceso continúa en segundo plano. Refresca en unos minutos para ver los resultados.",
         });
-
-        if (!result.success) {
-          throw new Error(result.error || 'Sync failed');
-        }
-
-        const batchSynced = result.upserted ?? result.synced ?? 0;
-        totalSynced += batchSynced;
-        syncRunId = result.syncRunId;
-        
-        setSyncProgress({ 
-          current: totalSynced, 
-          total: null, // Stripe doesn't give us total count upfront
-          hasMore: result.hasMore, 
-          page: pageCount 
-        });
-
-        if (!result.hasMore || !result.nextCursor) {
-          break;
-        }
-
-        cursor = result.nextCursor;
-        
-        // Small delay to avoid rate limits and allow UI updates
-        await new Promise(r => setTimeout(r, 150));
+        setSyncProgress(null);
+        return { success: true, background: true };
       }
 
-      if (pageCount >= maxPages) {
-        toast({
-          title: "Límite de páginas alcanzado",
-          description: `Se sincronizaron ${totalSynced} facturas. Si hay más, ejecuta otra sincronización.`,
-          variant: "default",
-        });
-      } else {
-        toast({
-          title: "Sincronización completa",
-          description: `${totalSynced.toLocaleString()} facturas sincronizadas`,
-        });
+      if (!result?.success) {
+        throw new Error(result?.error || 'Sync failed');
       }
+
+      const synced = (result as any).upserted ?? (result as any).synced ?? 0;
+      
+      toast({
+        title: "Sincronización completa",
+        description: `${synced.toLocaleString()} facturas sincronizadas`,
+      });
 
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      return { success: true, synced: totalSynced };
+      queryClient.invalidateQueries({ queryKey: ["unified-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["unified-invoices-summary"] });
+      
+      return { success: true, synced };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
       toast({
