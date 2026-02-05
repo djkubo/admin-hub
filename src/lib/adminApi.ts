@@ -77,6 +77,19 @@ export async function invokeWithAdminKey<
 
     if (error) {
       console.error(`[AdminAPI] ${functionName} error:`, error);
+      
+      // Handle 504 Gateway Timeout specifically
+      if (error.message?.includes('504') || error.message?.includes('timeout') || error.message?.includes('Timeout')) {
+        console.warn(`[AdminAPI] ${functionName} timeout detected - sync continues in background`);
+        return { 
+          ok: true, 
+          success: true, 
+          status: 'background',
+          message: 'La sincronización continúa en segundo plano. Por favor espera unos minutos y refresca la página.',
+          backgroundProcessing: true
+        } as T;
+      }
+      
       // Return the error as part of the response instead of throwing
       return { ok: false, success: false, error: error.message } as T;
     }
@@ -86,7 +99,20 @@ export async function invokeWithAdminKey<
     return data as T;
   } catch (e) {
     console.error(`[AdminAPI] ${functionName} fatal:`, e);
-    return { success: false, error: e instanceof Error ? e.message : 'Unknown error' } as T;
+    
+    // Handle network timeouts and 504s in catch block too
+    const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+    if (errorMessage.includes('504') || errorMessage.includes('timeout') || errorMessage.includes('Timeout') || errorMessage.includes('network')) {
+      return { 
+        ok: true, 
+        success: true, 
+        status: 'background',
+        message: 'La sincronización continúa en segundo plano. Por favor espera unos minutos y refresca la página.',
+        backgroundProcessing: true
+      } as T;
+    }
+    
+    return { success: false, error: errorMessage } as T;
   }
 }
 

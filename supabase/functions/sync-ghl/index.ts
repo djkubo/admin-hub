@@ -3,6 +3,9 @@ import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/re
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 import { RATE_LIMITERS } from '../_shared/rate-limiter.ts';
 
+// Declare EdgeRuntime global for Supabase Edge Functions
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -728,6 +731,37 @@ Deno.serve(async (req) => {
           })
           .eq('id', syncRunId);
 
+        // CRITICAL: Use EdgeRuntime.waitUntil for background processing
+        // This allows the HTTP response to return immediately while processing continues
+        const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
+        const invokeNextChunk = async () => {
+          try {
+            await fetch(nextChunkUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseKey}`
+              },
+              body: JSON.stringify({
+                syncRunId,
+                stageOnly: true,
+                startAfterId: pageResult.nextStartAfterId,
+                startAfter: pageResult.nextStartAfter
+              })
+            });
+          } catch (err) {
+            logger.error('Failed to invoke next chunk', err instanceof Error ? err : new Error(String(err)));
+          }
+        };
+
+        // Use EdgeRuntime.waitUntil if available, otherwise fire-and-forget
+        if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+          EdgeRuntime.waitUntil(invokeNextChunk());
+        } else {
+          // Fallback: fire and forget (less reliable but works)
+          invokeNextChunk();
+        }
+
         return new Response(
           JSON.stringify({
             ok: true,
@@ -738,7 +772,9 @@ Deno.serve(async (req) => {
             hasMore: true,
             nextStartAfterId: pageResult.nextStartAfterId,
             nextStartAfter: pageResult.nextStartAfter,
-            stageOnly: true
+            stageOnly: true,
+            backgroundProcessing: true,
+            message: 'Sync continues in background. Check sync_runs for progress.'
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -835,6 +871,35 @@ Deno.serve(async (req) => {
         })
         .eq('id', syncRunId);
 
+      // CRITICAL: Use EdgeRuntime.waitUntil for background processing
+      const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
+      const invokeNextChunk = async () => {
+        try {
+          await fetch(nextChunkUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseKey}`
+            },
+            body: JSON.stringify({
+              syncRunId,
+              stageOnly: false,
+              startAfterId: pageResult.nextStartAfterId,
+              startAfter: pageResult.nextStartAfter,
+              dry_run: dryRun
+            })
+          });
+        } catch (err) {
+          logger.error('Failed to invoke next chunk (legacy)', err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+
+      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
+        EdgeRuntime.waitUntil(invokeNextChunk());
+      } else {
+        invokeNextChunk();
+      }
+
       return new Response(
         JSON.stringify({
           ok: true,
@@ -843,7 +908,9 @@ Deno.serve(async (req) => {
           processed: pageResult.contactsFetched,
           hasMore: true,
           nextStartAfterId: pageResult.nextStartAfterId,
-          nextStartAfter: pageResult.nextStartAfter
+          nextStartAfter: pageResult.nextStartAfter,
+          backgroundProcessing: true,
+          message: 'Sync continues in background.'
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );

@@ -1,5 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Declare EdgeRuntime global for Supabase Edge Functions
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -40,28 +43,8 @@ const logger = {
 
 // Rate limiter: 10 requests per second, with pause between bursts
 const RATE_LIMIT_REQUESTS = 10;
-const RATE_LIMIT_PAUSE_MS = 1100; // Pause 1.1s after each burst
-
-async function rateLimitedBatch<T, R>(
-  items: T[],
-  processFn: (item: T) => Promise<R>,
-  batchSize: number = RATE_LIMIT_REQUESTS
-): Promise<R[]> {
-  const results: R[] = [];
-  
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const batchResults = await Promise.all(batch.map(processFn));
-    results.push(...batchResults);
-    
-    // Pause between batches to respect rate limits
-    if (i + batchSize < items.length) {
-      await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_PAUSE_MS));
-    }
-  }
-  
-  return results;
-}
+const RATE_LIMIT_PAUSE_MS = 1100;
+const TAGS_PER_CHUNK = 5; // Process 5 tags per function invocation
 
 // Fetch all tags from ManyChat page
 async function fetchAllTags(apiKey: string): Promise<ManyChatTag[]> {
@@ -141,22 +124,13 @@ async function fetchSubscribersByTag(apiKey: string, tagId: number, tagName: str
   }
 }
 
-// Main function to fetch ALL subscribers using tags as proxy
-async function fetchAllSubscribersViaTagsStrategy(
+// Process a chunk of tags and store subscribers
+async function processTagChunk(
   apiKey: string,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  tags: ManyChatTag[],
+  syncRunId: string
 ): Promise<{ total: number; stored: number }> {
-  logger.info('=== Starting Tag-Based Subscriber Fetch ===');
-  
-  // Step 1: Get all tags
-  const tags = await fetchAllTags(apiKey);
-  
-  if (tags.length === 0) {
-    logger.warn('No tags found - cannot use tag-based strategy');
-    return { total: 0, stored: 0 };
-  }
-  
-  // Step 2: Fetch subscribers for each tag with rate limiting
   const allSubscribers = new Map<string, ManyChatSubscriber>();
   
   for (const tag of tags) {
@@ -172,9 +146,9 @@ async function fetchAllSubscribersViaTagsStrategy(
     await new Promise(resolve => setTimeout(resolve, 200));
   }
   
-  logger.info(`Total unique subscribers found via tags: ${allSubscribers.size}`);
+  logger.info(`Total unique subscribers found in chunk: ${allSubscribers.size}`);
   
-  // Step 3: Store in manychat_contacts_raw
+  // Store in manychat_contacts_raw
   const subscribersArray = Array.from(allSubscribers.values());
   let storedCount = 0;
   
@@ -184,15 +158,10 @@ async function fetchAllSubscribersViaTagsStrategy(
     
     const records = batch.map(sub => ({
       subscriber_id: sub.id,
-      email: sub.email?.toLowerCase()?.trim() || null,
-      phone: sub.phone || sub.whatsapp_phone || null,
-      first_name: sub.first_name || null,
-      last_name: sub.last_name || null,
-      name: sub.name || `${sub.first_name || ''} ${sub.last_name || ''}`.trim() || null,
-      tags: sub.tags?.map(t => typeof t === 'string' ? t : t.name) || [],
-      raw_payload: sub,
+      payload: sub,
       fetched_at: new Date().toISOString(),
-      source: 'tags_strategy',
+      sync_run_id: syncRunId,
+      processed_at: null
     }));
     
     // Use delete/insert pattern to avoid constraint conflicts
@@ -214,125 +183,7 @@ async function fetchAllSubscribersViaTagsStrategy(
     }
   }
   
-  logger.info(`=== Tag Strategy Complete: ${storedCount} stored ===`);
   return { total: allSubscribers.size, stored: storedCount };
-}
-
-// Original email-based lookup (improved with better parallelism)
-async function fetchSubscriberByEmail(
-  apiKey: string,
-  email: string
-): Promise<ManyChatSubscriber | null> {
-  try {
-    const response = await fetch(
-      `https://api.manychat.com/fb/subscriber/findBySystemField?field_name=email&field_value=${encodeURIComponent(email)}`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    
-    if (!response.ok) {
-      return null;
-    }
-    
-    const data = await response.json();
-    return data?.data || null;
-  } catch {
-    return null;
-  }
-}
-
-// Process clients by email lookup (legacy but optimized)
-async function processEmailLookup(
-  apiKey: string,
-  supabase: SupabaseClient,
-  limit: number = 500
-): Promise<{ processed: number; found: number; stored: number }> {
-  logger.info('=== Starting Email Lookup Strategy ===');
-  
-  // Get clients without manychat_subscriber_id
-  const { data: clients, error } = await supabase
-    .from('clients')
-    .select('id, email')
-    .is('manychat_subscriber_id', null)
-    .not('email', 'is', null)
-    .limit(limit);
-  
-  if (error || !clients?.length) {
-    logger.info('No clients need ManyChat lookup', { error: error?.message });
-    return { processed: 0, found: 0, stored: 0 };
-  }
-  
-  logger.info(`Processing ${clients.length} clients via email lookup`);
-  
-  let found = 0;
-  let stored = 0;
-  
-  // Process with improved parallelism (10 at a time)
-  const results = await rateLimitedBatch(
-    clients,
-    async (client) => {
-      if (!client.email) return null;
-      
-      const subscriber = await fetchSubscriberByEmail(apiKey, client.email);
-      
-      if (subscriber) {
-        // Store in raw table
-        const record = {
-          subscriber_id: subscriber.id,
-          email: subscriber.email?.toLowerCase()?.trim() || null,
-          phone: subscriber.phone || subscriber.whatsapp_phone || null,
-          first_name: subscriber.first_name || null,
-          last_name: subscriber.last_name || null,
-          name: subscriber.name || `${subscriber.first_name || ''} ${subscriber.last_name || ''}`.trim() || null,
-          tags: subscriber.tags?.map(t => typeof t === 'string' ? t : t.name) || [],
-          raw_payload: subscriber,
-          fetched_at: new Date().toISOString(),
-          source: 'email_lookup',
-        };
-        
-        // Delete existing to avoid conflicts
-        await supabase
-          .from('manychat_contacts_raw')
-          .delete()
-          .eq('subscriber_id', subscriber.id);
-        
-        const { error: insertError } = await supabase
-          .from('manychat_contacts_raw')
-          .insert(record);
-        
-        if (!insertError) {
-          // Update client with subscriber ID
-          await supabase
-            .from('clients')
-            .update({ 
-              manychat_subscriber_id: subscriber.id,
-              last_sync: new Date().toISOString()
-            })
-            .eq('id', client.id);
-          
-          return { found: true, stored: true };
-        }
-        
-        return { found: true, stored: false };
-      }
-      
-      return null;
-    },
-    RATE_LIMIT_REQUESTS
-  );
-  
-  for (const result of results) {
-    if (result?.found) found++;
-    if (result?.stored) stored++;
-  }
-  
-  logger.info(`=== Email Lookup Complete: ${found} found, ${stored} stored ===`);
-  return { processed: clients.length, found, stored };
 }
 
 // Check if paused
@@ -411,42 +262,155 @@ Deno.serve(async (req) => {
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
-    const mode = body.mode || 'stageOnly';
-    const strategy = body.strategy || 'tags'; // 'tags' or 'email_lookup'
+    // Parse continuation parameters
+    const syncRunId = body.syncRunId || null;
+    const tagOffset = body.tagOffset || 0;
+    const allTags: ManyChatTag[] = body.allTags || [];
+    const accumulatedTotal = body.accumulatedTotal || 0;
+    const accumulatedStored = body.accumulatedStored || 0;
     
-    logger.info(`Starting ManyChat sync: mode=${mode}, strategy=${strategy}`);
+    let currentSyncRunId = syncRunId;
+    let tags = allTags;
     
-    let result;
-    
-    if (strategy === 'tags') {
-      // NEW: Tag-based strategy to fetch ALL subscribers
-      result = await fetchAllSubscribersViaTagsStrategy(manychatApiKey, supabase);
+    // If no syncRunId, this is a fresh start - fetch all tags and create sync run
+    if (!currentSyncRunId) {
+      logger.info('Starting fresh ManyChat sync');
       
+      // Fetch all tags first
+      tags = await fetchAllTags(manychatApiKey);
+      
+      if (tags.length === 0) {
+        return new Response(JSON.stringify({
+          ok: true,
+          success: true,
+          status: 'completed',
+          message: 'No tags found in ManyChat',
+          total: 0,
+          stored: 0
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      
+      // Create sync run
+      const { data: syncRun } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'manychat',
+          status: 'running',
+          checkpoint: { tagOffset: 0, totalTags: tags.length },
+          metadata: { totalTags: tags.length }
+        })
+        .select('id')
+        .single();
+      
+      currentSyncRunId = syncRun?.id;
+    }
+    
+    // Check if cancelled
+    const { data: syncCheck } = await supabase
+      .from('sync_runs')
+      .select('status')
+      .eq('id', currentSyncRunId!)
+      .single();
+    
+    if (syncCheck?.status === 'canceled' || syncCheck?.status === 'cancelled') {
+      logger.info('Sync was cancelled', { syncRunId: currentSyncRunId });
       return new Response(JSON.stringify({
-        ok: true,
-        success: true,
-        strategy: 'tags',
-        mode,
-        total: result.total,
-        stored: result.stored,
-        message: `Fetched ${result.total} subscribers via tags, stored ${result.stored} in staging`
-      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      
-    } else {
-      // Legacy: Email lookup strategy
-      result = await processEmailLookup(manychatApiKey, supabase, body.limit || 500);
-      
-      return new Response(JSON.stringify({
-        ok: true,
-        success: true,
-        strategy: 'email_lookup',
-        mode,
-        processed: result.processed,
-        found: result.found,
-        stored: result.stored,
-        message: `Processed ${result.processed} clients, found ${result.found} in ManyChat`
+        ok: false,
+        status: 'canceled',
+        error: 'Sync was cancelled by user'
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
+    
+    // Process current chunk of tags
+    const tagsToProcess = tags.slice(tagOffset, tagOffset + TAGS_PER_CHUNK);
+    const result = await processTagChunk(manychatApiKey, supabase, tagsToProcess, currentSyncRunId!);
+    
+    const newAccumulatedTotal = accumulatedTotal + result.total;
+    const newAccumulatedStored = accumulatedStored + result.stored;
+    const nextOffset = tagOffset + TAGS_PER_CHUNK;
+    const hasMore = nextOffset < tags.length;
+    
+    if (hasMore) {
+      // Update sync run with progress
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'continuing',
+          total_fetched: newAccumulatedTotal,
+          total_inserted: newAccumulatedStored,
+          checkpoint: {
+            tagOffset: nextOffset,
+            totalTags: tags.length,
+            lastActivity: new Date().toISOString()
+          }
+        })
+        .eq('id', currentSyncRunId);
+      
+      // CRITICAL: Use EdgeRuntime.waitUntil for background processing
+      const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-manychat`;
+      const invokeNextChunk = async () => {
+        try {
+          await fetch(nextChunkUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseServiceKey}`
+            },
+            body: JSON.stringify({
+              syncRunId: currentSyncRunId,
+              tagOffset: nextOffset,
+              allTags: tags,
+              accumulatedTotal: newAccumulatedTotal,
+              accumulatedStored: newAccumulatedStored
+            })
+          });
+        } catch (err) {
+          logger.error('Failed to invoke next ManyChat chunk', { error: String(err) });
+        }
+      };
+      
+      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
+        EdgeRuntime.waitUntil(invokeNextChunk());
+      } else {
+        invokeNextChunk();
+      }
+      
+      return new Response(JSON.stringify({
+        ok: true,
+        success: true,
+        status: 'continuing',
+        syncRunId: currentSyncRunId,
+        processed: newAccumulatedTotal,
+        stored: newAccumulatedStored,
+        progress: `${nextOffset}/${tags.length} tags`,
+        hasMore: true,
+        backgroundProcessing: true,
+        message: 'ManyChat sync continues in background.'
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+    
+    // Sync complete
+    await supabase
+      .from('sync_runs')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        total_fetched: newAccumulatedTotal,
+        total_inserted: newAccumulatedStored
+      })
+      .eq('id', currentSyncRunId);
+    
+    logger.info(`=== ManyChat Sync Complete: ${newAccumulatedStored} stored ===`);
+    
+    return new Response(JSON.stringify({
+      ok: true,
+      success: true,
+      status: 'completed',
+      syncRunId: currentSyncRunId,
+      total: newAccumulatedTotal,
+      stored: newAccumulatedStored,
+      message: `Fetched ${newAccumulatedTotal} subscribers, stored ${newAccumulatedStored} in staging`
+    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
