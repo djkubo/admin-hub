@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
@@ -43,50 +43,56 @@ export interface Client {
   import_id?: string | null;
 }
 
+export type ClientFilter = 'all' | 'customer' | 'lead' | 'trial' | 'past_due' | 'churn' | 'vip' | 'no_phone';
+
 const DEFAULT_PAGE_SIZE = 50;
 const VIP_THRESHOLD = 100000; // $1,000 USD in cents
 
-export function useClients() {
+interface UseClientsOptions {
+  searchQuery?: string;
+  statusFilter?: ClientFilter;
+}
+
+export function useClients(options: UseClientsOptions = {}) {
+  const { searchQuery = '', statusFilter = 'all' } = options;
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [page, setPage] = useState(0);
-  const [vipOnly, setVipOnly] = useState(false);
   const [pageSize, setPageSize] = useState<number | 'all'>(DEFAULT_PAGE_SIZE);
 
-  // OPTIMIZATION: Use RPC estimate for count (instant, no table scan)
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(0);
+  }, [searchQuery, statusFilter]);
+
+  // SERVER-SIDE: Count query with filters
   const { data: totalCount = 0, refetch: refetchCount } = useQuery({
-    queryKey: ["clients-count", vipOnly],
+    queryKey: ["clients-count", searchQuery, statusFilter],
     queryFn: async () => {
-      if (vipOnly) {
-        // For VIP filter, we need actual count (small result set)
-        const { count, error } = await supabase
-          .from("clients")
-          .select("*", { count: "exact", head: true })
-          .gte("total_spend", VIP_THRESHOLD);
-        if (error) throw error;
-        return count || 0;
+      let query = supabase
+        .from("clients")
+        .select("*", { count: "exact", head: true });
+
+      // Apply search filter server-side
+      if (searchQuery && searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        query = query.or(`full_name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`);
       }
-      // Use get_staging_counts_fast RPC (instant pg_stat estimates)
-      try {
-        const { data, error } = await supabase.rpc('get_staging_counts_fast' as any);
-        if (!error && data) {
-          const jsonData = data as { clients_total?: number };
-          if (jsonData.clients_total) return jsonData.clients_total;
-        }
-      } catch {
-        // RPC failed - use safe fallback
-      }
-      // Fallback: hardcoded estimate to prevent blocking UI
-      return 200000;
+
+      // Apply status filter server-side
+      query = applyStatusFilter(query, statusFilter);
+
+      const { count, error } = await query;
+      if (error) throw error;
+      return count || 0;
     },
-    staleTime: 120000, // Cache for 2 minutes
+    staleTime: 30000,
   });
 
-  // OPTIMIZATION: Only select needed columns (not SELECT *)
+  // SERVER-SIDE: Data query with filters and pagination
   const { data: clients = [], isLoading, error, refetch: refetchClients } = useQuery({
-    queryKey: ["clients", page, vipOnly, pageSize],
+    queryKey: ["clients", page, pageSize, searchQuery, statusFilter],
     queryFn: async () => {
-      // Only fetch essential columns for table display
       const columns = "id, email, phone, full_name, status, payment_status, total_paid, total_spend, is_delinquent, stripe_customer_id, lifecycle_stage, created_at, acquisition_source, utm_source, manychat_subscriber_id, ghl_contact_id, paypal_customer_id, tags";
       
       let query = supabase
@@ -94,31 +100,35 @@ export function useClients() {
         .select(columns)
         .order("total_spend", { ascending: false, nullsFirst: false });
 
-      if (vipOnly) {
-        query = query.gte("total_spend", VIP_THRESHOLD);
+      // Apply search filter server-side
+      if (searchQuery && searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        query = query.or(`full_name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`);
       }
 
-      // Always paginate - no "all" option for 221k rows
-      const effectivePageSize = pageSize === 'all' ? 100 : pageSize;
+      // Apply status filter server-side
+      query = applyStatusFilter(query, statusFilter);
+
+      // Pagination
+      const effectivePageSize = pageSize === 'all' ? 200 : pageSize;
       const from = page * effectivePageSize;
       const to = from + effectivePageSize - 1;
       query = query.range(from, to);
 
       const { data, error } = await query;
-
       if (error) throw error;
       return data as Client[];
     },
-    staleTime: 60000, // Cache for 1 minute
+    staleTime: 30000,
   });
 
   const refetch = () => {
     refetchCount();
     refetchClients();
   };
-  const totalPages = pageSize === 'all' ? 1 : Math.ceil(totalCount / pageSize);
+
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(totalCount / (pageSize || DEFAULT_PAGE_SIZE));
   
-  // Reset to page 0 when changing page size
   const handleSetPageSize = (size: number | 'all') => {
     setPage(0);
     setPageSize(size);
@@ -187,7 +197,6 @@ export function useClients() {
     },
   });
 
-  // Check if client is VIP (>$1000 USD lifetime spend)
   const isVip = (client: Client) => (client.total_spend || 0) >= VIP_THRESHOLD;
 
   return {
@@ -203,9 +212,29 @@ export function useClients() {
     totalPages,
     pageSize,
     setPageSize: handleSetPageSize,
-    vipOnly,
-    setVipOnly,
     isVip,
     VIP_THRESHOLD,
   };
+}
+
+// Helper function to apply status filters to Supabase query
+function applyStatusFilter(query: any, filter: ClientFilter) {
+  switch (filter) {
+    case 'customer':
+      return query.eq('lifecycle_stage', 'CUSTOMER');
+    case 'lead':
+      return query.eq('lifecycle_stage', 'LEAD');
+    case 'trial':
+      return query.eq('lifecycle_stage', 'TRIAL');
+    case 'past_due':
+      return query.eq('is_delinquent', true);
+    case 'churn':
+      return query.eq('lifecycle_stage', 'CHURN');
+    case 'vip':
+      return query.gte('total_spend', VIP_THRESHOLD);
+    case 'no_phone':
+      return query.is('phone', null);
+    default:
+      return query;
+  }
 }
