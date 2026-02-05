@@ -137,7 +137,7 @@ Deno.serve(async (req) => {
       const clientName = client?.full_name || name;
       const clientId = client?.id;
 
-      // Check last automated contact for this invoice
+      // Check last automated contact for this invoice (from messages table)
       const { data: lastMessage } = await supabase
         .from('messages')
         .select('created_at, metadata')
@@ -146,14 +146,37 @@ Deno.serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(1);
 
-      const lastContactDate = lastMessage?.[0]?.created_at;
-      const hoursSinceLastContact = lastContactDate 
-        ? (Date.now() - new Date(lastContactDate).getTime()) / (1000 * 60 * 60)
+      // ALSO check client_events for manual dashboard contacts
+      let lastManualContactDate: string | null = null;
+      if (clientId) {
+        const { data: lastEvent } = await supabase
+          .from('client_events')
+          .select('created_at, metadata')
+          .eq('client_id', clientId)
+          .eq('event_type', 'custom')
+          .gte('created_at', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()) // Last 48h
+          .order('created_at', { ascending: false })
+          .limit(1);
+        
+        // Check if this is a manual contact action
+        const eventMetadata = lastEvent?.[0]?.metadata as Record<string, unknown> | null;
+        if (eventMetadata?.source === 'dashboard_manual') {
+          lastManualContactDate = lastEvent?.[0]?.created_at || null;
+          console.log(`🔍 Found manual dashboard contact at ${lastManualContactDate}`);
+        }
+      }
+
+      // Use the most recent contact (automated or manual)
+      const lastAutoContactDate = lastMessage?.[0]?.created_at;
+      const candidates = [lastAutoContactDate, lastManualContactDate].filter(Boolean).map(d => new Date(d!).getTime());
+      const mostRecentContact = candidates.length > 0 ? Math.max(...candidates) : 0;
+      const hoursSinceLastContact = mostRecentContact > 0 
+        ? (Date.now() - mostRecentContact) / (1000 * 60 * 60)
         : Infinity;
 
-      // Don't message if contacted in last 24h
+      // Don't message if contacted in last 24h (automated OR manual)
       if (hoursSinceLastContact < 24) {
-        console.log(`⏭️ Skipping: Already contacted ${hoursSinceLastContact.toFixed(1)}h ago`);
+        console.log(`⏭️ Skipping: Already contacted ${hoursSinceLastContact.toFixed(1)}h ago (${lastManualContactDate ? 'manual' : 'auto'})`);
         result.skipped++;
         continue;
       }

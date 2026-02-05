@@ -2710,6 +2710,10 @@ export type Database = {
           total_revenue: number
         }[]
       }
+      get_revenue_pipeline_stats: {
+        Args: { p_limit?: number; p_offset?: number; p_type?: string }
+        Returns: Json
+      }
       get_staging_counts_accurate: { Args: never; Returns: Json }
       get_staging_counts_fast: { Args: never; Returns: Json }
       get_subscription_metrics: {

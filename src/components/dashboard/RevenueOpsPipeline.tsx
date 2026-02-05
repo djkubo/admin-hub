@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { 
   DollarSign, AlertTriangle, Clock, UserX, MessageCircle, 
   Smartphone, MessageSquare, ExternalLink, Send, CheckCircle, 
-  RefreshCw, TrendingUp, Zap, Phone
+  RefreshCw, TrendingUp, Zap, Phone, ChevronLeft, ChevronRight, Loader2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -33,36 +33,21 @@ import {
   Card,
   CardContent,
 } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 import { openWhatsApp, openNativeSms } from './RecoveryTable';
 import { supportsNativeSms } from '@/lib/nativeSms';
-
-interface PipelineClient {
-  id: string;
-  email: string | null;
-  full_name: string | null;
-  phone: string | null;
-  revenue_score: number;
-  total_spend: number | null;
-  lifecycle_stage: string | null;
-  pipeline_type: 'recovery' | 'trial_expiring' | 'winback';
-  revenue_at_risk: number;
-  days_until_action: number;
-  last_campaign_status: string | null;
-  campaign_count: number;
-}
-
-interface CampaignMetrics {
-  total_sent: number;
-  total_delivered: number;
-  total_replied: number;
-  total_converted: number;
-  recovery_rate: number;
-  trial_conversion_rate: number;
-  revenue_recovered: number;
-}
+import { useRevenuePipeline, PipelineClient, PipelineType } from '@/hooks/useRevenuePipeline';
+import { formatDistanceToNow } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 const pipelineConfig = {
   recovery: { 
@@ -73,7 +58,7 @@ const pipelineConfig = {
     bgColor: 'bg-red-500/10',
     borderColor: 'border-red-500/30'
   },
-  trial_expiring: { 
+  trial: { 
     label: 'Trials por Vencer', 
     shortLabel: 'Trials',
     icon: Clock, 
@@ -100,237 +85,100 @@ const messageTemplates = {
     `🚨 ÚLTIMO AVISO ${name || 'usuario'}: Servicio será suspendido en 24h por falta de pago ($${amount.toFixed(2)}).`,
 };
 
-type DateRange = '1d' | '7d' | '30d' | '90d' | 'all';
-
-const dateRangeConfig: Record<DateRange, { label: string; shortLabel: string; days: number | null }> = {
-  '1d': { label: '1 día', shortLabel: '1d', days: 1 },
-  '7d': { label: '7 días', shortLabel: '7d', days: 7 },
-  '30d': { label: '30 días', shortLabel: '30d', days: 30 },
-  '90d': { label: '90 días', shortLabel: '90d', days: 90 },
-  'all': { label: 'Todo', shortLabel: 'All', days: null },
-};
+const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 export function RevenueOpsPipeline() {
-  const [activeTab, setActiveTab] = useState<'recovery' | 'trial_expiring' | 'winback'>('recovery');
-  const [dateRange, setDateRange] = useState<DateRange>('30d');
-  const [clients, setClients] = useState<PipelineClient[]>([]);
-  const [metrics, setMetrics] = useState<CampaignMetrics>({
-    total_sent: 0, total_delivered: 0, total_replied: 0, 
-    total_converted: 0, recovery_rate: 0, trial_conversion_rate: 0, revenue_recovered: 0
-  });
-  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<PipelineType>('recovery');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [showOnlyWithPhone, setShowOnlyWithPhone] = useState(false);
 
-  const getDateFilter = () => {
-    const days = dateRangeConfig[dateRange].days;
-    if (days === null) return null;
-    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  // Server-side data fetching with pagination
+  const { data, isLoading, refetch, isFetching } = useRevenuePipeline({
+    type: activeTab,
+    page,
+    pageSize,
+    showOnlyWithPhone,
+  });
+
+  const clients = data?.items || [];
+  const summary = data?.summary;
+  const totalCount = data?.pagination?.total || 0;
+  const totalPages = Math.ceil(totalCount / pageSize);
+
+  // Reset page when tab changes
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab as PipelineType);
+    setPage(1);
   };
 
-  const loadData = async () => {
-    setLoading(true);
-    const dateFilter = getDateFilter();
+  // Action handlers with event logging
+  const logClientEvent = async (clientId: string, action: string, metadata: Record<string, unknown>) => {
     try {
-      // Load campaign metrics
-      let executionsQuery = supabase
-        .from('campaign_executions')
-        .select('status, revenue_at_risk, trigger_event');
-      if (dateFilter) {
-        executionsQuery = executionsQuery.gte('created_at', dateFilter);
-      }
-      const { data: executions } = await executionsQuery;
-
-      if (executions) {
-        const sent = executions.filter(e => e.status !== 'pending').length;
-        const delivered = executions.filter(e => ['delivered', 'replied', 'converted'].includes(e.status)).length;
-        const replied = executions.filter(e => ['replied', 'converted'].includes(e.status)).length;
-        const converted = executions.filter(e => e.status === 'converted').length;
-        const recoveryConverted = executions.filter(e => e.status === 'converted' && e.trigger_event === 'payment_failed').length;
-        const recoveryTotal = executions.filter(e => e.trigger_event === 'payment_failed').length;
-        const trialConverted = executions.filter(e => e.status === 'converted' && e.trigger_event.includes('trial')).length;
-        const trialTotal = executions.filter(e => e.trigger_event.includes('trial')).length;
-        const revenueRecovered = executions
-          .filter(e => e.status === 'converted')
-          .reduce((sum, e) => sum + (e.revenue_at_risk || 0), 0);
-
-        setMetrics({
-          total_sent: sent,
-          total_delivered: delivered,
-          total_replied: replied,
-          total_converted: converted,
-          recovery_rate: recoveryTotal > 0 ? (recoveryConverted / recoveryTotal) * 100 : 0,
-          trial_conversion_rate: trialTotal > 0 ? (trialConverted / trialTotal) * 100 : 0,
-          revenue_recovered: revenueRecovered / 100,
-        });
-      }
-
-      // Load failed transactions for recovery
-      let failedTxQuery = supabase
-        .from('transactions')
-        .select('customer_email, amount')
-        .eq('status', 'failed');
-      if (dateFilter) {
-        failedTxQuery = failedTxQuery.gte('created_at', dateFilter);
-      }
-      const { data: failedTx } = await failedTxQuery;
-
-      // Load clients with their data
-      const { data: clientsData } = await supabase
-        .from('clients')
-        .select('*')
-        .order('revenue_score', { ascending: false });
-
-      // Load subscriptions for trials
-      const { data: subs } = await supabase
-        .from('subscriptions')
-        .select('customer_email, trial_end, status, amount')
-        .eq('status', 'trialing');
-
-      // Load campaign executions for each client
-      const { data: clientCampaigns } = await supabase
-        .from('campaign_executions')
-        .select('client_id, status')
-        .order('created_at', { ascending: false });
-
-      const campaignsByClient = (clientCampaigns || []).reduce((acc, c) => {
-        if (!acc[c.client_id]) acc[c.client_id] = [];
-        acc[c.client_id].push(c);
-        return acc;
-      }, {} as Record<string, typeof clientCampaigns>);
-
-      // Build pipeline clients
-      const pipelineClients: PipelineClient[] = [];
-
-      // Recovery clients (failed payments)
-      const failedByEmail = (failedTx || []).reduce((acc, tx) => {
-        if (tx.customer_email) {
-          if (!acc[tx.customer_email]) acc[tx.customer_email] = 0;
-          acc[tx.customer_email] += tx.amount;
-        }
-        return acc;
-      }, {} as Record<string, number>);
-
-      (clientsData || []).forEach(client => {
-        const clientCampaignList = campaignsByClient[client.id] || [];
-        const lastCampaign = clientCampaignList[0];
-
-        // Check if recovery needed
-        if (client.email && failedByEmail[client.email]) {
-          pipelineClients.push({
-            id: client.id,
-            email: client.email,
-            full_name: client.full_name,
-            phone: client.phone,
-            revenue_score: client.revenue_score || 0,
-            total_spend: client.total_spend,
-            lifecycle_stage: client.lifecycle_stage,
-            pipeline_type: 'recovery',
-            revenue_at_risk: failedByEmail[client.email] / 100,
-            days_until_action: 0,
-            last_campaign_status: lastCampaign?.status || null,
-            campaign_count: clientCampaignList.length,
-          });
-        }
-
-        // Check if trial expiring
-        const clientSub = (subs || []).find(s => s.customer_email === client.email);
-        if (clientSub?.trial_end) {
-          const trialEnd = new Date(clientSub.trial_end);
-          const daysLeft = Math.ceil((trialEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-          if (daysLeft <= 3 && daysLeft >= 0) {
-            pipelineClients.push({
-              id: client.id,
-              email: client.email,
-              full_name: client.full_name,
-              phone: client.phone,
-              revenue_score: client.revenue_score || 0,
-              total_spend: client.total_spend,
-              lifecycle_stage: client.lifecycle_stage,
-              pipeline_type: 'trial_expiring',
-              revenue_at_risk: (clientSub.amount || 0) / 100,
-              days_until_action: daysLeft,
-              last_campaign_status: lastCampaign?.status || null,
-              campaign_count: clientCampaignList.length,
-            });
-          }
-        }
-
-        // Check if winback needed
-        if (client.lifecycle_stage === 'CHURN') {
-          pipelineClients.push({
-            id: client.id,
-            email: client.email,
-            full_name: client.full_name,
-            phone: client.phone,
-            revenue_score: client.revenue_score || 0,
-            total_spend: client.total_spend,
-            lifecycle_stage: client.lifecycle_stage,
-            pipeline_type: 'winback',
-            revenue_at_risk: (client.total_spend || 0) / 100,
-            days_until_action: 0,
-            last_campaign_status: lastCampaign?.status || null,
-            campaign_count: clientCampaignList.length,
-          });
-        }
+      await supabase.from('client_events').insert({
+        client_id: clientId,
+        event_type: 'custom',
+        metadata: { 
+          action,
+          source: 'dashboard_manual',
+          timestamp: new Date().toISOString(),
+          ...metadata 
+        },
       });
-
-      setClients(pipelineClients);
-    } catch (error) {
-      console.error('Error loading pipeline data:', error);
-      toast.error('Error cargando datos del pipeline');
+    } catch (e) {
+      console.error('Error logging event:', e);
     }
-    setLoading(false);
   };
 
-  useEffect(() => {
-    loadData();
-  }, [dateRange]);
-
-  const filteredClients = useMemo(() => {
-    let result = clients.filter(c => c.pipeline_type === activeTab);
-    if (showOnlyWithPhone) {
-      result = result.filter(c => c.phone);
-    }
-    return result.sort((a, b) => b.revenue_at_risk - a.revenue_at_risk);
-  }, [clients, activeTab, showOnlyWithPhone]);
-
-  const pipelineCounts = useMemo(() => ({
-    recovery: clients.filter(c => c.pipeline_type === 'recovery').length,
-    trial_expiring: clients.filter(c => c.pipeline_type === 'trial_expiring').length,
-    winback: clients.filter(c => c.pipeline_type === 'winback').length,
-  }), [clients]);
-
-  const totalRevenueAtRisk = useMemo(() => 
-    filteredClients.reduce((sum, c) => sum + c.revenue_at_risk, 0),
-  [filteredClients]);
-
-  // Action handlers
-  const handleWhatsApp = (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
-    if (!client.phone) return;
+  const handleWhatsApp = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
+    const phone = client.phone_e164 || client.phone;
+    if (!phone) return;
     const message = messageTemplates[template](client.full_name || '', client.revenue_at_risk);
-    openWhatsApp(client.phone, client.full_name || '', message);
+    openWhatsApp(phone, client.full_name || '', message);
+    
+    // Log event to prevent bot spam
+    await logClientEvent(client.id, 'whatsapp_sent', {
+      template,
+      pipeline_type: activeTab,
+      revenue_at_risk: client.revenue_at_risk,
+    });
+    
     toast.success('WhatsApp abierto');
   };
 
-  const handleNativeSms = (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
-    if (!client.phone) return;
+  const handleNativeSms = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
+    const phone = client.phone_e164 || client.phone;
+    if (!phone) return;
     const message = messageTemplates[template](client.full_name || '', client.revenue_at_risk);
-    openNativeSms(client.phone, message);
+    openNativeSms(phone, message);
+    
+    await logClientEvent(client.id, 'sms_native_sent', {
+      template,
+      pipeline_type: activeTab,
+    });
   };
 
   const handleSMS = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
-    if (!client.phone) return;
+    const phone = client.phone_e164 || client.phone;
+    if (!phone) return;
     toast.loading('Enviando SMS...', { id: 'sms' });
     try {
       await invokeWithAdminKey('send-sms', {
-        to: client.phone,
+        to: phone,
         template,
         client_name: client.full_name,
         amount: Math.round(client.revenue_at_risk * 100),
         client_id: client.id,
       });
+      
+      await logClientEvent(client.id, 'sms_api_sent', {
+        template,
+        pipeline_type: activeTab,
+        revenue_at_risk: client.revenue_at_risk,
+      });
+      
       toast.success('SMS enviado', { id: 'sms' });
-      loadData();
+      refetch();
     } catch (error: any) {
       toast.error('Error: ' + error.message, { id: 'sms' });
     }
@@ -341,18 +189,23 @@ export function RevenueOpsPipeline() {
     try {
       const data = await invokeWithAdminKey<{ error?: string }>('send-manychat', {
         email: client.email,
-        phone: client.phone,
+        phone: client.phone_e164 || client.phone,
         template,
         client_name: client.full_name,
         amount: Math.round(client.revenue_at_risk * 100),
         client_id: client.id,
-        tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial_expiring' ? 'trial_expiring' : 'winback',
+        tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial' ? 'trial_expiring' : 'winback',
       });
+      
       if (data?.error) {
         toast.error(data.error, { id: 'manychat' });
       } else {
+        await logClientEvent(client.id, 'manychat_sent', {
+          template,
+          pipeline_type: activeTab,
+        });
         toast.success('Mensaje ManyChat enviado', { id: 'manychat' });
-        loadData();
+        refetch();
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -365,13 +218,18 @@ export function RevenueOpsPipeline() {
     try {
       await invokeWithAdminKey('notify-ghl', {
         email: client.email,
-        phone: client.phone,
+        phone: client.phone_e164 || client.phone,
         name: client.full_name,
-        tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial_expiring' ? 'trial_expiring' : 'winback',
+        tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial' ? 'trial_expiring' : 'winback',
         message_data: { revenue_at_risk: client.revenue_at_risk * 100 }
       });
+      
+      await logClientEvent(client.id, 'ghl_opportunity_created', {
+        pipeline_type: activeTab,
+      });
+      
       toast.success('Oportunidad creada en GHL', { id: 'ghl' });
-      loadData();
+      refetch();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
       toast.error('Error: ' + message, { id: 'ghl' });
@@ -385,6 +243,9 @@ export function RevenueOpsPipeline() {
       const data = await invokeWithAdminKey<{ url?: string }>('create-portal-session', { email: client.email });
       if (data?.url) {
         window.open(data.url, '_blank');
+        await logClientEvent(client.id, 'portal_link_opened', {
+          pipeline_type: activeTab,
+        });
         toast.success('Portal abierto', { id: 'portal' });
       } else {
         toast.error('Error creando portal', { id: 'portal' });
@@ -397,17 +258,39 @@ export function RevenueOpsPipeline() {
   const markAsConverted = async (client: PipelineClient) => {
     await supabase.from('campaign_executions').insert({
       client_id: client.id,
-      trigger_event: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial_expiring' ? 'trial_end_24h' : 'canceled',
+      trigger_event: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial' ? 'trial_end_24h' : 'canceled',
       status: 'converted',
       revenue_at_risk: client.revenue_at_risk * 100,
     });
+    
+    await logClientEvent(client.id, 'marked_converted', {
+      pipeline_type: activeTab,
+      revenue_at_risk: client.revenue_at_risk,
+    });
+    
     toast.success('Marcado como convertido');
-    loadData();
+    refetch();
+  };
+
+  // Bot status badge
+  const getBotStatusBadge = (client: PipelineClient) => {
+    if (!client.queue_status) return null;
+    
+    const statusMap: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
+      pending: { label: 'Bot: Pendiente', variant: 'outline' },
+      retry_scheduled: { label: `Bot: Reintento ${client.retry_at ? formatDistanceToNow(new Date(client.retry_at), { locale: es, addSuffix: true }) : ''}`, variant: 'secondary' },
+      notified: { label: 'Bot: Notificado', variant: 'default' },
+      recovered: { label: 'Bot: Recuperado', variant: 'default' },
+      failed: { label: 'Bot: Fallido', variant: 'destructive' },
+    };
+    
+    const status = statusMap[client.queue_status] || { label: client.queue_status, variant: 'outline' as const };
+    return <Badge variant={status.variant} className="text-[10px]">{status.label}</Badge>;
   };
 
   return (
     <div className="space-y-4 md:space-y-6">
-      {/* Header - Responsive */}
+      {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <Zap className="h-6 w-6 md:h-8 md:w-8 text-primary shrink-0" />
@@ -419,442 +302,376 @@ export function RevenueOpsPipeline() {
           </div>
         </div>
         
-        {/* Date Range + Refresh - Compact on mobile */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center bg-muted/50 rounded-lg p-0.5 overflow-x-auto">
-            {(Object.entries(dateRangeConfig) as [DateRange, typeof dateRangeConfig['1d']][]).map(([key, config]) => (
-              <Button
-                key={key}
-                variant={dateRange === key ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setDateRange(key)}
-                className={`text-[10px] md:text-xs px-2 md:px-3 h-7 ${dateRange === key ? 'bg-primary text-primary-foreground' : ''}`}
-              >
-                <span className="md:hidden">{config.shortLabel}</span>
-                <span className="hidden md:inline">{config.label}</span>
-              </Button>
-            ))}
-          </div>
-          <Button onClick={loadData} variant="outline" size="sm" className="h-7 w-7 p-0 md:w-auto md:px-3 md:gap-2">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span className="hidden md:inline">Actualizar</span>
-          </Button>
-        </div>
+        <Button onClick={() => refetch()} variant="outline" size="sm" className="h-7 w-7 p-0 md:w-auto md:px-3 md:gap-2">
+          <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
+          <span className="hidden md:inline">Actualizar</span>
+        </Button>
       </div>
 
-      {/* Metrics Cards - 2x2 on mobile */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
-        <Card className="bg-card border-border/50">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-3 gap-2 md:gap-4">
+        <Card className={`bg-card border-border/50 ${activeTab === 'recovery' ? 'ring-2 ring-red-500/50' : ''}`}>
           <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Send className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Enviados</span>
+            <div className="flex items-center gap-2 text-red-400 mb-1">
+              <AlertTriangle className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Deuda Total</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-white">{metrics.total_sent}</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card border-border/50">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-emerald-400 mb-1">
-              <CheckCircle className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Conversiones</span>
-            </div>
-            <p className="text-lg md:text-2xl font-bold text-emerald-400">{metrics.total_converted}</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card border-border/50">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-primary mb-1">
-              <TrendingUp className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Trial→Paid</span>
-            </div>
-            <p className="text-lg md:text-2xl font-bold text-primary">{metrics.trial_conversion_rate.toFixed(0)}%</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card border-border/50">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-emerald-400 mb-1">
-              <DollarSign className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Recuperado</span>
-            </div>
-            <p className="text-lg md:text-2xl font-bold text-emerald-400">
-              ${metrics.revenue_recovered.toFixed(0)}
+            <p className="text-lg md:text-2xl font-bold text-white">
+              ${(summary?.total_debt || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </p>
+            <p className="text-[10px] text-muted-foreground">{summary?.recovery_count || 0} clientes</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-card border-border/50 ${activeTab === 'trial' ? 'ring-2 ring-amber-500/50' : ''}`}>
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-amber-400 mb-1">
+              <Clock className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Trials Expirando</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-white">
+              ${(summary?.total_trials_expiring || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            </p>
+            <p className="text-[10px] text-muted-foreground">{summary?.trial_count || 0} trials</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-card border-border/50 ${activeTab === 'winback' ? 'ring-2 ring-zinc-500/50' : ''}`}>
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 text-white mb-1">
+              <UserX className="h-3 w-3 md:h-4 md:w-4" />
+              <span className="text-[10px] md:text-xs">Winback</span>
+            </div>
+            <p className="text-lg md:text-2xl font-bold text-white">
+              ${(summary?.total_winback || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            </p>
+            <p className="text-[10px] text-muted-foreground">{summary?.winback_count || 0} churned</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Pipeline Tabs - Horizontal scroll on mobile */}
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
-            <TabsList className="bg-muted/50 w-max">
-              {(Object.entries(pipelineConfig) as [keyof typeof pipelineConfig, typeof pipelineConfig.recovery][]).map(([key, config]) => {
-                const Icon = config.icon;
-                return (
-                  <TabsTrigger key={key} value={key} className="gap-1.5 px-2 md:px-3 text-xs md:text-sm whitespace-nowrap">
-                    <Icon className={`h-3 w-3 md:h-4 md:w-4 ${config.color}`} />
-                    <span className="hidden sm:inline">{config.label}</span>
-                    <span className="sm:hidden">{config.shortLabel}</span>
-                    <Badge variant="secondary" className="ml-0.5 text-[10px] h-4 px-1">{pipelineCounts[key]}</Badge>
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-          </div>
+      {/* Tabs + Filters */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <TabsList className="bg-muted/50">
+            {(Object.entries(pipelineConfig) as [PipelineType, typeof pipelineConfig['recovery']][]).map(([key, config]) => {
+              const Icon = config.icon;
+              const count = key === 'recovery' ? summary?.recovery_count : key === 'trial' ? summary?.trial_count : summary?.winback_count;
+              return (
+                <TabsTrigger key={key} value={key} className="gap-1.5 text-xs">
+                  <Icon className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">{config.shortLabel}</span>
+                  <Badge variant="secondary" className="ml-1 text-[10px] px-1.5">
+                    {count || 0}
+                  </Badge>
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </Tabs>
 
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="phone-filter-pipeline"
-                checked={showOnlyWithPhone}
-                onCheckedChange={setShowOnlyWithPhone}
-                className="scale-90"
-              />
-              <Label htmlFor="phone-filter-pipeline" className="text-[10px] md:text-xs cursor-pointer whitespace-nowrap">
-                Con tel
-              </Label>
-            </div>
-            <div className="text-right">
-              <p className="text-sm md:text-lg font-bold text-red-400">
-                ${totalRevenueAtRisk.toFixed(0)}
-              </p>
-              <p className="text-[10px] text-muted-foreground">En riesgo</p>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="phone-only"
+              checked={showOnlyWithPhone}
+              onCheckedChange={setShowOnlyWithPhone}
+            />
+            <Label htmlFor="phone-only" className="text-xs cursor-pointer">
+              Con tel
+            </Label>
           </div>
         </div>
+      </div>
 
-        <TabsContent value={activeTab} className="mt-3 md:mt-4">
-          {loading ? (
-            <div className="flex items-center justify-center h-40 md:h-64">
-              <RefreshCw className="h-6 w-6 md:h-8 md:w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : filteredClients.length === 0 ? (
-            <div className="rounded-xl border border-border/50 bg-card p-8 md:p-12 text-center">
-              <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
-              <p className="text-sm text-muted-foreground mb-1">¡Pipeline vacío!</p>
-              <p className="text-xs text-muted-foreground">No hay clientes pendientes</p>
-            </div>
-          ) : (
-            <>
-              {/* Mobile Cards View */}
-              <div className="md:hidden space-y-2">
-                {filteredClients.map((client) => (
-                  <div key={`${client.id}-${client.pipeline_type}`} className="rounded-lg border border-border/50 bg-card p-3">
-                    {/* Row 1: Name + Amount */}
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate text-foreground">
-                          {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground truncate">{client.email}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <span className="text-sm font-bold text-red-400">${client.revenue_at_risk.toFixed(0)}</span>
-                        {activeTab === 'trial_expiring' && (
-                          <p className="text-[10px] text-amber-400">{client.days_until_action}d</p>
+      {/* Table */}
+      <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+        {isLoading ? (
+          <div className="flex items-center justify-center p-12">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : clients.length === 0 ? (
+          <div className="p-8 md:p-12 text-center">
+            <CheckCircle className="h-10 w-10 md:h-12 md:w-12 mx-auto mb-3 text-emerald-500/50" />
+            <p className="text-sm text-muted-foreground mb-1">¡Sin casos pendientes!</p>
+            <p className="text-xs text-muted-foreground">Los clientes aparecerán aquí cuando haya acciones disponibles</p>
+          </div>
+        ) : (
+          <>
+            {/* Desktop Table */}
+            <div className="hidden md:block overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-border/50">
+                    <TableHead className="text-xs">Cliente</TableHead>
+                    <TableHead className="text-xs text-right">En Riesgo</TableHead>
+                    <TableHead className="text-xs">Estado Bot</TableHead>
+                    <TableHead className="text-xs">Último Contacto</TableHead>
+                    <TableHead className="text-xs text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {clients.map((client) => (
+                    <TableRow key={client.id} className="border-border/30 hover:bg-muted/30">
+                      <TableCell>
+                        <div>
+                          <p className="font-medium text-sm text-white truncate max-w-[200px]">
+                            {client.full_name || client.email || 'Sin nombre'}
+                          </p>
+                          <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                            {client.email}
+                          </p>
+                          {(client.phone || client.phone_e164) && (
+                            <p className="text-xs text-muted-foreground">
+                              {client.phone_e164 || client.phone}
+                            </p>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="font-bold text-red-400">
+                          ${client.revenue_at_risk.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                        {activeTab === 'trial' && client.days_until_expiry !== undefined && (
+                          <p className="text-[10px] text-amber-400">
+                            {client.days_until_expiry <= 0 ? 'Hoy' : `${Math.ceil(client.days_until_expiry)}d restantes`}
+                          </p>
                         )}
-                      </div>
-                    </div>
-                    
-                    {/* Row 2: Score + Status */}
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="flex items-center gap-1.5 flex-1">
-                        <Progress value={Math.min(client.revenue_score * 10, 100)} className="w-12 h-1.5" />
-                        <span className="text-[10px] text-muted-foreground">{client.revenue_score}</span>
-                      </div>
-                      {client.last_campaign_status ? (
-                        <Badge 
-                          variant="outline" 
-                          className={`text-[10px] h-4 px-1 ${
-                            client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
-                            client.last_campaign_status === 'sent' ? 'text-white border-zinc-700 bg-zinc-800' :
-                            'text-muted-foreground'
-                          }`}
-                        >
-                          {client.last_campaign_status}
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-[10px] h-4 px-1 text-muted-foreground bg-zinc-800 border-zinc-700">Nuevo</Badge>
-                      )}
-                      {client.phone && (
-                        <span className="text-[10px] text-muted-foreground/70 truncate max-w-[80px]">{client.phone}</span>
-                      )}
-                    </div>
+                      </TableCell>
+                      <TableCell>
+                        {getBotStatusBadge(client)}
+                        {client.attempt_count && client.attempt_count > 0 && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            {client.attempt_count} intentos
+                          </p>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {client.last_contact_at ? (
+                          <span className="text-xs text-muted-foreground">
+                            {formatDistanceToNow(new Date(client.last_contact_at), { locale: es, addSuffix: true })}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {/* WhatsApp */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="h-7 w-7 p-0"
+                                disabled={!client.phone && !client.phone_e164}
+                              >
+                                <MessageCircle className="h-3.5 w-3.5 text-green-500" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
+                                😊 Amigable
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
+                                ⚠️ Urgente
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
+                                🚨 Final
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
 
-                    {/* Row 3: Action Buttons - Horizontal */}
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-                      {/* WhatsApp */}
-                      {client.phone && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-7 px-2 shrink-0 bg-primary hover:bg-primary/90 text-white text-[10px] gap-1">
-                              <MessageCircle className="h-3 w-3" />
-                              WA
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="bg-popover border-border">
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>🚨 Final</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
+                          {/* SMS */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="h-7 w-7 p-0"
+                                disabled={!client.phone && !client.phone_e164}
+                              >
+                                <Smartphone className="h-3.5 w-3.5" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
+                                📱 API: Amigable
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
+                                📱 API: Urgente
+                              </DropdownMenuItem>
+                              {supportsNativeSms() && (
+                                <DropdownMenuItem onClick={() => handleNativeSms(client, 'friendly')}>
+                                  📲 Nativo: Amigable
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
 
-                      {/* Native SMS (iOS) */}
-                      {client.phone && supportsNativeSms() && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-7 px-2 shrink-0 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 text-[10px] gap-1">
-                              <Smartphone className="h-3 w-3" />
-                              SMS
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="bg-popover border-border">
-                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleNativeSms(client, 'final')}>🚨 Final</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
+                          {/* ManyChat */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
+                                <MessageSquare className="h-3.5 w-3.5 text-blue-500" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
+                                😊 Amigable
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
+                                ⚠️ Urgente
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
 
-                      {/* SMS API */}
-                      {client.phone && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-7 px-2 shrink-0 bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 text-[10px] gap-1">
-                              <Phone className="h-3 w-3" />
-                              API
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="bg-popover border-border">
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>🚨 Final</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
-
-                      {/* ManyChat */}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button size="sm" className="h-7 px-2 shrink-0 bg-[#0084FF]/15 hover:bg-[#0084FF]/25 text-[#0084FF] text-[10px] gap-1">
-                            <MessageSquare className="h-3 w-3" />
-                            FB
+                          {/* Portal */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => handleStripePortal(client)}
+                            disabled={!client.email}
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
                           </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="center" className="bg-popover border-border">
-                          <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>😊 Amigable</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>⚠️ Urgente</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>🚨 Final</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
 
-                      {/* GHL */}
-                      <Button 
-                        size="sm"
-                        onClick={() => handleGHL(client)}
-                        className="h-7 px-2 shrink-0 bg-orange-500/15 hover:bg-orange-500/25 text-orange-400 text-[10px] gap-1"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        GHL
-                      </Button>
+                          {/* Mark Converted */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 text-emerald-500 hover:text-emerald-400"
+                            onClick={() => markAsConverted(client)}
+                          >
+                            <CheckCircle className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
 
-                      {/* Stripe Portal */}
-                      <Button 
-                        size="sm"
-                        onClick={() => handleStripePortal(client)}
-                        className="h-7 px-2 shrink-0 bg-purple-500/15 hover:bg-purple-500/25 text-purple-400 text-[10px] gap-1"
-                      >
-                        <DollarSign className="h-3 w-3" />
-                        $
-                      </Button>
-
-                      {/* Mark Converted */}
-                      <Button 
-                        size="sm"
-                        onClick={() => markAsConverted(client)}
-                        className="h-7 px-2 shrink-0 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 text-[10px] gap-1"
-                      >
-                        <CheckCircle className="h-3 w-3" />
-                        ✓
-                      </Button>
+            {/* Mobile Cards */}
+            <div className="md:hidden space-y-2 p-2">
+              {clients.map((client) => (
+                <div key={client.id} className="rounded-lg border border-border/30 bg-muted/20 p-3">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">
+                        {client.full_name || client.email || 'Sin nombre'}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">{client.email}</p>
                     </div>
+                    <span className="font-bold text-red-400 shrink-0">
+                      ${client.revenue_at_risk.toFixed(2)}
+                    </span>
                   </div>
-                ))}
-              </div>
+                  
+                  <div className="flex items-center gap-2 mb-2">
+                    {getBotStatusBadge(client)}
+                    {client.last_contact_at && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Contactado {formatDistanceToNow(new Date(client.last_contact_at), { locale: es, addSuffix: true })}
+                      </span>
+                    )}
+                  </div>
 
-              {/* Desktop Table View */}
-              <div className="hidden md:block rounded-xl border border-border/50 bg-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="border-border/50 hover:bg-transparent">
-                        <TableHead className="text-muted-foreground">Cliente</TableHead>
-                        <TableHead className="text-muted-foreground">Score</TableHead>
-                        <TableHead className="text-muted-foreground">En Riesgo</TableHead>
-                        <TableHead className="text-muted-foreground">Estado</TableHead>
-                        <TableHead className="text-muted-foreground">#</TableHead>
-                        <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredClients.map((client) => (
-                        <TableRow key={`${client.id}-${client.pipeline_type}`} className="border-border/50 hover:bg-muted/20">
-                          <TableCell>
-                            <div>
-                              <p className="font-medium text-foreground">
-                                {client.full_name || <span className="text-muted-foreground italic">Sin nombre</span>}
-                              </p>
-                              <p className="text-xs text-muted-foreground">{client.email}</p>
-                              {client.phone && (
-                                <p className="text-xs text-muted-foreground/70">{client.phone}</p>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Progress value={Math.min(client.revenue_score * 10, 100)} className="w-16 h-2" />
-                              <span className="text-sm font-medium">{client.revenue_score}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-red-400 font-semibold text-lg">
-                              ${client.revenue_at_risk.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                            </span>
-                            {activeTab === 'trial_expiring' && (
-                              <p className="text-xs text-amber-400">{client.days_until_action}d restantes</p>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                          {client.last_campaign_status ? (
-                              <Badge 
-                                variant="outline" 
-                                className={
-                                  client.last_campaign_status === 'converted' ? 'text-emerald-400 border-emerald-500/30' :
-                                  client.last_campaign_status === 'sent' ? 'text-white border-zinc-700 bg-zinc-800' :
-                                  'text-muted-foreground'
-                                }
-                              >
-                                {client.last_campaign_status}
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-muted-foreground bg-zinc-800 border-zinc-700">Sin contactar</Badge>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-sm text-muted-foreground">{client.campaign_count}</span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex items-center justify-end gap-1 flex-wrap">
-                              {/* WhatsApp */}
-                              {client.phone && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button size="icon" className="h-8 w-8 bg-primary hover:bg-primary/90">
-                                      <MessageCircle className="h-4 w-4" />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
-                                      😊 Amigable
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
-                                      ⚠️ Urgente
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
-                                      🚨 Final
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              )}
-
-                              {/* SMS */}
-                              {client.phone && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button size="icon" variant="outline" className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800">
-                                      <Smartphone className="h-4 w-4" />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
-                                      😊 Amigable
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
-                                      ⚠️ Urgente
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
-                                      🚨 Final
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              )}
-
-                              {/* ManyChat */}
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button size="icon" variant="outline" className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800">
-                                    <MessageSquare className="h-4 w-4" />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
-                                    😊 Amigable
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
-                                    ⚠️ Urgente
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>
-                                    🚨 Final
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-
-                              {/* GHL */}
-                              <Button 
-                                size="icon" 
-                                variant="outline" 
-                                className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800"
-                                onClick={() => handleGHL(client)}
-                              >
-                                <ExternalLink className="h-4 w-4" />
-                              </Button>
-
-                              {/* Stripe Portal */}
-                              <Button 
-                                size="icon" 
-                                variant="outline" 
-                                className="h-8 w-8 border-zinc-700 text-white hover:bg-zinc-800"
-                                onClick={() => handleStripePortal(client)}
-                              >
-                                <DollarSign className="h-4 w-4" />
-                              </Button>
-
-                              {/* Mark Converted */}
-                              <Button 
-                                size="icon" 
-                                variant="outline" 
-                                className="h-8 w-8 border-emerald-500/30 text-emerald-400"
-                                onClick={() => markAsConverted(client)}
-                              >
-                                <CheckCircle className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 flex-1 text-xs gap-1"
+                      onClick={() => handleWhatsApp(client, 'friendly')}
+                      disabled={!client.phone && !client.phone_e164}
+                    >
+                      <MessageCircle className="h-3 w-3 text-green-500" />
+                      WA
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 flex-1 text-xs gap-1"
+                      onClick={() => handleSMS(client, 'friendly')}
+                      disabled={!client.phone && !client.phone_e164}
+                    >
+                      <Smartphone className="h-3 w-3" />
+                      SMS
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 flex-1 text-xs gap-1"
+                      onClick={() => handleStripePortal(client)}
+                      disabled={!client.email}
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Portal
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 w-7 p-0 text-emerald-500"
+                      onClick={() => markAsConverted(client)}
+                    >
+                      <CheckCircle className="h-3 w-3" />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
-        </TabsContent>
-      </Tabs>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Mostrar:</span>
+            <Select value={pageSize.toString()} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
+              <SelectTrigger className="h-8 w-20">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <SelectItem key={size} value={size.toString()}>{size}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1 || isFetching}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Anterior
+            </Button>
+            <span className="text-xs text-muted-foreground px-2">
+              Página {page} de {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages || isFetching}
+            >
+              Siguiente
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <span className="text-xs text-muted-foreground">
+            {totalCount} total
+          </span>
+        </div>
+      )}
     </div>
   );
 }
