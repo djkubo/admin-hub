@@ -1,12 +1,30 @@
 import { useEffect, useRef } from "react";
-import { registerSW } from "virtual:pwa-register";
 import { toast } from "@/components/ui/sonner";
+
+// Dynamically import PWA register to avoid build errors when vite-plugin-pwa isn't active
+let registerSW: ((options: {
+  immediate?: boolean;
+  onRegistered?: (registration: ServiceWorkerRegistration | undefined) => void;
+  onNeedRefresh?: () => void;
+  onOfflineReady?: () => void;
+  onRegisterError?: (error: Error) => void;
+}) => (reloadPage?: boolean) => Promise<void>) | undefined;
+
+try {
+  // @ts-ignore - virtual module from vite-plugin-pwa
+  registerSW = (await import("virtual:pwa-register")).registerSW;
+} catch {
+  // PWA plugin not active, skip registration
+}
 
 export function PwaUpdater() {
   const shownNeedRefresh = useRef(false);
   const shownOfflineReady = useRef(false);
+  const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null);
 
   useEffect(() => {
+    if (!registerSW) return;
+
     let updateCheckInterval: number | undefined;
 
     const updateSW = registerSW({
@@ -27,10 +45,7 @@ export function PwaUpdater() {
           description: "Actualiza para aplicar mejoras y correcciones.",
           action: {
             label: "Actualizar ahora",
-            onClick: () => void updateSW(true),
-          },
-          cancel: {
-            label: "Luego",
+            onClick: () => void updateSWRef.current?.(true),
           },
           duration: Infinity,
         });
@@ -48,6 +63,8 @@ export function PwaUpdater() {
         console.error("[PWA] Error registrando Service Worker", error);
       },
     });
+
+    updateSWRef.current = updateSW;
 
     return () => {
       if (updateCheckInterval) window.clearInterval(updateCheckInterval);

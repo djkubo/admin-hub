@@ -51,6 +51,7 @@ import type {
 } from '@/types/edgeFunctions';
 
 type SyncRange = 'today' | '7d' | 'month' | 'full';
+type SyncStatus = 'ok' | 'warning' | null;
 
 const syncRangeLabels: Record<SyncRange, string> = {
   today: 'Hoy',
@@ -112,7 +113,7 @@ export function DashboardHome() {
   const { kpis, isLoading, refetch } = useDailyKPIs(filter);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<string>('');
-  const [syncStatus, setSyncStatus] = useState<'ok' | 'warning' | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const queryClient = useQueryClient();
 
   const recoveryPipeline = useRevenuePipeline({
@@ -366,7 +367,7 @@ export function DashboardHome() {
 
       // Some hosting setups return a 504 even though the Edge Function continues in background.
       // Our invoke helper normalizes this to { success: true, status: 'background' }.
-      if ((commandCenterData as any).backgroundProcessing || commandCenterData.status === 'background') {
+      if ((commandCenterData as any).backgroundProcessing || (commandCenterData as any).status === 'background') {
         setSyncStatus('warning');
         setSyncProgress('');
 
@@ -391,7 +392,7 @@ export function DashboardHome() {
         return;
       }
 
-      if (commandCenterData.status === 'skipped') {
+      if ((commandCenterData as any).status === 'skipped') {
         setSyncStatus('warning');
         setSyncProgress('');
         toast.info('Sincronización omitida', {

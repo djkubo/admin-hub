@@ -178,156 +178,179 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         countClients(start, end),
         getMrrSummary(),
         // Sales (gross)
-        supabase.rpc('kpi_sales' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-        }).catch(async () => {
-          // Fallback: limited client-side aggregation (avoid huge scans)
-          const { data } = await supabase
-            .from('transactions')
-            .select('amount, currency')
-            .in('status', ['paid', 'succeeded'])
-            .gte('stripe_created_at', start)
-            .lte('stripe_created_at', end)
-            .limit(5000);
-          const buckets: Record<string, number> = {};
-          for (const row of data || []) {
-            const c = (row.currency || 'usd').toLowerCase();
-            buckets[c] = (buckets[c] || 0) + (row.amount || 0);
-          }
-          return Object.entries(buckets).map(([currency, total_amount]) => ({ currency, total_amount }));
-        }),
-        // Refunds
-        supabase.rpc('kpi_refunds' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-        }).catch(async () => {
-          const { data } = await supabase
-            .from('transactions')
-            .select('amount, currency')
-            .eq('status', 'refunded')
-            .gte('stripe_created_at', start)
-            .lte('stripe_created_at', end)
-            .limit(5000);
-          const buckets: Record<string, number> = {};
-          for (const row of data || []) {
-            const c = (row.currency || 'usd').toLowerCase();
-            buckets[c] = (buckets[c] || 0) + Math.abs(row.amount || 0);
-          }
-          return Object.entries(buckets).map(([currency, refund_amount]) => ({ currency, refund_amount }));
-        }),
-        // New customers (first payment in range)
-        supabase.rpc('kpi_new_customers' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-        }).catch(async () => {
-          // Fallback: compute first payment per email (limited to 10k rows)
-          const { data } = await supabase
-            .from('transactions')
-            .select('customer_email, currency, amount, stripe_created_at')
-            .in('status', ['paid', 'succeeded'])
-            .not('customer_email', 'is', null)
-            .order('stripe_created_at', { ascending: true })
-            .limit(10000);
-          const firstByEmailCurrency = new Map<string, { currency: string; amount: number; createdAt: string }>();
-          for (const row of data || []) {
-            if (!row.customer_email || !row.stripe_created_at) continue;
-            const email = row.customer_email.toLowerCase();
-            const currency = (row.currency || 'usd').toLowerCase();
-            const key = `${email}|${currency}`;
-            if (!firstByEmailCurrency.has(key)) {
-              firstByEmailCurrency.set(key, { currency, amount: row.amount || 0, createdAt: row.stripe_created_at });
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_sales' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+          } catch {
+            // Fallback: limited client-side aggregation (avoid huge scans)
+            const { data } = await supabase
+              .from('transactions')
+              .select('amount, currency')
+              .in('status', ['paid', 'succeeded'])
+              .gte('stripe_created_at', start)
+              .lte('stripe_created_at', end)
+              .limit(5000);
+            const buckets: Record<string, number> = {};
+            for (const row of data || []) {
+              const c = (row.currency || 'usd').toLowerCase();
+              buckets[c] = (buckets[c] || 0) + (row.amount || 0);
             }
+            return Object.entries(buckets).map(([currency, total_amount]) => ({ currency, total_amount }));
           }
-          const buckets: Record<string, { count: number; revenue: number }> = {};
-          const startMs = new Date(start).getTime();
-          const endMs = new Date(end).getTime();
-          for (const fp of firstByEmailCurrency.values()) {
-            const ts = new Date(fp.createdAt).getTime();
-            if (ts < startMs || ts > endMs) continue;
-            buckets[fp.currency] ??= { count: 0, revenue: 0 };
-            buckets[fp.currency].count += 1;
-            buckets[fp.currency].revenue += fp.amount;
+        })(),
+        // Refunds
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_refunds' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+          } catch {
+            const { data } = await supabase
+              .from('transactions')
+              .select('amount, currency')
+              .eq('status', 'refunded')
+              .gte('stripe_created_at', start)
+              .lte('stripe_created_at', end)
+              .limit(5000);
+            const buckets: Record<string, number> = {};
+            for (const row of data || []) {
+              const c = (row.currency || 'usd').toLowerCase();
+              buckets[c] = (buckets[c] || 0) + Math.abs(row.amount || 0);
+            }
+            return Object.entries(buckets).map(([currency, refund_amount]) => ({ currency, refund_amount }));
           }
-          return Object.entries(buckets).map(([currency, v]) => ({
-            currency,
-            new_customer_count: v.count,
-            total_revenue: v.revenue,
-          }));
-        }),
+        })(),
+        // New customers (first payment in range)
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_new_customers' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+          } catch {
+            // Fallback: compute first payment per email (limited to 10k rows)
+            const { data } = await supabase
+              .from('transactions')
+              .select('customer_email, currency, amount, stripe_created_at')
+              .in('status', ['paid', 'succeeded'])
+              .not('customer_email', 'is', null)
+              .order('stripe_created_at', { ascending: true })
+              .limit(10000);
+            const firstByEmailCurrency = new Map<string, { currency: string; amount: number; createdAt: string }>();
+            for (const row of data || []) {
+              if (!row.customer_email || !row.stripe_created_at) continue;
+              const email = row.customer_email.toLowerCase();
+              const currency = (row.currency || 'usd').toLowerCase();
+              const key = `${email}|${currency}`;
+              if (!firstByEmailCurrency.has(key)) {
+                firstByEmailCurrency.set(key, { currency, amount: row.amount || 0, createdAt: row.stripe_created_at });
+              }
+            }
+            const buckets: Record<string, { count: number; revenue: number }> = {};
+            const startMs = new Date(start).getTime();
+            const endMs = new Date(end).getTime();
+            for (const fp of firstByEmailCurrency.values()) {
+              const ts = new Date(fp.createdAt).getTime();
+              if (ts < startMs || ts > endMs) continue;
+              buckets[fp.currency] ??= { count: 0, revenue: 0 };
+              buckets[fp.currency].count += 1;
+              buckets[fp.currency].revenue += fp.amount;
+            }
+            return Object.entries(buckets).map(([currency, v]) => ({
+              currency,
+              new_customer_count: v.count,
+              total_revenue: v.revenue,
+            }));
+          }
+        })(),
         // Renewals (payments by returning customers)
-        supabase.rpc('kpi_renewals' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-        }).catch(async () => {
-          // Fallback: classify renewals as payments after first payment per email
-          const { data } = await supabase
-            .from('transactions')
-            .select('customer_email, currency, amount, stripe_created_at')
-            .in('status', ['paid', 'succeeded'])
-            .not('customer_email', 'is', null)
-            .not('stripe_created_at', 'is', null)
-            .order('stripe_created_at', { ascending: true })
-            .limit(10000);
-          const firstByEmail = new Map<string, string>();
-          const renewals: Array<{ currency: string; amount: number; createdAt: string }> = [];
-          for (const row of data || []) {
-            const email = row.customer_email?.toLowerCase();
-            if (!email || !row.stripe_created_at) continue;
-            const currency = (row.currency || 'usd').toLowerCase();
-            if (!firstByEmail.has(email)) firstByEmail.set(email, row.stripe_created_at);
-            else renewals.push({ currency, amount: row.amount || 0, createdAt: row.stripe_created_at });
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_renewals' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+          } catch {
+            // Fallback: classify renewals as payments after first payment per email
+            const { data } = await supabase
+              .from('transactions')
+              .select('customer_email, currency, amount, stripe_created_at')
+              .in('status', ['paid', 'succeeded'])
+              .not('customer_email', 'is', null)
+              .not('stripe_created_at', 'is', null)
+              .order('stripe_created_at', { ascending: true })
+              .limit(10000);
+            const firstByEmail = new Map<string, string>();
+            const renewals: Array<{ currency: string; amount: number; createdAt: string }> = [];
+            for (const row of data || []) {
+              const email = row.customer_email?.toLowerCase();
+              if (!email || !row.stripe_created_at) continue;
+              const currency = (row.currency || 'usd').toLowerCase();
+              if (!firstByEmail.has(email)) firstByEmail.set(email, row.stripe_created_at);
+              else renewals.push({ currency, amount: row.amount || 0, createdAt: row.stripe_created_at });
+            }
+            const startMs = new Date(start).getTime();
+            const endMs = new Date(end).getTime();
+            const buckets: Record<string, { count: number; revenue: number }> = {};
+            for (const r of renewals) {
+              const ts = new Date(r.createdAt).getTime();
+              if (ts < startMs || ts > endMs) continue;
+              buckets[r.currency] ??= { count: 0, revenue: 0 };
+              buckets[r.currency].count += 1;
+              buckets[r.currency].revenue += r.amount;
+            }
+            return Object.entries(buckets).map(([currency, v]) => ({
+              currency,
+              renewal_count: v.count,
+              total_revenue: v.revenue,
+            }));
           }
-          const startMs = new Date(start).getTime();
-          const endMs = new Date(end).getTime();
-          const buckets: Record<string, { count: number; revenue: number }> = {};
-          for (const r of renewals) {
-            const ts = new Date(r.createdAt).getTime();
-            if (ts < startMs || ts > endMs) continue;
-            buckets[r.currency] ??= { count: 0, revenue: 0 };
-            buckets[r.currency].count += 1;
-            buckets[r.currency].revenue += r.amount;
-          }
-          return Object.entries(buckets).map(([currency, v]) => ({
-            currency,
-            renewal_count: v.count,
-            total_revenue: v.revenue,
-          }));
-        }),
+        })(),
         // Trial -> paid (subscriptions-based, deterministic)
-        supabase.rpc('kpi_trial_to_paid' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          const rows = Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          return rows[0] || null;
-        }).catch(() => null),
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_trial_to_paid' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            const rows = Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            return rows[0] || null;
+          } catch {
+            return null;
+          }
+        })(),
         // Cancellations
-        supabase.rpc('kpi_cancellations' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-        }).catch(async () => {
-          // Fallback: count canceled_at in range
-          const { count } = await supabase
-            .from('subscriptions')
-            .select('id', { count: 'exact', head: true })
-            .not('canceled_at', 'is', null)
-            .gte('canceled_at', start)
-            .lte('canceled_at', end);
-          return [{ currency: 'usd', cancellation_count: count || 0, lost_mrr: 0 }];
-        }),
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_cancellations' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+          } catch {
+            // Fallback: count canceled_at in range
+            const { count } = await supabase
+              .from('subscriptions')
+              .select('id', { count: 'exact', head: true })
+              .not('canceled_at', 'is', null)
+              .gte('canceled_at', start)
+              .lte('canceled_at', end);
+            return [{ currency: 'usd', cancellation_count: count || 0, lost_mrr: 0 }];
+          }
+        })(),
         // Trials started
-        supabase.rpc('kpi_trials_started' as any, { p_range: rangeParam }).then(({ data, error: rpcError }) => {
-          if (rpcError) throw rpcError;
-          const row = Array.isArray(data) ? data[0] : data;
-          return { trial_count: toNumber((row as any)?.trial_count) };
-        }).catch(async () => {
-          const { count } = await supabase
-            .from('subscriptions')
-            .select('id', { count: 'exact', head: true })
-            .not('trial_start', 'is', null)
-            .gte('trial_start', start)
-            .lte('trial_start', end);
-          return { trial_count: count || 0 };
-        }),
+        (async () => {
+          try {
+            const { data, error: rpcError } = await supabase.rpc('kpi_trials_started' as any, { p_range: rangeParam });
+            if (rpcError) throw rpcError;
+            const row = Array.isArray(data) ? data[0] : data;
+            return { trial_count: toNumber((row as any)?.trial_count) };
+          } catch {
+            const { count } = await supabase
+              .from('subscriptions')
+              .select('id', { count: 'exact', head: true })
+              .not('trial_start', 'is', null)
+              .gte('trial_start', start)
+              .lte('trial_start', end);
+            return { trial_count: count || 0 };
+          }
+        })(),
       ]);
 
       const grossSales = normalizeMoneyByCurrency(salesResult as any, 'total_amount');
