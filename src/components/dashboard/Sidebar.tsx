@@ -3,119 +3,19 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { 
-  LayoutDashboard, 
-  AlertTriangle,
-  FileText,
-  Users, 
-  CreditCard,
-  Upload,
-  BarChart3, 
-  Settings,
   LogOut,
-  MessageSquare,
-  Shield,
   Menu,
-  X,
-  Activity,
-  Workflow,
-  Radio,
-  Smartphone,
-  Home,
-  MessageCircle,
-  DollarSign,
-  Cog,
-  TrendingUp,
-  Megaphone
+  Search,
+  X
 } from "lucide-react";
 import { toast } from "sonner";
 import vrpLogo from "@/assets/vrp-logo.png";
-import { APP_PATHS } from "@/config/appPaths";
-
-// Route mapping for each menu item
-const routeMap: Record<string, string> = {
-  dashboard: APP_PATHS.commandCenter,
-
-  // Insights
-  analytics: APP_PATHS.analytics,
-
-  // CRM
-  inbox: APP_PATHS.inbox,
-  clients: APP_PATHS.clients,
-
-  // Growth
-  campaigns: APP_PATHS.campaigns,
-  broadcast: APP_PATHS.broadcast,
-  flows: APP_PATHS.flows,
-  whatsapp: APP_PATHS.whatsapp,
-
-  // Revenue
-  movements: APP_PATHS.movements,
-  invoices: APP_PATHS.invoices,
-  subscriptions: APP_PATHS.subscriptions,
-  recovery: APP_PATHS.recovery,
-
-  // Ops/Admin
-  sync: APP_PATHS.sync,
-  diagnostics: APP_PATHS.diagnostics,
-  settings: APP_PATHS.settings,
-};
-
-// Navigation structure organized by modules (IA v2)
-const navigationGroups = [
-  {
-    id: "center",
-    label: "Centro",
-    icon: Home,
-    items: [
-      { id: "dashboard", label: "Centro de Comando", icon: LayoutDashboard },
-      { id: "analytics", label: "Analítica", icon: BarChart3 },
-    ]
-  },
-  {
-    id: "crm",
-    label: "CRM",
-    icon: MessageCircle,
-    items: [
-      { id: "inbox", label: "Bandeja", icon: MessageSquare },
-      { id: "clients", label: "Clientes", icon: Users },
-    ]
-  },
-  {
-    id: "growth",
-    label: "Crecimiento",
-    icon: TrendingUp,
-    items: [
-      { id: "campaigns", label: "Campañas", icon: Megaphone },
-      { id: "broadcast", label: "Difusión", icon: Radio },
-      { id: "flows", label: "Automatizaciones", icon: Workflow },
-      { id: "whatsapp", label: "WhatsApp", icon: Smartphone },
-    ]
-  },
-  {
-    id: "revenue",
-    label: "Ingresos",
-    icon: DollarSign,
-    items: [
-      { id: "movements", label: "Movimientos", icon: Activity },
-      { id: "invoices", label: "Facturas", icon: FileText },
-      { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
-      { id: "recovery", label: "Recuperación", icon: AlertTriangle },
-    ]
-  },
-  {
-    id: "system",
-    label: "Sistema",
-    icon: Cog,
-    items: [
-      { id: "sync", label: "Importar / Sync", icon: Upload },
-      { id: "diagnostics", label: "Diagnóstico", icon: Shield },
-      { id: "settings", label: "Ajustes", icon: Settings },
-    ]
-  },
-];
+import { NAVIGATION_GROUPS } from "@/config/appNavigation";
+import { CommandMenu } from "@/components/dashboard/CommandMenu";
 
 export function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
+  const [isCommandOpen, setIsCommandOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
@@ -188,13 +88,24 @@ export function Sidebar() {
               className="h-8 w-auto"
             />
           </div>
-          <button
-            onClick={() => setIsOpen(!isOpen)}
-            className="p-2.5 rounded-lg hover:bg-accent touch-feedback"
-            aria-label={isOpen ? "Cerrar menú" : "Abrir menú"}
-          >
-            {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsCommandOpen(true)}
+              className="p-2.5 rounded-lg hover:bg-accent touch-feedback"
+              aria-label="Buscar"
+              type="button"
+            >
+              <Search className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setIsOpen(!isOpen)}
+              className="p-2.5 rounded-lg hover:bg-accent touch-feedback"
+              aria-label={isOpen ? "Cerrar menú" : "Abrir menú"}
+              type="button"
+            >
+              {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -233,8 +144,25 @@ export function Sidebar() {
 
         {/* Navigation - Grouped by modules */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
+          {/* Search / command menu trigger */}
+          <button
+            type="button"
+            onClick={() => setIsCommandOpen(true)}
+            className={cn(
+              "mb-4 flex w-full items-center gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5 text-sm",
+              "text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors touch-feedback"
+            )}
+            aria-label="Abrir buscador"
+          >
+            <Search className="h-4 w-4" />
+            <span className="truncate">Buscar…</span>
+            <span className="ml-auto hidden lg:inline text-xs text-muted-foreground">
+              ⌘K
+            </span>
+          </button>
+
           <div className="space-y-6">
-            {navigationGroups.map((group, groupIndex) => (
+            {NAVIGATION_GROUPS.map((group, groupIndex) => (
               <div key={group.id}>
                 {/* Section separator (except first) */}
                 {groupIndex > 0 && (
@@ -250,7 +178,7 @@ export function Sidebar() {
                 <div className="space-y-1">
                   {group.items.map((item) => {
                     const Icon = item.icon;
-                    const to = routeMap[item.id] || "/";
+                    const to = item.path;
                     
                     return (
                       <NavLink
@@ -303,6 +231,12 @@ export function Sidebar() {
           </div>
         </div>
       </aside>
+
+      <CommandMenu
+        open={isCommandOpen}
+        onOpenChange={setIsCommandOpen}
+        onLogout={handleLogout}
+      />
     </>
   );
 }

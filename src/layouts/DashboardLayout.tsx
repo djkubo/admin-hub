@@ -1,8 +1,18 @@
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { SyncStatusBanner } from "@/components/dashboard/SyncStatusBanner";
+import { getNavMetaForPath } from "@/config/appNavigation";
+import { useEffect } from "react";
 
 export function DashboardLayout() {
+  const location = useLocation();
+
+  useEffect(() => {
+    const meta = getNavMetaForPath(location.pathname);
+    const pageTitle = meta ? `${meta.item.label} · ${meta.group.label}` : "VRP // SYSTEM";
+    document.title = `${pageTitle} · VRP`;
+  }, [location.pathname]);
+
   return (
     <div className="min-h-screen bg-background">
       <Sidebar />

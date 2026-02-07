@@ -147,7 +147,8 @@ export function IntegrationsStatusPanel() {
                 <div>
                   <p className="font-medium text-foreground">{integration.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {integration.secrets.length} secreto{integration.secrets.length > 1 ? 's' : ''} configurado{integration.secrets.length > 1 ? 's' : ''}
+                    Requiere {integration.secrets.length} secreto{integration.secrets.length > 1 ? 's' : ''}:{" "}
+                    <span className="font-mono">{integration.secrets.join(", ")}</span>
                   </p>
                 </div>
               </div>
