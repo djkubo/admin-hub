@@ -17,20 +17,58 @@ Deno.serve(async (req) => {
 
   try {
     // ========== SECURITY CHECK ==========
-    const ADMIN_KEY = Deno.env.get('VRP_ADMIN_KEY')
-    if (!ADMIN_KEY) {
-      console.error(`[${requestId}] VRP_ADMIN_KEY not configured`)
+    // Support both:
+    // 1) x-admin-key (VRP_ADMIN_KEY) for server-to-server ingestion scripts
+    // 2) Authorization: Bearer <user JWT> for in-app admin users (validated via is_admin()).
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!
+
+    const adminKey = Deno.env.get('VRP_ADMIN_KEY')
+    const providedAdminKey = req.headers.get('x-admin-key')
+    const authHeader = req.headers.get('Authorization')
+
+    let authMode: 'admin_key' | 'jwt_is_admin' | null = null
+    let requesterEmail: string | null = null
+
+    if (adminKey && providedAdminKey && providedAdminKey === adminKey) {
+      authMode = 'admin_key'
+    } else if (authHeader?.startsWith('Bearer ')) {
+      const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } },
+      })
+
+      const {
+        data: { user },
+        error: userError,
+      } = await authClient.auth.getUser()
+
+      if (userError || !user) {
+        console.warn(`[${requestId}] Unauthorized - invalid/expired JWT`, userError?.message)
+        return new Response(
+          JSON.stringify({ ok: false, error: 'Unauthorized', message: 'Invalid or expired token' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      const { data: isAdmin, error: adminError } = await authClient.rpc('is_admin')
+      if (adminError || !isAdmin) {
+        console.warn(`[${requestId}] Forbidden - not admin`, adminError?.message)
+        return new Response(
+          JSON.stringify({ ok: false, error: 'Forbidden', message: 'User is not an admin' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      authMode = 'jwt_is_admin'
+      requesterEmail = user.email ?? null
+    } else {
+      console.warn(`[${requestId}] Unauthorized - missing auth`)
       return new Response(
-        JSON.stringify({ ok: false, error: 'Server configuration error' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-    
-    const providedKey = req.headers.get('x-admin-key')
-    if (providedKey !== ADMIN_KEY) {
-      console.warn(`[${requestId}] Unauthorized - Invalid key`)
-      return new Response(
-        JSON.stringify({ ok: false, error: 'Unauthorized', message: 'Invalid x-admin-key' }),
+        JSON.stringify({
+          ok: false,
+          error: 'Unauthorized',
+          message: 'Provide x-admin-key or Authorization: Bearer <token>',
+        }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
@@ -49,7 +87,7 @@ Deno.serve(async (req) => {
     console.log(`[${requestId}] Action: ${action}`)
 
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
+      supabaseUrl,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
@@ -136,7 +174,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[${requestId}] Success - Result:`, JSON.stringify(result))
+    console.log(`[${requestId}] Success (${authMode}${requesterEmail ? `:${requesterEmail}` : ''}) - Result:`, JSON.stringify(result))
     return new Response(
       JSON.stringify({ ok: true, data: result }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
