@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { z } from "zod";
 import vrpLogo from "@/assets/vrp-logo.png";
 import { Lock } from "lucide-react";
+import { buildInfo } from "@/lib/buildInfo";
 
 const emailSchema = z.string().email("Email inválido");
 const passwordSchema = z.string().min(6, "La contraseña debe tener al menos 6 caracteres");
@@ -153,6 +154,9 @@ export default function Login() {
           <div className="mt-8 pt-6 border-t border-border text-center">
             <p className="text-xs text-muted-foreground">
               VRP Operaciones de Ingresos
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground font-mono">
+              Build {buildInfo.gitSha} · {new Date(buildInfo.buildTime).toLocaleString()}
             </p>
           </div>
         </CardContent>
