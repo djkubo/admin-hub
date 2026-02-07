@@ -57,14 +57,77 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Force Service Worker update on load to clear stale cache
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(registrations) {
-          registrations.forEach(function(registration) {
-            registration.update();
-          });
+      // Service Worker hygiene + self-repair for stale-cache "blank screen" cases.
+      // This runs before module scripts execute (module scripts are deferred), so we can catch early failures.
+      (function () {
+        function safeString(x) {
+          try { return String(x || ''); } catch { return ''; }
+        }
+
+        function shouldSelfRepair(message) {
+          var msg = safeString(message);
+          if (!msg) return false;
+
+          // Common failure modes when a stale SW serves an old HTML that references missing chunks,
+          // or when cached chunks are mismatched after deploy.
+          return (
+            msg.indexOf('ChunkLoadError') !== -1 ||
+            msg.indexOf('Loading chunk') !== -1 ||
+            msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+            msg.indexOf('Importing a module script failed') !== -1
+          );
+        }
+
+        async function selfRepairAndReload(reason) {
+          // Avoid reload loops.
+          try {
+            var key = '__vrp_self_repair_attempts__';
+            var attempts = Number(sessionStorage.getItem(key) || '0') || 0;
+            if (attempts >= 1) return;
+            sessionStorage.setItem(key, String(attempts + 1));
+          } catch { /* ignore */ }
+
+          try { console.warn('[SelfRepair] Triggered:', reason); } catch { /* ignore */ }
+
+          // Unregister SWs + clear caches, but keep localStorage/session intact.
+          try {
+            if ('serviceWorker' in navigator) {
+              var regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map(function (r) { return r.unregister().catch(function () {}); }));
+            }
+          } catch { /* ignore */ }
+
+          try {
+            if (window.caches && caches.keys) {
+              var keys = await caches.keys();
+              await Promise.all(keys.map(function (k) { return caches.delete(k).catch(function () {}); }));
+            }
+          } catch { /* ignore */ }
+
+          // Reload after cleanup.
+          try { window.location.reload(); } catch { /* ignore */ }
+        }
+
+        // Proactively check for updates (best-effort).
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (registrations) {
+            registrations.forEach(function (registration) {
+              registration.update();
+            });
+          }).catch(function () {});
+        }
+
+        window.addEventListener('error', function (event) {
+          var msg = event && (event.message || (event.error && event.error.message));
+          if (shouldSelfRepair(msg)) selfRepairAndReload(msg);
         });
-      }
+
+        window.addEventListener('unhandledrejection', function (event) {
+          var reason = event && event.reason;
+          var msg = reason && (reason.message || reason);
+          if (shouldSelfRepair(msg)) selfRepairAndReload(msg);
+        });
+      })();
     </script>
   </body>
 </html>

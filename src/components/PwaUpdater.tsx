@@ -23,7 +23,7 @@ export function PwaUpdater() {
     const boot = async () => {
       let registerSW: RegisterSW | undefined;
       try {
-        // @ts-ignore - virtual module from vite-plugin-pwa
+        // @ts-expect-error - virtual module from vite-plugin-pwa
         const mod = await import("virtual:pwa-register");
         registerSW = (mod as { registerSW?: RegisterSW }).registerSW;
       } catch {
