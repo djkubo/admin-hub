@@ -47,7 +47,7 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
   const now = new Date();
   
   let startDate: Date;
-  let endDate = endOfDay(now);
+  const endDate = endOfDay(now);
   let rangeParam: string = filter;
 
   switch (filter) {

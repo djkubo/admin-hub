@@ -186,7 +186,7 @@ export function CampaignControlCenter() {
     let query = supabase.from('clients').select('id', { count: 'exact', head: true });
 
     switch (segment.filter_type) {
-      case 'payment_failed':
+      case 'payment_failed': {
         // Clients with failed transactions in last 30 days
         const { data: failedEmails } = await supabase
           .from('transactions')
@@ -201,7 +201,8 @@ export function CampaignControlCenter() {
           return 0;
         }
         break;
-      case 'trial_expiring':
+      }
+      case 'trial_expiring': {
         // Get trials expiring in 3 days
         const { data: trialingSubs } = await supabase
           .from('subscriptions')
@@ -216,6 +217,7 @@ export function CampaignControlCenter() {
           return 0;
         }
         break;
+      }
       case 'lead_no_trial':
         query = query.eq('lifecycle_stage', 'LEAD');
         break;
@@ -335,7 +337,7 @@ export function CampaignControlCenter() {
     let clientQuery = supabase.from('clients').select('id, email');
 
     switch (segment.filter_type) {
-      case 'payment_failed':
+      case 'payment_failed': {
         const { data: failedEmails } = await supabase
           .from('transactions')
           .select('customer_email')
@@ -347,7 +349,8 @@ export function CampaignControlCenter() {
           clientQuery = clientQuery.in('email', emails);
         }
         break;
-      case 'trial_expiring':
+      }
+      case 'trial_expiring': {
         const { data: trialingSubs } = await supabase
           .from('subscriptions')
           .select('customer_email')
@@ -359,6 +362,7 @@ export function CampaignControlCenter() {
           clientQuery = clientQuery.in('email', emails);
         }
         break;
+      }
       case 'lead_no_trial':
         clientQuery = clientQuery.eq('lifecycle_stage', 'LEAD');
         break;

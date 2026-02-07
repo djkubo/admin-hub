@@ -8,6 +8,13 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// Supabase Edge Functions exposes EdgeRuntime at runtime, but TypeScript doesn't know about it.
+declare const EdgeRuntime:
+  | undefined
+  | {
+      waitUntil?: (promise: Promise<unknown>) => void;
+    };
+
 // SECURITY: JWT-based admin verification using getUser()
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization');
@@ -129,7 +136,7 @@ async function runSync(serviceClient: any, stripe: Stripe, syncRunId: string) {
         const product = plan?.product;
 
         let rawProductName: string | null = null;
-        let rawNickname: string | null = plan?.nickname || null;
+        const rawNickname: string | null = plan?.nickname || null;
         
         if (typeof product === "object" && product?.name) {
           rawProductName = product.name;
@@ -334,9 +341,7 @@ Deno.serve(async (req: Request) => {
     console.log("📝 Created sync run:", syncRun.id);
 
     // Use EdgeRuntime.waitUntil for background processing
-    // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
     if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
-      // @ts-ignore
       EdgeRuntime.waitUntil(runSync(serviceClient, stripe, syncRun.id));
       
       // Return immediately

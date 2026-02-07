@@ -91,9 +91,9 @@ function extractPayerInfo(resource: any): {
   // Try different locations where PayPal puts payer info
   const payer = resource.payer || resource.subscriber || {};
   
-  let email = payer.email_address || payer.email || null;
+  const email = payer.email_address || payer.email || null;
   let name = null;
-  let payerId = payer.payer_id || null;
+  const payerId = payer.payer_id || null;
   
   if (payer.name) {
     if (typeof payer.name === 'string') {

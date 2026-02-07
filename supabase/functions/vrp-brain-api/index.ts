@@ -58,21 +58,23 @@ Deno.serve(async (req) => {
 
     // ========== ACTION ROUTER ==========
     switch (action) {
-      case 'identify':
+      case 'identify': {
         console.log(`[${requestId}] Calling unify_identity_v2 with params:`, JSON.stringify(params))
         const identifyResult = await supabase.rpc('unify_identity_v2', params)
         result = identifyResult.data
         error = identifyResult.error
         break
+      }
 
-      case 'search':
+      case 'search': {
         console.log(`[${requestId}] Calling match_knowledge`)
         const searchResult = await supabase.rpc('match_knowledge', params)
         result = searchResult.data
         error = searchResult.error
         break
+      }
 
-      case 'insert':
+      case 'insert': {
         // Whitelist allowed tables for security
         const allowedTables = ['chat_events', 'lead_events']
         if (!params.table || !params.data) {
@@ -93,6 +95,7 @@ Deno.serve(async (req) => {
         result = insertResult.data
         error = insertResult.error
         break
+      }
 
       default:
         console.warn(`[${requestId}] Unknown action: ${action}`)

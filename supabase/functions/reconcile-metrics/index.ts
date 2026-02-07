@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
     console.log(`[reconcile] Starting for ${source} from ${start_date} to ${end_date}`);
 
     let externalTotal = 0;
-    let externalTransactions: string[] = [];
+    const externalTransactions: string[] = [];
 
     if (source === 'stripe' && stripeKey) {
       // Fetch from Stripe API

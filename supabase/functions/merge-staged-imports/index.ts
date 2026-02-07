@@ -129,7 +129,7 @@ async function processMergeInBackground(
     const BATCH_SIZE = 500;
     let offset = 0;
     let mergedCount = 0;
-    let conflictCount = 0;
+    const conflictCount = 0;
     let errorCount = 0;
     let hasMore = true;
 

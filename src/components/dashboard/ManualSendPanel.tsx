@@ -81,7 +81,7 @@ export function ManualSendPanel() {
     let query = supabase.from('clients').select('id', { count: 'exact', head: true });
     
     switch (segment.filter_type) {
-      case 'payment_failed':
+      case 'payment_failed': {
         const { data: failedEmails } = await supabase
           .from('transactions')
           .select('customer_email')
@@ -96,7 +96,8 @@ export function ManualSendPanel() {
           return;
         }
         break;
-      case 'trial_expiring':
+      }
+      case 'trial_expiring': {
         const { data: trialSubs } = await supabase
           .from('subscriptions')
           .select('customer_email')
@@ -111,6 +112,7 @@ export function ManualSendPanel() {
           return;
         }
         break;
+      }
       case 'lead_no_trial':
         query = query.eq('lifecycle_stage', 'LEAD');
         break;

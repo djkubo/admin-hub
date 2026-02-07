@@ -48,7 +48,10 @@ export interface DashboardMetrics {
 // Store subscription data in memory for metrics calculation
 let subscriptionDataCache: SubscriptionData[] = [];
 // Use Map with transaction ID as key to prevent duplicates
-let paypalTransactionsCache: Map<string, { email: string; amount: number; status: string; date: Date }> = new Map();
+const paypalTransactionsCache: Map<
+  string,
+  { email: string; amount: number; status: string; date: Date }
+> = new Map();
 
 // ============= BOM & HEADER NORMALIZATION =============
 
@@ -2058,7 +2061,7 @@ function normalizePhone(raw: string | null | undefined): string | null {
   if (!raw) return null;
   
   // Remove all non-digit characters
-  let digits = raw.replace(/\D/g, '');
+  const digits = raw.replace(/\D/g, '');
   
   if (!digits || digits.length < 10) return null;
   
