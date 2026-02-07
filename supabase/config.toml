@@ -149,6 +149,3 @@ verify_jwt = false
 
 [functions.execute-flow]
 verify_jwt = false
-
-[functions.sync-command-center]
-verify_jwt = false
