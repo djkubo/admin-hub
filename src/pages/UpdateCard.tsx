@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Loader2, CreditCard, AlertCircle, CheckCircle2, ExternalLink } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { env } from "@/lib/env";
 
 interface PaymentLink {
   id: string;
@@ -85,7 +86,7 @@ export default function UpdateCard() {
       // Call the create-portal-session function
       // Since this is a public page, we'll create a special endpoint or use service role
       const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-portal-session-public`,
+        `${env.VITE_SUPABASE_URL}/functions/v1/create-portal-session-public`,
         {
           method: "POST",
           headers: {

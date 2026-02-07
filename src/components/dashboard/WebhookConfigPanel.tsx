@@ -5,8 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { env } from '@/lib/env';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_URL = env.VITE_SUPABASE_URL || '';
 
 export function WebhookConfigPanel() {
   const [copiedItem, setCopiedItem] = useState<string | null>(null);
