@@ -56,6 +56,16 @@ Deno.serve(async (req) => {
     let result: any
     let error: any
 
+    // Supabase vector types are commonly represented as strings (e.g. "[0.1,0.2,...]").
+    // Accept either a vector-string or a JSON array of numbers for convenience.
+    const toVectorString = (value: unknown): string | undefined => {
+      if (typeof value === 'string') return value
+      if (Array.isArray(value) && value.every((n) => typeof n === 'number')) {
+        return `[${value.join(',')}]`
+      }
+      return undefined
+    }
+
     // ========== ACTION ROUTER ==========
     switch (action) {
       case 'identify': {
@@ -68,6 +78,11 @@ Deno.serve(async (req) => {
 
       case 'search': {
         console.log(`[${requestId}] Calling match_knowledge`)
+        // Allow query_embedding as a number[].
+        if (Array.isArray((params as any)?.query_embedding)) {
+          const vec = toVectorString((params as any).query_embedding)
+          if (vec) (params as any).query_embedding = vec
+        }
         const searchResult = await supabase.rpc('match_knowledge', params)
         result = searchResult.data
         error = searchResult.error
@@ -91,6 +106,14 @@ Deno.serve(async (req) => {
           )
         }
         console.log(`[${requestId}] Inserting into table: ${params.table}`)
+        // If inserting vectors, accept embedding as number[] and convert to vector string.
+        if (params.table === 'vrp_knowledge' && typeof params.data === 'object' && params.data) {
+          const d = params.data as { embedding?: unknown }
+          if (Array.isArray(d.embedding)) {
+            const vec = toVectorString(d.embedding)
+            if (vec) d.embedding = vec
+          }
+        }
         const insertResult = await supabase.from(params.table).insert(params.data).select()
         result = insertResult.data
         error = insertResult.error
