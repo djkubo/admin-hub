@@ -269,6 +269,7 @@ export default function DiagnosticsPanel() {
   const [isReconciling, setIsReconciling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
 
   const supabaseHost = (() => {
     try {
@@ -277,6 +278,37 @@ export default function DiagnosticsPanel() {
       return env.VITE_SUPABASE_URL || "—";
     }
   })();
+
+  const repairApp = async () => {
+    const confirmed = window.confirm(
+      "Esto limpiará el cache (PWA/Service Worker) y recargará la app.\n\nNo borra tu sesión, pero puede tomar unos segundos."
+    );
+    if (!confirmed) return;
+
+    setIsRepairing(true);
+    try {
+      // Unregister service workers
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+      }
+
+      // Clear caches
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k).catch(() => {})));
+      }
+
+      // Reload into a clean state
+      window.location.reload();
+    } catch (e) {
+      console.error("[Diagnostics] Repair failed:", e);
+      toast.error("No se pudo reparar la app", {
+        description: e instanceof Error ? e.message : "Error desconocido",
+      });
+      setIsRepairing(false);
+    }
+  };
 
   const { data: qualityChecks = [], isLoading: loadingChecks, refetch: refetchChecks } = useQuery({
     queryKey: ['data-quality-checks'],
@@ -483,6 +515,25 @@ Responde en español, de forma concisa.`;
                 )}
               </div>
             </div>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-lg border border-border/50 bg-muted/20 p-3">
+            <div className="space-y-0.5">
+              <p className="text-xs font-medium text-foreground">Reparar app (cache/PWA)</p>
+              <p className="text-[10px] text-muted-foreground">
+                Si te aparece pantalla en blanco, versión vieja o errores raros, limpia el cache y recarga.
+              </p>
+            </div>
+            <Button
+              onClick={repairApp}
+              variant="outline"
+              size="sm"
+              disabled={isRepairing}
+              className="gap-2 self-start sm:self-auto"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRepairing ? "animate-spin" : ""}`} />
+              Reparar
+            </Button>
           </div>
         </CardContent>
       </Card>
