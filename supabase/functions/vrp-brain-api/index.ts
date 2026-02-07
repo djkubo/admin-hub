@@ -6,6 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+type EmbeddingResponse = { data?: Array<{ embedding?: number[] }> }
+
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -104,6 +106,33 @@ Deno.serve(async (req) => {
       return undefined
     }
 
+    const embeddingModel = Deno.env.get('OPENAI_EMBEDDING_MODEL') || 'text-embedding-3-small' // 1536 dims
+    const openAiApiKey = Deno.env.get('OPENAI_API_KEY')
+
+    const createEmbedding = async (input: string): Promise<number[]> => {
+      if (!openAiApiKey) throw new Error('OPENAI_API_KEY not configured')
+
+      const resp = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openAiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: embeddingModel,
+          input,
+        }),
+      })
+
+      const text = await resp.text()
+      if (!resp.ok) throw new Error(`OpenAI embeddings failed (${resp.status}): ${text.slice(0, 200)}`)
+
+      const json = JSON.parse(text) as EmbeddingResponse
+      const embedding = json?.data?.[0]?.embedding
+      if (!Array.isArray(embedding) || embedding.length === 0) throw new Error('OpenAI embeddings returned empty embedding')
+      return embedding
+    }
+
     // ========== ACTION ROUTER ==========
     switch (action) {
       case 'identify': {
@@ -116,10 +145,21 @@ Deno.serve(async (req) => {
 
       case 'search': {
         console.log(`[${requestId}] Calling match_knowledge`)
-        // Allow query_embedding as a number[].
+        // Allow query_embedding as a number[] or accept query_text and embed server-side.
         if (Array.isArray((params as any)?.query_embedding)) {
           const vec = toVectorString((params as any).query_embedding)
           if (vec) (params as any).query_embedding = vec
+        } else if (typeof (params as any)?.query_text === 'string' && !(params as any)?.query_embedding) {
+          const queryText = String((params as any).query_text).trim()
+          if (!queryText) {
+            return new Response(
+              JSON.stringify({ ok: false, error: 'search requires query_embedding or non-empty query_text' }),
+              { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            )
+          }
+          const embedding = await createEmbedding(queryText)
+          ;(params as any).query_embedding = toVectorString(embedding)
+          delete (params as any).query_text
         }
         const searchResult = await supabase.rpc('match_knowledge', params)
         result = searchResult.data
@@ -146,7 +186,21 @@ Deno.serve(async (req) => {
         console.log(`[${requestId}] Inserting into table: ${params.table}`)
         // If inserting vectors, accept embedding as number[] and convert to vector string.
         if (params.table === 'vrp_knowledge' && typeof params.data === 'object' && params.data) {
-          const d = params.data as { embedding?: unknown }
+          const d = params.data as { content?: unknown; embedding?: unknown }
+
+          // If no embedding provided, compute on the server (uses OPENAI_API_KEY).
+          if (d.embedding === undefined || d.embedding === null || d.embedding === '') {
+            const content = typeof d.content === 'string' ? d.content.trim() : ''
+            if (!content) {
+              return new Response(
+                JSON.stringify({ ok: false, error: 'vrp_knowledge insert requires non-empty content' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+              )
+            }
+            const embedding = await createEmbedding(content)
+            d.embedding = toVectorString(embedding)
+          }
+
           if (Array.isArray(d.embedding)) {
             const vec = toVectorString(d.embedding)
             if (vec) d.embedding = vec
