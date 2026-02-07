@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { DollarSign, TrendingUp, Users, Calendar } from "lucide-react";
-import { Subscription } from "@/hooks/useSubscriptions";
+import type { AnalyticsActiveSubscription } from "@/hooks/useAnalyticsActiveSubscriptions";
 
 interface Transaction {
   id: string;
@@ -12,10 +12,10 @@ interface Transaction {
 
 interface LTVMetricsProps {
   transactions: Transaction[];
-  subscriptions: Subscription[];
+  activeSubscriptions: AnalyticsActiveSubscription[];
 }
 
-export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
+export function LTVMetrics({ transactions, activeSubscriptions: activeSubscriptionsInput }: LTVMetricsProps) {
   const metrics = useMemo(() => {
     // Get successful transactions
     const successfulTx = transactions.filter(
@@ -26,7 +26,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
 
     // *** MRR CORRECTO: Suma de suscripciones activas ***
     // Solo considera suscripciones con status 'active' (no 'trialing', 'canceled', etc.)
-    const activeSubscriptions = subscriptions.filter(
+    const activeSubscriptions = (activeSubscriptionsInput || []).filter(
       (s) => s.status === "active"
     );
     const mrr = activeSubscriptions.reduce((sum, s) => sum + s.amount, 0) / 100;
@@ -103,7 +103,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
       avgLifespanMonths,
       activeSubscriptionCount,
     };
-  }, [transactions, subscriptions]);
+  }, [transactions, activeSubscriptionsInput]);
 
   const MetricCard = ({
     icon: Icon,

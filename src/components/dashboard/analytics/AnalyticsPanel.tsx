@@ -6,31 +6,15 @@ import { RevenueByPlanChart } from "./RevenueByPlanChart";
 import { SourceAnalytics } from "./SourceAnalytics";
 import { AnalyzeButton } from "./AnalyzeButton";
 import { AIInsightsWidget } from "../AIInsightsWidget";
-import { useTransactions, Transaction } from "@/hooks/useTransactions";
-import { useClients, Client } from "@/hooks/useClients";
-import { useSubscriptions } from "@/hooks/useSubscriptions";
-import { Sparkles, BarChart3, LogOut } from "lucide-react";
+import { Sparkles, BarChart3 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { subDays, subYears } from "date-fns";
+import { startOfMonth, subMonths } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAuth } from "@/hooks/useAuth";
+import { useAnalyticsTransactions } from "@/hooks/useAnalyticsTransactions";
+import { useAnalyticsActiveSubscriptions } from "@/hooks/useAnalyticsActiveSubscriptions";
 
 export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
-
-function getDateRangeStart(period: AnalyticsPeriod): Date {
-  const now = new Date();
-  switch (period) {
-    case "7d":
-      return subDays(now, 7);
-    case "30d":
-      return subDays(now, 30);
-    case "90d":
-      return subDays(now, 90);
-    case "all":
-      return subYears(now, 10);
-  }
-}
 
 function getMonthsForPeriod(period: AnalyticsPeriod): number {
   switch (period) {
@@ -48,33 +32,28 @@ function getMonthsForPeriod(period: AnalyticsPeriod): number {
 export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
   
-  // Load data internally - no more props drilling
-  const { transactions, isLoading: txLoading } = useTransactions();
-  const { clients, isLoading: clientsLoading } = useClients();
-  const { subscriptions } = useSubscriptions();
-  const { user, signOut } = useAuth();
-
-  const isLoading = txLoading || clientsLoading;
-
-  // Filter transactions based on selected period
-  const filteredTransactions = useMemo(() => {
-    const startDate = getDateRangeStart(period);
-    return transactions.filter((tx) => {
-      if (!tx.stripe_created_at) return false;
-      return new Date(tx.stripe_created_at) >= startDate;
-    });
-  }, [transactions, period]);
-
-  // Filter clients based on selected period (by created_at)
-  const filteredClients = useMemo(() => {
-    const startDate = getDateRangeStart(period);
-    return clients.filter((client) => {
-      if (!client.created_at) return false;
-      return new Date(client.created_at) >= startDate;
-    });
-  }, [clients, period]);
-
   const monthsToShow = getMonthsForPeriod(period);
+  const monthsLookback = Math.max(monthsToShow, 2); // LTV churn needs ~60 days
+
+  // Load the minimum transaction history required for the selected modules (server-paged, auto-draining).
+  const txStartIso = useMemo(() => {
+    const now = new Date();
+    const start = startOfMonth(subMonths(now, monthsLookback - 1));
+    return start.toISOString();
+  }, [monthsLookback]);
+
+  const txQuery = useAnalyticsTransactions({
+    startDate: txStartIso,
+    statuses: ["succeeded", "paid"],
+    pageSize: 1000,
+    maxPages: 25,
+  });
+
+  const subsQuery = useAnalyticsActiveSubscriptions({ pageSize: 1000, maxPages: 10 });
+
+  const isLoading = txQuery.isLoading || subsQuery.isLoading;
+  const transactions = txQuery.transactions;
+  const activeSubscriptions = subsQuery.subscriptions;
 
   const periodButtons: { value: AnalyticsPeriod; label: string }[] = [
     { value: "7d", label: "7 días" },
@@ -120,14 +99,22 @@ export function AnalyticsPanel() {
             Métricas avanzadas: LTV, MRR, Cohortes
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-muted-foreground">{user?.email}</span>
-          <Button variant="outline" size="sm" onClick={() => signOut()} className="gap-2">
-            <LogOut className="h-4 w-4" />
-            Salir
-          </Button>
-        </div>
       </div>
+
+      {/* Loading/progress hint (auto-draining pages in the background) */}
+      {(txQuery.isFetching || subsQuery.isFetching) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Cargando métricas…</span>
+          <span>
+            Transacciones: {txQuery.loadedCount.toLocaleString()}
+            {typeof txQuery.totalCount === "number" ? ` / ${txQuery.totalCount.toLocaleString()}` : ""}
+          </span>
+          <span className="hidden sm:inline">
+            Suscripciones activas: {subsQuery.loadedCount.toLocaleString()}
+            {typeof subsQuery.totalCount === "number" ? ` / ${subsQuery.totalCount.toLocaleString()}` : ""}
+          </span>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-zinc-800 bg-card">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
@@ -180,7 +167,7 @@ export function AnalyticsPanel() {
           {/* LTV Metrics Row - Usa historial completo para calcular Churn/LTV correctamente */}
           <LTVMetrics 
             transactions={transactions} 
-            subscriptions={subscriptions} 
+            activeSubscriptions={activeSubscriptions} 
           />
 
           {/* Revenue by Plan Chart - Pareto Analysis */}
@@ -189,7 +176,6 @@ export function AnalyticsPanel() {
           {/* MRR Movements Chart */}
           <MRRMovementsChart 
             transactions={transactions} 
-            clients={clients} 
             monthsToShow={monthsToShow}
           />
         </TabsContent>

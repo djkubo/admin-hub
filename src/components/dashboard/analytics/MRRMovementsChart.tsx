@@ -22,17 +22,8 @@ interface Transaction {
   source: string | null;
 }
 
-interface Client {
-  email: string | null;
-  status: string | null;
-  payment_status: string | null;
-  converted_at: string | null;
-  created_at: string | null;
-}
-
 interface MRRMovementsChartProps {
   transactions: Transaction[];
-  clients: Client[];
   monthsToShow?: number;
 }
 
@@ -44,7 +35,7 @@ interface MonthData {
   net: number;
 }
 
-export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: MRRMovementsChartProps) {
+export function MRRMovementsChart({ transactions, monthsToShow = 6 }: MRRMovementsChartProps) {
   const chartData = useMemo(() => {
     const now = new Date();
     const months: MonthData[] = [];
@@ -163,7 +154,7 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
     }
 
     return months;
-  }, [transactions, clients, monthsToShow]);
+  }, [transactions, monthsToShow]);
 
   // Custom tooltip content renderer (not a component, just a render function)
   const renderTooltipContent = (props: { active?: boolean; payload?: any[]; label?: string }) => {
