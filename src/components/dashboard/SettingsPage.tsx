@@ -1,10 +1,6 @@
 import { Suspense, lazy } from 'react';
-import { Settings, LogOut } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Settings } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useAuth } from '@/hooks/useAuth';
-import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
 
 // Lazy load heavy components for better performance
 const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
@@ -45,28 +41,6 @@ function SettingsSkeleton() {
 }
 
 export function SettingsPage() {
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
-
-  const handleLogout = async () => {
-    try {
-      const { error } = await signOut();
-      if (error) {
-        toast.error("No se pudo cerrar sesión", {
-          description: error.message,
-        });
-        return;
-      }
-
-      toast.success("Sesión cerrada");
-      navigate("/login");
-    } catch (err) {
-      toast.error("No se pudo cerrar sesión", {
-        description: err instanceof Error ? err.message : "Error inesperado",
-      });
-    }
-  };
-
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Header - Responsive */}
@@ -80,16 +54,6 @@ export function SettingsPage() {
             Configuración e integraciones
           </p>
         </div>
-        {user && (
-          <div className="flex items-center gap-3 justify-between sm:justify-end">
-            <span className="text-xs md:text-sm text-muted-foreground truncate max-w-[150px] md:max-w-none">{user.email}</span>
-            <Button variant="outline" size="sm" onClick={handleLogout} className="gap-2 touch-feedback shrink-0">
-              <LogOut className="h-4 w-4" />
-              <span className="hidden sm:inline">Cerrar Sesión</span>
-              <span className="sm:hidden">Salir</span>
-            </Button>
-          </div>
-        )}
       </div>
 
       {/* Panels with Suspense for lazy loading */}
