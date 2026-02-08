@@ -53,6 +53,26 @@ export async function invokeWithAdminKey<
 
     if (error) {
       console.error(`[AdminAPI] ${functionName} error:`, error);
+
+      // Supabase functions-js wraps non-2xx responses as FunctionsHttpError with a Response in `context`.
+      // Surfacing status + JSON body here makes the UI actionable (e.g. 404 "function not found").
+      const ctx = (error as any)?.context as unknown;
+      const status = typeof (ctx as any)?.status === "number" ? ((ctx as any).status as number) : null;
+      let ctxBody: any = null;
+      if (ctx && typeof (ctx as any)?.text === "function") {
+        try {
+          const res: Response =
+            typeof (ctx as any)?.clone === "function" ? ((ctx as any).clone() as Response) : (ctx as Response);
+          const text = await res.text();
+          try {
+            ctxBody = JSON.parse(text);
+          } catch {
+            ctxBody = text;
+          }
+        } catch {
+          // ignore parsing errors
+        }
+      }
       
       // Handle 504 Gateway Timeout specifically
       if (error.message?.includes('504') || error.message?.includes('timeout') || error.message?.includes('Timeout')) {
@@ -67,7 +87,30 @@ export async function invokeWithAdminKey<
       }
       
       // Return the error as part of the response instead of throwing
-      return { ok: false, success: false, error: error.message } as T;
+      const baseMsg = error.message || "Edge Function error";
+
+      // Prefer platform-provided JSON error details when available.
+      const detailMsg =
+        typeof ctxBody === "object" && ctxBody
+          ? (ctxBody.error as string) || (ctxBody.message as string) || null
+          : typeof ctxBody === "string"
+            ? ctxBody
+            : null;
+
+      // Make common cases obvious in the UI.
+      let msg = baseMsg;
+      if (status === 404) {
+        msg = `Edge Function "${functionName}" no existe (404). Debes desplegarla en Supabase/Lovable Cloud.`;
+      } else if (status === 401 || status === 403) {
+        msg = `No autorizado (HTTP ${status}) al invocar "${functionName}". Revisa sesión y permisos admin.`;
+      } else if (typeof status === "number") {
+        msg = `${baseMsg} (HTTP ${status})`;
+      }
+      if (detailMsg && detailMsg !== baseMsg) {
+        msg = `${msg} ${detailMsg}`;
+      }
+
+      return { ok: false, success: false, error: msg } as T;
     }
 
     // Edge Functions return { ok: true, result } or { ok: false, error }
