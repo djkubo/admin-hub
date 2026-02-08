@@ -187,6 +187,8 @@ export function IntegrationsStatusPanel() {
                     onClick={() => testConnection(integration)}
                     disabled={testing === integration.id}
                     className="h-8 px-2"
+                    aria-label={`Probar ${integration.name}`}
+                    title={`Probar ${integration.name}`}
                   >
                     {testing === integration.id ? (
                       <Loader2 className="h-4 w-4 animate-spin" />

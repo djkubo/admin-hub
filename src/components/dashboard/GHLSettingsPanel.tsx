@@ -115,7 +115,7 @@ export default function GHLSettingsPanel() {
               <Settings className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <CardTitle className="text-lg">GoHighLevel Integration</CardTitle>
+              <CardTitle className="text-lg">Integración GoHighLevel</CardTitle>
               <CardDescription>Conecta tu CRM para automatizar comunicaciones</CardDescription>
             </div>
           </div>

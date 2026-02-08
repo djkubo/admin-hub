@@ -195,7 +195,7 @@ export default function SystemTogglesPanel() {
           <div className="flex items-center gap-3">
             <Pause className="h-5 w-5 text-destructive" />
             <div>
-              <Label className="font-medium text-destructive">🛑 Pausar GoHighLevel</Label>
+              <Label className="font-medium text-destructive">Pausar GoHighLevel (emergencia)</Label>
               <p className="text-xs text-muted-foreground">
                 Detiene TODOS los webhooks y syncs de GHL
               </p>
@@ -212,7 +212,7 @@ export default function SystemTogglesPanel() {
           <div className="flex items-center gap-3">
             <Pause className="h-5 w-5 text-destructive" />
             <div>
-              <Label className="font-medium text-destructive">🛑 Pausar ManyChat</Label>
+              <Label className="font-medium text-destructive">Pausar ManyChat (emergencia)</Label>
               <p className="text-xs text-muted-foreground">
                 Detiene TODOS los syncs de ManyChat
               </p>
