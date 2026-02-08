@@ -118,13 +118,12 @@ export default function SystemTogglesPanel() {
         updated_at: new Date().toISOString(),
       }));
 
-      for (const entry of entries) {
-        const { error } = await supabase
-          .from('system_settings')
-          .upsert(entry, { onConflict: 'key' });
+      // Single round-trip instead of N upserts (faster + less flaky).
+      const { error } = await supabase
+        .from('system_settings')
+        .upsert(entries, { onConflict: 'key' });
 
-        if (error) throw error;
-      }
+      if (error) throw error;
 
       toast.success('Configuración guardada');
       setHasChanges(false);

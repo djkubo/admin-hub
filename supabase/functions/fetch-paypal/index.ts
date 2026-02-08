@@ -310,15 +310,82 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
+    // Parse body first (needed for testOnly/continuations). Keep this before any side effects.
+    let body: any = {};
+    try { body = await req.json(); } catch { /* empty body */ }
+
+    const isContinuationRequest = body._continuation === true;
+    const isTestOnly = body.testOnly === true;
+
+    // SECURITY:
+    // - Continuations MUST be invoked with service_role key (auto-chain).
+    // - Everything else must be a real admin session (JWT + is_admin()).
+    if (isContinuationRequest) {
+      const authHeader = req.headers.get("Authorization") || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.replace("Bearer ", "") : "";
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+      if (!token || !serviceKey || token !== serviceKey) {
+        return new Response(
+          JSON.stringify({ success: false, status: "failed", error: "Forbidden", message: "Service role required for continuations" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    } else {
+      const authCheck = await verifyAdmin(req);
+      if (!authCheck.valid) {
+        return new Response(
+          JSON.stringify({ success: false, status: "failed", error: "Forbidden", message: authCheck.error }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
 
     if (!paypalClientId || !paypalSecret) {
       return new Response(
-        JSON.stringify({ success: false, status: 'failed', error: "PayPal credentials not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ success: false, status: "failed", error: "PayPal credentials not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+
+    // ============= TEST ONLY MODE - Quick API verification =============
+    // This should work even if sync is paused.
+    if (isTestOnly) {
+      logger.info("Test-only mode: Verifying PayPal API connection");
+      try {
+        await getPayPalAccessToken(paypalClientId, paypalSecret);
+        logger.info("PayPal API test result: SUCCESS (got access token)");
+
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            success: true,
+            status: "connected",
+            apiStatus: 200,
+            hasToken: true,
+            error: null,
+            testOnly: true,
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      } catch (testError) {
+        logger.error("PayPal API test failed", testError instanceof Error ? testError : new Error(String(testError)));
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            success: false,
+            status: "error",
+            error: testError instanceof Error ? testError.message : "Connection failed",
+            testOnly: true,
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
+    // ================================================================
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -326,57 +393,24 @@ Deno.serve(async (req) => {
 
     // ============= KILL SWITCH: Check if sync is paused =============
     const { data: syncPausedConfig } = await supabase
-      .from('system_settings')
-      .select('value')
-      .eq('key', 'sync_paused')
+      .from("system_settings")
+      .select("value")
+      .eq("key", "sync_paused")
       .single();
 
-    const syncPaused = syncPausedConfig?.value === 'true';
-    
+    const syncPaused = syncPausedConfig?.value === "true";
+
     if (syncPaused) {
-      logger.info('⏸️ Sync paused globally, skipping execution');
+      logger.info("⏸️ Sync paused globally, skipping execution");
       return new Response(
-        JSON.stringify({ 
-          success: true, 
-          status: 'skipped', 
-          skipped: true, 
-          reason: 'Feature disabled: sync_paused is ON' 
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-    // ================================================================
-
-    // ============= TEST ONLY MODE - Quick API verification =============
-    let body: any = {};
-    try { body = await req.json(); } catch { /* empty body */ }
-
-    if (body.testOnly === true) {
-      logger.info('Test-only mode: Verifying PayPal API connection');
-      try {
-        const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
-        
-        logger.info('PayPal API test result: SUCCESS (got access token)');
-        
-        return new Response(JSON.stringify({
-          ok: true,
+        JSON.stringify({
           success: true,
-          status: 'connected',
-          apiStatus: 200,
-          hasToken: true,
-          error: null,
-          testOnly: true
-        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      } catch (testError) {
-        logger.error('PayPal API test failed', testError instanceof Error ? testError : new Error(String(testError)));
-        return new Response(JSON.stringify({
-          ok: false,
-          success: false,
-          status: 'error',
-          error: testError instanceof Error ? testError.message : 'Connection failed',
-          testOnly: true
-        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      }
+          status: "skipped",
+          skipped: true,
+          reason: "Feature disabled: sync_paused is ON",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
     // ================================================================
 
@@ -459,17 +493,6 @@ Deno.serve(async (req) => {
     }
 
     console.log(`📅 PayPal: chunk ${chunkIndex + 1}/${totalChunks}, page ${page}, range: ${chunkStart} → ${chunkEnd}`);
-
-    // SECURITY: Verify JWT + admin role ONLY for non-continuation requests
-    if (!isContinuation) {
-      const authCheck = await verifyAdmin(req);
-      if (!authCheck.valid) {
-        return new Response(
-          JSON.stringify({ success: false, status: 'failed', error: "Forbidden", message: authCheck.error }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
 
     // ============ FORCE CANCEL ALL SYNCS ============
     if (forceCancel) {

@@ -37,7 +37,8 @@ export default function MaintenancePanel() {
       const { data, error } = await supabase
         .from("sync_runs")
         .delete()
-        .in("status", ["failed", "canceled", "paused"])
+        // Support both spellings used across functions.
+        .in("status", ["failed", "canceled", "cancelled", "paused"])
         .select("id");
 
       if (error) throw error;
