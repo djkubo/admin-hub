@@ -56,6 +56,24 @@ const defaultKPIs: DailyKPIs = {
   revenueAtRiskCount: 0,
 };
 
+// Avoid spamming failing RPCs every poll interval (404/500 show as console errors in Chrome).
+// We still compute KPIs via fallbacks, but back off server RPC calls after failures.
+const RPC_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const rpcCooldownUntilMs = new Map<string, number>();
+
+function shouldTryRpc(name: string): boolean {
+  const until = rpcCooldownUntilMs.get(name) ?? 0;
+  return Date.now() >= until;
+}
+
+function markRpcFailed(name: string, cooldownMs: number = RPC_COOLDOWN_MS) {
+  rpcCooldownUntilMs.set(name, Date.now() + cooldownMs);
+}
+
+function markRpcOk(name: string) {
+  rpcCooldownUntilMs.delete(name);
+}
+
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
   const now = new Date();
   
@@ -100,31 +118,43 @@ async function countClients(start: string, end: string): Promise<number> {
 
 async function getMrrSummary(): Promise<{ mrr: number; mrrActiveCount: number; revenueAtRisk: number; revenueAtRiskCount: number }> {
   try {
-    const { data } = await (supabase.rpc as any)('kpi_mrr_summary');
-    if (data) {
-      const mrrSummary = Array.isArray(data) ? data[0] : data;
-      if (mrrSummary) {
-        return {
-          mrr: (mrrSummary.mrr || 0) / 100,
-          mrrActiveCount: mrrSummary.active_count || 0,
-          revenueAtRisk: (mrrSummary.at_risk_amount || 0) / 100,
-          revenueAtRiskCount: mrrSummary.at_risk_count || 0,
-        };
+    if (shouldTryRpc('kpi_mrr_summary')) {
+      const { data, error } = await (supabase.rpc as any)('kpi_mrr_summary');
+      if (error) throw error;
+      markRpcOk('kpi_mrr_summary');
+      if (data) {
+        const mrrSummary = Array.isArray(data) ? data[0] : data;
+        if (mrrSummary) {
+          return {
+            mrr: (mrrSummary.mrr || 0) / 100,
+            mrrActiveCount: mrrSummary.active_count || 0,
+            revenueAtRisk: (mrrSummary.at_risk_amount || 0) / 100,
+            revenueAtRiskCount: (mrrSummary.at_risk_count || 0),
+          };
+        }
       }
     }
   } catch {
+    markRpcFailed('kpi_mrr_summary');
     // Try fallback
     try {
-      const { data: fallbackMrr } = await (supabase.rpc as any)('kpi_mrr');
-      if (fallbackMrr?.[0]) {
-        return {
-          mrr: (fallbackMrr[0].mrr || 0) / 100,
-          mrrActiveCount: fallbackMrr[0].active_subscriptions || 0,
-          revenueAtRisk: 0,
-          revenueAtRiskCount: 0,
-        };
+      if (shouldTryRpc('kpi_mrr')) {
+        const { data: fallbackMrr, error } = await (supabase.rpc as any)('kpi_mrr');
+        if (error) throw error;
+        markRpcOk('kpi_mrr');
+        if (fallbackMrr?.[0]) {
+          return {
+            mrr: (fallbackMrr[0].mrr || 0) / 100,
+            mrrActiveCount: fallbackMrr[0].active_subscriptions || 0,
+            revenueAtRisk: 0,
+            revenueAtRiskCount: 0,
+          };
+        }
       }
-    } catch { /* ignore */ }
+    } catch {
+      markRpcFailed('kpi_mrr');
+      /* ignore */
+    }
   }
   return { mrr: 0, mrrActiveCount: 0, revenueAtRisk: 0, revenueAtRiskCount: 0 };
 }
@@ -179,11 +209,17 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         getMrrSummary(),
         // Sales (gross)
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_sales' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          } catch {
+          if (shouldTryRpc('kpi_sales')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_sales' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_sales');
+              return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            } catch {
+              markRpcFailed('kpi_sales');
+            }
+          }
+          {
             // Fallback: limited client-side aggregation (avoid huge scans)
             const { data } = await supabase
               .from('transactions')
@@ -202,11 +238,17 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         })(),
         // Refunds
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_refunds' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          } catch {
+          if (shouldTryRpc('kpi_refunds')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_refunds' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_refunds');
+              return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            } catch {
+              markRpcFailed('kpi_refunds');
+            }
+          }
+          {
             const { data } = await supabase
               .from('transactions')
               .select('amount, currency')
@@ -224,11 +266,17 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         })(),
         // New customers (first payment in range)
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_new_customers' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          } catch {
+          if (shouldTryRpc('kpi_new_customers')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_new_customers' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_new_customers');
+              return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            } catch {
+              markRpcFailed('kpi_new_customers');
+            }
+          }
+          {
             // Fallback: compute first payment per email (limited to 10k rows)
             const { data } = await supabase
               .from('transactions')
@@ -266,11 +314,17 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         })(),
         // Renewals (payments by returning customers)
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_renewals' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          } catch {
+          if (shouldTryRpc('kpi_renewals')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_renewals' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_renewals');
+              return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            } catch {
+              markRpcFailed('kpi_renewals');
+            }
+          }
+          {
             // Fallback: classify renewals as payments after first payment per email
             const { data } = await supabase
               .from('transactions')
@@ -309,21 +363,32 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         // Trial -> paid (subscriptions-based, deterministic)
         (async () => {
           try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_trial_to_paid' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            const rows = Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-            return rows[0] || null;
+            if (shouldTryRpc('kpi_trial_to_paid')) {
+              const { data, error: rpcError } = await supabase.rpc('kpi_trial_to_paid' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_trial_to_paid');
+              const rows = Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+              return rows[0] || null;
+            }
           } catch {
+            markRpcFailed('kpi_trial_to_paid');
             return null;
           }
+          return null;
         })(),
         // Cancellations
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_cancellations' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
-          } catch {
+          if (shouldTryRpc('kpi_cancellations')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_cancellations' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_cancellations');
+              return Array.isArray(data) ? (data as any[]) : data ? [data as any] : [];
+            } catch {
+              markRpcFailed('kpi_cancellations');
+            }
+          }
+          {
             // Fallback: count canceled_at in range
             const { count } = await supabase
               .from('subscriptions')
@@ -336,12 +401,18 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         })(),
         // Trials started
         (async () => {
-          try {
-            const { data, error: rpcError } = await supabase.rpc('kpi_trials_started' as any, { p_range: rangeParam });
-            if (rpcError) throw rpcError;
-            const row = Array.isArray(data) ? data[0] : data;
-            return { trial_count: toNumber((row as any)?.trial_count) };
-          } catch {
+          if (shouldTryRpc('kpi_trials_started')) {
+            try {
+              const { data, error: rpcError } = await supabase.rpc('kpi_trials_started' as any, { p_range: rangeParam });
+              if (rpcError) throw rpcError;
+              markRpcOk('kpi_trials_started');
+              const row = Array.isArray(data) ? data[0] : data;
+              return { trial_count: toNumber((row as any)?.trial_count) };
+            } catch {
+              markRpcFailed('kpi_trials_started');
+            }
+          }
+          {
             const { count } = await supabase
               .from('subscriptions')
               .select('id', { count: 'exact', head: true })

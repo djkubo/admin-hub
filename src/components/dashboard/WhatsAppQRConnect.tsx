@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,18 +16,27 @@ interface WhatsAppStatus {
 
 export function WhatsAppQRConnect() {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const cooldownUntilRef = useRef(0);
 
   const fetchStatus = useCallback(async () => {
+    const now = Date.now();
+    if (now < cooldownUntilRef.current) return;
+
     try {
       const res = await fetch(`${RENDER_API_URL}/whatsapp/status`);
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setStatus(data);
+      setStatusError(null);
+      cooldownUntilRef.current = 0;
     } catch (error) {
-      console.error("Error fetching WhatsApp status:", error);
+      // Don't spam the console: this can fail when the Render service is sleeping/down.
+      // Surface a friendly banner in the UI and back off retries briefly.
+      setStatusError("No se pudo conectar con el servicio de WhatsApp. Intenta de nuevo en unos segundos.");
+      cooldownUntilRef.current = now + 30_000;
     }
   }, []);
 
@@ -111,6 +120,11 @@ export function WhatsAppQRConnect() {
               <CheckCircle2 className="h-3 w-3 mr-1" />
               Conectado
             </Badge>
+          ) : statusError ? (
+            <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30">
+              <XCircle className="h-3 w-3 mr-1" />
+              Servicio offline
+            </Badge>
           ) : status?.qr_code ? (
             <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
               <Loader2 className="h-3 w-3 mr-1 animate-spin" />
@@ -126,6 +140,11 @@ export function WhatsAppQRConnect() {
       </CardHeader>
       
       <CardContent className="space-y-4">
+        {statusError && !status?.is_connected && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            {statusError}
+          </div>
+        )}
         {status?.is_connected ? (
           // Estado conectado
           <div className="space-y-4">

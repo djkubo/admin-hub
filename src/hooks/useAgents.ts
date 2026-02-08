@@ -78,14 +78,17 @@ export function useCurrentAgent() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
 
+      // Avoid `.single()` here: PostgREST returns HTTP 406 when 0 rows match,
+      // which shows up as noisy console errors in the browser even if we handle it.
       const { data, error } = await supabase
         .from("agents")
         .select("*")
         .eq("user_id", user.id)
-        .single();
+        .limit(1);
 
-      if (error && error.code !== "PGRST116") throw error;
-      return data as Agent | null;
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : null;
+      return (row as Agent | undefined) ?? null;
     },
   });
 }

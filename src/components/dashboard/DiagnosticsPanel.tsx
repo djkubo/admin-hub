@@ -394,6 +394,7 @@ export default function DiagnosticsPanel() {
       return data as DataQualityCheck[];
     },
     enabled: isAdmin === true,
+    retry: false,
   });
 
   const { data: reconciliationRuns = [], isLoading: loadingReconciliation, error: reconciliationError } = useQuery({

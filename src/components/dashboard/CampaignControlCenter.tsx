@@ -166,12 +166,33 @@ export function CampaignControlCenter() {
 
       if (templatesRes.data) setTemplates(templatesRes.data);
       if (segmentsRes.data) {
-        // Get client counts for each segment
-        const segmentsWithCounts = await Promise.all(
-          segmentsRes.data.map(async (seg) => {
+        // Get client counts for each segment.
+        // NOTE: Exact counts can be expensive on large datasets and may time out (500).
+        // We use estimated counts and limit concurrency to keep the UI responsive.
+        const withConcurrency = async <T, R>(
+          items: T[],
+          limit: number,
+          mapper: (item: T, idx: number) => Promise<R>
+        ): Promise<R[]> => {
+          const out: R[] = new Array(items.length) as R[];
+          let next = 0;
+          const workers = new Array(Math.max(1, limit)).fill(null).map(async () => {
+            while (next < items.length) {
+              const idx = next++;
+              out[idx] = await mapper(items[idx], idx);
+            }
+          });
+          await Promise.all(workers);
+          return out;
+        };
+
+        const segmentsWithCounts = await withConcurrency(
+          segmentsRes.data,
+          3,
+          async (seg) => {
             const count = await getSegmentClientCount(seg);
             return { ...seg, client_count: count };
-          })
+          }
         );
         setSegments(segmentsWithCounts);
       }
@@ -183,7 +204,8 @@ export function CampaignControlCenter() {
   };
 
   const getSegmentClientCount = async (segment: Segment): Promise<number> => {
-    let query = supabase.from('clients').select('id', { count: 'exact', head: true });
+    // Use estimated counts to avoid full-table scans and statement timeouts on large datasets.
+    let query = supabase.from('clients').select('id', { count: 'estimated', head: true });
 
     switch (segment.filter_type) {
       case 'payment_failed': {
@@ -229,12 +251,17 @@ export function CampaignControlCenter() {
         break;
       case 'custom':
         if (segment.exclude_no_phone) {
-          query = query.not('phone', 'is', null);
+          // Prefer normalized E.164 when available.
+          query = query.not('phone_e164', 'is', null);
         }
         break;
     }
 
-    const { count } = await query;
+    const { count, error } = await query;
+    if (error) {
+      console.warn('[Campaigns] Segment count failed:', { segment: segment.name, error: error.message });
+      return 0;
+    }
     return count || 0;
   };
 

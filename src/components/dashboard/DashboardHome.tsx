@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
@@ -116,6 +116,7 @@ export function DashboardHome() {
   const [syncProgress, setSyncProgress] = useState<string>('');
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const queryClient = useQueryClient();
+  const invoicesDueQueryModeRef = useRef<'auto' | 'simple'>('auto');
 
   const recoveryPipeline = useRevenuePipeline({
     type: "recovery",
@@ -149,21 +150,55 @@ export function DashboardHome() {
     queryFn: async (): Promise<DueInvoice[]> => {
       const limitDate = addHours(new Date(), 72).toISOString();
 
-      const { data, error } = await supabase
-        .from("invoices")
-        .select(
-          "id, customer_email, customer_name, amount_due, currency, status, next_payment_attempt, automatically_finalizes_at, due_date, hosted_invoice_url, invoice_number, stripe_created_at"
-        )
-        .in("status", ["open", "pending", "draft"])
-        .or(
-          `next_payment_attempt.lte.${limitDate},automatically_finalizes_at.lte.${limitDate},due_date.lte.${limitDate}`
-        )
-        .order("stripe_created_at", { ascending: false, nullsFirst: false })
-        .limit(200);
+      const runSimple = async (): Promise<DueInvoice[]> => {
+        const { data, error } = await supabase
+          .from("invoices")
+          .select(
+            "id, customer_email, customer_name, amount_due, currency, status, next_payment_attempt, hosted_invoice_url, invoice_number, stripe_created_at"
+          )
+          .in("status", ["open", "pending", "draft"])
+          .not("next_payment_attempt", "is", null)
+          .lte("next_payment_attempt", limitDate)
+          .order("stripe_created_at", { ascending: false, nullsFirst: false })
+          .limit(200);
 
-      if (error) throw error;
+        if (error) throw error;
 
-      const rows = (data || []) as DueInvoice[];
+        // Normalize missing fields expected by the UI.
+        return (data || []).map((inv: any) => ({
+          ...inv,
+          automatically_finalizes_at: null,
+          due_date: null,
+        })) as DueInvoice[];
+      };
+
+      let rows: DueInvoice[] = [];
+
+      // Try richer query first (includes due_date / automatically_finalizes_at),
+      // but fall back to a simpler query if the DB schema/migrations are behind or the OR filter errors.
+      if (invoicesDueQueryModeRef.current === 'simple') {
+        rows = await runSimple();
+      } else {
+        const { data, error } = await supabase
+          .from("invoices")
+          .select(
+            "id, customer_email, customer_name, amount_due, currency, status, next_payment_attempt, automatically_finalizes_at, due_date, hosted_invoice_url, invoice_number, stripe_created_at"
+          )
+          .in("status", ["open", "pending", "draft"])
+          .or(
+            `next_payment_attempt.lte.${limitDate},automatically_finalizes_at.lte.${limitDate},due_date.lte.${limitDate}`
+          )
+          .order("stripe_created_at", { ascending: false, nullsFirst: false })
+          .limit(200);
+
+        if (error) {
+          invoicesDueQueryModeRef.current = 'simple';
+          rows = await runSimple();
+        } else {
+          rows = (data || []) as DueInvoice[];
+        }
+      }
+
       const sorted = rows
         .map((inv) => {
           const candidates = [
@@ -186,7 +221,9 @@ export function DashboardHome() {
       return sorted;
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    // Stop auto-refetch if the query errors; otherwise it will spam the console/network every minute.
+    refetchInterval: (query) => (query.state.status === "error" ? false : 60_000),
+    retry: false,
   });
 
   // Helper for navigation
