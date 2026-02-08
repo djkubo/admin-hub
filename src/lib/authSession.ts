@@ -10,6 +10,23 @@ function isSessionExpiringSoon(session: Session, withinMs: number): boolean {
   return expiresAtMs - Date.now() <= withinMs;
 }
 
+async function withCrossTabLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  // Use the Web Locks API when available to avoid refresh-token rotation races across tabs.
+  // If unsupported (e.g. some Safari versions) fall back to best-effort in-tab locking.
+  const locks = (globalThis as any)?.navigator?.locks as
+    | { request?: (name: string, options: any, callback: () => Promise<T>) => Promise<T> }
+    | undefined;
+
+  if (locks?.request) {
+    try {
+      return await locks.request(name, { mode: "exclusive" }, fn);
+    } catch {
+      // Ignore lock failures and proceed without cross-tab coordination.
+    }
+  }
+  return fn();
+}
+
 export async function getSessionSafe(): Promise<Session | null> {
   try {
     const { data, error } = await supabase.auth.getSession();
@@ -33,8 +50,15 @@ export async function refreshSessionLocked(opts?: { minIntervalMs?: number }): P
   }
 
   if (!refreshInFlight) {
-    refreshInFlight = (async () => {
+    refreshInFlight = withCrossTabLock("vrp:supabase-refresh-session", async () => {
       try {
+        // Another tab may have refreshed while we waited for the lock. Re-check first.
+        const existing = await getSessionSafe();
+        if (existing && !isSessionExpiringSoon(existing, 60_000)) {
+          lastRefreshAtMs = Date.now();
+          return existing;
+        }
+
         const { data, error } = await supabase.auth.refreshSession();
         if (error) return null;
         lastRefreshAtMs = Date.now();
@@ -44,7 +68,7 @@ export async function refreshSessionLocked(opts?: { minIntervalMs?: number }): P
       } finally {
         refreshInFlight = null;
       }
-    })();
+    });
   }
 
   return refreshInFlight;
@@ -69,4 +93,3 @@ export async function getValidSession(opts?: {
 
   return session;
 }
-
