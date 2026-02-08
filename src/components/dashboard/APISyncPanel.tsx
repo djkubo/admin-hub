@@ -473,6 +473,16 @@ export function APISyncPanel() {
         }
       );
 
+      // Kill switch / paused mode: function returns success=true but no work is done.
+      if (data?.status === 'skipped' || (data as any)?.skipped === true) {
+        const reason = (data as any)?.reason || data?.message || 'Sincronización pausada (sync_paused)';
+        setStripeResult({ ...data, message: reason });
+        toast.info(`Stripe: ${reason}`);
+        setStripeSyncing(false);
+        setStripeProgress(null);
+        return;
+      }
+
       // Check if it's running in background
       if (data.status === 'running' && data.syncRunId) {
         toast.info('Stripe: Sincronización iniciada en background...', { id: 'stripe-sync' });
@@ -539,6 +549,16 @@ export function APISyncPanel() {
           endDate: endDate.toISOString()
         }
       );
+
+      // Kill switch / paused mode: function returns success=true but no work is done.
+      if (data?.status === 'skipped' || (data as any)?.skipped === true) {
+        const reason = (data as any)?.reason || data?.message || 'Sincronización pausada (sync_paused)';
+        setPaypalResult({ ...data, message: reason });
+        toast.info(`PayPal: ${reason}`);
+        setPaypalSyncing(false);
+        setPaypalProgress(null);
+        return;
+      }
 
       // Check if it's running in background with auto-continuation
       if ((data.status === 'running' || data.status === 'continuing') && data.syncRunId) {

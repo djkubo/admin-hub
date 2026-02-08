@@ -610,6 +610,16 @@ export function SyncOrchestrator() {
 
       if (error) throw error;
 
+      if ((data as any)?.status === 'skipped' || (data as any)?.skipped === true) {
+        const reason = (data as any)?.reason || (data as any)?.message || 'Sincronización pausada (sync_paused)';
+        setSyncStatuses(prev => ({
+          ...prev,
+          paypal: { ...prev.paypal, status: 'paused', processed: 0, error: reason }
+        }));
+        toast.info(`PayPal: ${reason}`);
+        return;
+      }
+
       setSyncStatuses(prev => ({ 
         ...prev, 
         paypal: { ...prev.paypal, status: 'completed', processed: data?.synced || 0 } 

@@ -13,7 +13,16 @@
 
 // ============= BASE SYNC CONTRACT =============
 
-export type SyncStatus = 'running' | 'continuing' | 'completed' | 'completed_with_errors' | 'completed_with_timeout' | 'failed';
+// Some functions use extra states (e.g. kill switches) that still return success.
+export type SyncStatus =
+  | 'running'
+  | 'continuing'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'completed_with_timeout'
+  | 'failed'
+  | 'skipped'
+  | 'paused';
 
 export interface BaseSyncResponse {
   success: boolean;
