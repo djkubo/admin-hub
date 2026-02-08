@@ -11,6 +11,60 @@ const corsHeaders = {
 // deno-lint-ignore no-explicit-any
 type SupabaseClient = ReturnType<typeof createClient<any>>;
 
+// ============= SECURITY =============
+// This function reads/writes sensitive contact data. Require:
+// - an authenticated admin user (JWT + is_admin())
+// - OR service_role (for internal background chaining).
+function decodeJwtPayload(token: string): { sub?: string; exp?: number } | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    return JSON.parse(atob(parts[1]));
+  } catch {
+    return null;
+  }
+}
+
+async function verifyAdminOrServiceRole(req: Request): Promise<{ valid: boolean; isServiceRole: boolean; error?: string }> {
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return { valid: false, isServiceRole: false, error: "Missing Authorization header" };
+  }
+
+  const token = authHeader.replace("Bearer ", "");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (serviceRoleKey && token === serviceRoleKey) {
+    return { valid: true, isServiceRole: true };
+  }
+
+  const claims = decodeJwtPayload(token);
+  if (!claims?.sub) {
+    return { valid: false, isServiceRole: false, error: "Invalid token format" };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (claims.exp && now >= claims.exp) {
+    return { valid: false, isServiceRole: false, error: "Token expired" };
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
+  const { data: isAdmin, error } = await supabase.rpc("is_admin");
+  if (error) {
+    return { valid: false, isServiceRole: false, error: `Auth check failed: ${error.message}` };
+  }
+  if (!isAdmin) {
+    return { valid: false, isServiceRole: false, error: "Not an admin" };
+  }
+
+  return { valid: true, isServiceRole: false };
+}
+
 interface ManyChatSubscriber {
   id: string;
   email?: string;
@@ -200,6 +254,14 @@ async function checkIfPaused(supabase: SupabaseClient): Promise<boolean> {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
+  }
+
+  const auth = await verifyAdminOrServiceRole(req);
+  if (!auth.valid) {
+    return new Response(
+      JSON.stringify({ ok: false, success: false, error: auth.error || "Forbidden" }),
+      { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
   
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;

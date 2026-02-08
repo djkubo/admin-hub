@@ -25,6 +25,13 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
     return { valid: false, error: 'Missing Authorization header' };
   }
 
+  // Allow service_role for background chunking (EdgeRuntime.waitUntil triggers).
+  const token = authHeader.replace('Bearer ', '');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (serviceRoleKey && token === serviceRoleKey) {
+    return { valid: true, userId: 'service_role' };
+  }
+
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 
