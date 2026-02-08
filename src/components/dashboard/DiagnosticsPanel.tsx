@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeWithAdminKey } from "@/lib/adminApi";
@@ -15,6 +15,7 @@ import {
   Shield, 
   AlertTriangle, 
   CheckCircle, 
+  PauseCircle,
   XCircle, 
   RefreshCw, 
   Play,
@@ -87,6 +88,13 @@ const getStatusBadge = (status: string) => {
       return <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px] md:text-xs"><CheckCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> OK</Badge>;
     case 'running':
       return <Badge className="bg-zinc-800 text-foreground text-[10px] md:text-xs"><Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> En progreso</Badge>;
+    case 'paused':
+      return <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs"><PauseCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Pausado</Badge>;
+    case 'skipped':
+      return <Badge className="bg-zinc-800 text-muted-foreground text-[10px] md:text-xs">Omitido</Badge>;
+    case 'cancelled':
+    case 'canceled':
+      return <Badge className="bg-zinc-800 text-muted-foreground text-[10px] md:text-xs">Cancelado</Badge>;
     case 'warning':
       return <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs"><AlertTriangle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Advertencia</Badge>;
     case 'critical':
@@ -101,22 +109,23 @@ const getStatusBadge = (status: string) => {
 };
 
 // Sync Health Panel Component
-function SyncHealthPanel() {
-  const { data: syncRuns = [], isLoading } = useQuery({
+function SyncHealthPanel({ enabled }: { enabled: boolean }) {
+  const { data: syncRuns = [], isLoading, error: syncRunsError } = useQuery({
     queryKey: ['sync-runs-health'],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('sync_runs')
-        .select('*')
+        .select('id, source, status, started_at, completed_at, total_fetched, total_inserted, total_skipped, error_message')
         .order('started_at', { ascending: false })
         .limit(50);
       if (error) throw error;
       return data as SyncRun[];
     },
-    refetchInterval: 30000
+    enabled,
+    refetchInterval: enabled ? 30000 : false
   });
 
-  const { data: webhookStats = [] } = useQuery({
+  const { data: webhookStats = [], error: webhookError } = useQuery({
     queryKey: ['webhook-stats'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -138,7 +147,8 @@ function SyncHealthPanel() {
         count: data.count,
         types: Array.from(data.types).slice(0, 3)
       }));
-    }
+    },
+    enabled,
   });
 
   const syncBySource = syncRuns.reduce((acc, run) => {
@@ -146,6 +156,19 @@ function SyncHealthPanel() {
     acc[run.source].push(run);
     return acc;
   }, {} as Record<string, SyncRun[]>);
+
+  if (!enabled) {
+    return (
+      <Card>
+        <CardHeader className="p-4 md:p-6">
+          <CardTitle className="text-base md:text-lg">Salud de sincronización</CardTitle>
+          <CardDescription className="text-xs md:text-sm">
+            Requiere permisos de administrador.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   if (isLoading) {
     return <div className="flex items-center justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -160,13 +183,18 @@ function SyncHealthPanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4 md:space-y-6">
+        {(syncRunsError || webhookError) && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            No se pudo cargar el estado de sincronización. Revisa permisos admin (RLS) y vuelve a intentar.
+          </div>
+        )}
+
         {/* Last Sync by Source - Cards */}
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
-          {['stripe', 'paypal', 'csv'].map(source => {
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
+          {['stripe', 'paypal', 'ghl', 'manychat', 'csv'].map(source => {
             const runs = syncBySource[source] || [];
             const lastRun = runs[0];
             const last7dRuns = runs.filter(r => new Date(r.started_at) > subDays(new Date(), 7));
-            const totalInserted = last7dRuns.reduce((sum, r) => sum + (r.total_inserted || 0), 0);
             
             return (
               <div key={source} className="p-3 rounded-lg border border-border/50 bg-muted/30 touch-feedback">
@@ -279,6 +307,54 @@ export default function DiagnosticsPanel() {
     }
   })();
 
+  const { data: isAdmin, isLoading: loadingAdmin, error: adminError } = useQuery({
+    queryKey: ['is-admin'],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('is_admin');
+      if (error) throw error;
+      return Boolean(data);
+    },
+    staleTime: 60_000,
+  });
+
+  const { data: timezoneSetting, isLoading: loadingTimezone } = useQuery({
+    queryKey: ['system-timezone'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('system_settings')
+        .select('value')
+        .eq('key', 'timezone')
+        .maybeSingle();
+      if (error) throw error;
+      return (data?.value as string | null) ?? null;
+    },
+    enabled: isAdmin === true,
+    staleTime: 60_000,
+  });
+
+  const timezoneLabel = useMemo(() => {
+    const raw = timezoneSetting || "";
+    const map: Record<string, string> = {
+      "America/Mexico_City": "CDMX (CST)",
+      "America/New_York": "NY (EST)",
+      "America/Los_Angeles": "LA (PST)",
+      "America/Chicago": "Chicago (CST)",
+      "America/Bogota": "Bogotá (COT)",
+      "America/Lima": "Lima (PET)",
+      "America/Buenos_Aires": "Buenos Aires (ART)",
+      "Europe/Madrid": "Madrid (CET)",
+      "UTC": "UTC",
+    };
+
+    if (raw) return map[raw] || raw;
+
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "—";
+    } catch {
+      return "—";
+    }
+  }, [timezoneSetting]);
+
   const repairApp = async () => {
     const confirmed = window.confirm(
       "Esto limpiará el cache (PWA/Service Worker) y recargará la app.\n\nNo borra tu sesión, pero puede tomar unos segundos."
@@ -310,16 +386,17 @@ export default function DiagnosticsPanel() {
     }
   };
 
-  const { data: qualityChecks = [], isLoading: loadingChecks, refetch: refetchChecks } = useQuery({
+  const { data: qualityChecks = [], isLoading: loadingChecks, error: checksError, refetch: refetchChecks } = useQuery({
     queryKey: ['data-quality-checks'],
     queryFn: async () => {
       const { data, error } = await supabase.rpc('data_quality_checks');
       if (error) throw error;
       return data as DataQualityCheck[];
-    }
+    },
+    enabled: isAdmin === true,
   });
 
-  const { data: reconciliationRuns = [], isLoading: loadingReconciliation } = useQuery({
+  const { data: reconciliationRuns = [], isLoading: loadingReconciliation, error: reconciliationError } = useQuery({
     queryKey: ['reconciliation-runs'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -329,10 +406,11 @@ export default function DiagnosticsPanel() {
         .limit(20);
       if (error) throw error;
       return data as ReconciliationRun[];
-    }
+    },
+    enabled: isAdmin === true,
   });
 
-  const { data: rebuildLogs = [], isLoading: loadingRebuilds } = useQuery({
+  const { data: rebuildLogs = [], isLoading: loadingRebuilds, error: rebuildsError } = useQuery({
     queryKey: ['rebuild-logs'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -342,15 +420,21 @@ export default function DiagnosticsPanel() {
         .limit(10);
       if (error) throw error;
       return data as RebuildLog[];
-    }
+    },
+    enabled: isAdmin === true,
   });
 
-  const hasCriticalIssues = qualityChecks.some(c => c.status === 'critical');
-  const hasWarnings = qualityChecks.some(c => c.status === 'warning');
+  const checksLoaded = isAdmin === true && !loadingChecks && !checksError;
+  const hasCriticalIssues = checksLoaded ? qualityChecks.some(c => c.status === 'critical') : false;
+  const hasWarnings = checksLoaded ? qualityChecks.some(c => c.status === 'warning') : false;
 
   const runReconciliation = async () => {
     setIsReconciling(true);
     try {
+      if (isAdmin !== true) {
+        throw new Error('No autorizado (se requieren permisos de admin)');
+      }
+
       const endDate = new Date();
       let startDate: Date;
       
@@ -373,6 +457,19 @@ export default function DiagnosticsPanel() {
         start_date: format(startDate, 'yyyy-MM-dd'),
         end_date: format(endDate, 'yyyy-MM-dd')
       });
+
+      if (!data || (data as any)?.ok === false || (data as any)?.success === false) {
+        const msg = (data as any)?.error || (data as any)?.message || 'No se pudo ejecutar la reconciliación';
+        throw new Error(msg);
+      }
+
+      if (
+        typeof (data as any)?.status !== 'string' ||
+        typeof (data as any)?.difference !== 'number' ||
+        typeof (data as any)?.difference_pct !== 'number'
+      ) {
+        throw new Error('Respuesta inesperada de reconcile-metrics');
+      }
 
       queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] });
       
@@ -427,10 +524,17 @@ export default function DiagnosticsPanel() {
   const runAIAudit = async () => {
     setIsAnalyzing(true);
     try {
+      if (isAdmin !== true) {
+        throw new Error('No autorizado (se requieren permisos de admin)');
+      }
+
       const [salesData, qualityData] = await Promise.all([
         supabase.rpc('kpi_sales', { p_range: '30d' }),
-        supabase.rpc('data_quality_checks')
+        supabase.rpc('data_quality_checks'),
       ]);
+
+      if (salesData.error) throw salesData.error;
+      if (qualityData.error) throw qualityData.error;
 
       const prompt = `Analiza estos datos de métricas y calidad de datos de un SaaS:
 
@@ -449,6 +553,10 @@ Por favor:
 Responde en español, de forma concisa.`;
 
       const data = await invokeWithAdminKey<{ analysis?: string; message?: string }>('analyze-business', { prompt, context: 'diagnostics' });
+      if (!data || (data as any)?.ok === false || (data as any)?.success === false) {
+        const msg = (data as any)?.error || (data as any)?.message || 'No se pudo generar análisis';
+        throw new Error(msg);
+      }
       setAiAnalysis(data.analysis || data.message || 'No se pudo generar análisis');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -474,12 +582,31 @@ Responde en español, de forma concisa.`;
         </div>
         <Button 
           onClick={async () => {
-            await refetchChecks();
-            toast.success("Actualizado");
+            if (isAdmin !== true) {
+              toast.error("No autorizado", { description: "Se requieren permisos de administrador." });
+              return;
+            }
+
+            const res = await refetchChecks();
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] }),
+              queryClient.invalidateQueries({ queryKey: ['rebuild-logs'] }),
+              queryClient.invalidateQueries({ queryKey: ['sync-runs-health'] }),
+              queryClient.invalidateQueries({ queryKey: ['webhook-stats'] }),
+              queryClient.invalidateQueries({ queryKey: ['system-timezone'] }),
+            ]);
+
+            if (res.error) {
+              toast.error("No se pudo actualizar", {
+                description: res.error instanceof Error ? res.error.message : "Error desconocido",
+              });
+            } else {
+              toast.success("Actualizado");
+            }
           }} 
           variant="outline" 
           size="sm"
-          disabled={loadingChecks}
+          disabled={loadingChecks || loadingAdmin || isAdmin !== true}
           className="self-start sm:self-auto touch-feedback"
         >
           <RefreshCw className={`w-4 h-4 ${loadingChecks ? 'animate-spin' : ''}`} />
@@ -514,6 +641,18 @@ Responde en español, de forma concisa.`;
                   <Badge className="bg-red-500/20 text-red-400 text-[10px]">Falta</Badge>
                 )}
               </div>
+              <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span>Admin:</span>
+                {loadingAdmin ? (
+                  <Badge className="bg-zinc-800 text-foreground text-[10px]">
+                    <Loader2 className="w-2.5 h-2.5 mr-0.5 animate-spin" /> Verificando
+                  </Badge>
+                ) : isAdmin ? (
+                  <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px]">OK</Badge>
+                ) : (
+                  <Badge className="bg-amber-500/20 text-amber-400 text-[10px]">No</Badge>
+                )}
+              </div>
             </div>
           </div>
 
@@ -538,16 +677,32 @@ Responde en español, de forma concisa.`;
         </CardContent>
       </Card>
 
-      {/* Critical Alert Banner */}
-      {hasCriticalIssues && (
-        <Alert variant="destructive" className="py-3">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle className="text-sm">Problemas detectados</AlertTitle>
-          <AlertDescription className="text-xs">
-            Las métricas pueden no ser precisas.
+      {(adminError || (isAdmin === false && !loadingAdmin)) && (
+        <Alert className="border-orange-500/50 bg-orange-500/10 py-3">
+          <AlertTriangle className="h-4 w-4 text-orange-400" />
+          <AlertTitle className="text-sm text-orange-400">
+            {adminError ? "No se pudieron verificar permisos" : "Permisos insuficientes"}
+          </AlertTitle>
+          <AlertDescription className="text-xs text-orange-300">
+            {adminError
+              ? (adminError instanceof Error ? adminError.message : "Error desconocido")
+              : "Este panel requiere un usuario administrador (is_admin())."}
           </AlertDescription>
         </Alert>
       )}
+
+      {isAdmin === true && (
+        <>
+          {/* Critical Alert Banner */}
+          {hasCriticalIssues && (
+            <Alert variant="destructive" className="py-3">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle className="text-sm">Problemas detectados</AlertTitle>
+              <AlertDescription className="text-xs">
+                Las métricas pueden no ser precisas.
+              </AlertDescription>
+            </Alert>
+          )}
 
       {/* Sync Required Alert - Show when reconciliation has high difference */}
       {reconciliationRuns[0] && reconciliationRuns[0].status === 'fail' && reconciliationRuns[0].difference_pct >= 50 && (
@@ -563,14 +718,30 @@ Responde en español, de forma concisa.`;
 
       {/* Summary Cards - 2x2 on mobile */}
       <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
-        <Card className={hasCriticalIssues ? 'border-red-500/50' : hasWarnings ? 'border-amber-500/50' : 'border-emerald-500/50'}>
+        <Card className={
+          checksError
+            ? 'border-red-500/50'
+            : loadingChecks
+              ? 'border-border/50'
+              : hasCriticalIssues
+                ? 'border-red-500/50'
+                : hasWarnings
+                  ? 'border-amber-500/50'
+                  : 'border-emerald-500/50'
+        }>
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
               <Database className="w-4 h-4 md:w-5 md:h-5 text-primary" />
               <span className="font-medium text-xs md:text-sm">Datos</span>
             </div>
             <div className="flex items-center gap-1.5">
-              {hasCriticalIssues ? (
+              {loadingChecks ? (
+                <Badge className="bg-zinc-800 text-foreground text-[10px] md:text-xs">
+                  <Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> Cargando
+                </Badge>
+              ) : checksError ? (
+                <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs">Error</Badge>
+              ) : hasCriticalIssues ? (
                 <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs">Crítico</Badge>
               ) : hasWarnings ? (
                 <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs">Advertencia</Badge>
@@ -594,6 +765,11 @@ Responde en español, de forma concisa.`;
                   {format(new Date(reconciliationRuns[0].created_at), 'dd/MM')}
                 </span>
               </div>
+            ) : reconciliationError ? (
+              <div className="flex flex-col gap-1">
+                {getStatusBadge('error')}
+                <span className="text-[10px] text-muted-foreground">Sin acceso</span>
+              </div>
             ) : (
               <span className="text-xs text-muted-foreground">N/A</span>
             )}
@@ -613,6 +789,11 @@ Responde en español, de forma concisa.`;
                   {rebuildLogs[0].rows_processed} filas
                 </span>
               </div>
+            ) : rebuildsError ? (
+              <div className="flex flex-col gap-1">
+                {getStatusBadge('error')}
+                <span className="text-[10px] text-muted-foreground">Sin acceso</span>
+              </div>
             ) : (
               <span className="text-xs text-muted-foreground">N/A</span>
             )}
@@ -625,7 +806,9 @@ Responde en español, de forma concisa.`;
               <Calendar className="w-4 h-4 md:w-5 md:h-5" />
               <span className="font-medium text-xs md:text-sm">Zona</span>
             </div>
-            <Badge variant="outline" className="text-[10px] md:text-xs">CDMX</Badge>
+            <Badge variant="outline" className="text-[10px] md:text-xs">
+              {loadingTimezone ? '...' : timezoneLabel}
+            </Badge>
           </CardContent>
         </Card>
       </div>
@@ -659,7 +842,7 @@ Responde en español, de forma concisa.`;
 
         {/* Sync Health Tab */}
         <TabsContent value="sync-health">
-          <SyncHealthPanel />
+          <SyncHealthPanel enabled={isAdmin === true} />
         </TabsContent>
 
         {/* Data Quality Tab */}
@@ -679,6 +862,11 @@ Responde en español, de forma concisa.`;
               </div>
             </CardHeader>
             <CardContent className="p-4 md:p-6 pt-0 md:pt-0">
+              {checksError && (
+                <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  No se pudieron cargar los checks de calidad. Revisa permisos admin (RLS) y vuelve a intentar.
+                </div>
+              )}
               {loadingChecks ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="w-6 h-6 animate-spin" />
@@ -717,6 +905,11 @@ Responde en español, de forma concisa.`;
               </CardDescription>
             </CardHeader>
             <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4">
+              {reconciliationError && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  No se pudieron cargar las reconciliaciones. Revisa permisos admin (RLS) y vuelve a intentar.
+                </div>
+              )}
               {/* Controls - Stack on mobile */}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4 p-3 md:p-4 rounded-lg bg-muted/50">
                 <div className="flex gap-2">
@@ -790,12 +983,17 @@ Responde en español, de forma concisa.`;
         <TabsContent value="rebuild">
           <Card>
             <CardHeader className="p-4 md:p-6">
-              <CardTitle className="text-base md:text-lg">Rebuild Metrics</CardTitle>
+              <CardTitle className="text-base md:text-lg">Reconstrucción de métricas</CardTitle>
               <CardDescription className="text-xs md:text-sm">
                 Recalcula métricas determinísticas
               </CardDescription>
             </CardHeader>
             <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4">
+              {rebuildsError && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  No se pudieron cargar los logs de reconstrucción. Revisa permisos admin (RLS) y vuelve a intentar.
+                </div>
+              )}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4 p-3 md:p-4 rounded-lg bg-muted/50">
                 <Button 
                   onClick={() => rebuildMetrics.mutate()} 
@@ -808,7 +1006,7 @@ Responde en español, de forma concisa.`;
                   ) : (
                     <RefreshCw className="w-4 h-4" />
                   )}
-                  <span className="ml-2">Rebuild</span>
+                  <span className="ml-2">Reconstruir</span>
                 </Button>
 
                 <Button 
@@ -823,16 +1021,16 @@ Responde en español, de forma concisa.`;
                   ) : (
                     <Play className="w-4 h-4" />
                   )}
-                  <span className="ml-2">Promote</span>
+                  <span className="ml-2">Promover</span>
                 </Button>
               </div>
 
               <div className="p-3 rounded-lg border border-border/50 bg-muted/30">
                 <h4 className="font-medium text-sm mb-2">📋 Proceso</h4>
                 <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-1">
-                  <li>Click "Rebuild" → staging</li>
+                  <li>Click "Reconstruir" → staging</li>
                   <li>Revisa el diff</li>
-                  <li>Click "Promote" → current</li>
+                  <li>Click "Promover" → current</li>
                 </ol>
               </div>
 
@@ -876,7 +1074,7 @@ Responde en español, de forma concisa.`;
             <CardHeader className="p-4 md:p-6">
               <CardTitle className="flex items-center gap-2 text-base md:text-lg">
                 <Brain className="w-4 h-4 md:w-5 md:h-5" />
-                AI Audit
+                Auditoría IA
               </CardTitle>
               <CardDescription className="text-xs md:text-sm">
                 Diagnóstico inteligente (no calcula)
@@ -889,7 +1087,7 @@ Responde en español, de forma concisa.`;
                 ) : (
                   <Brain className="w-4 h-4" />
                 )}
-                <span className="ml-2">Ejecutar AI</span>
+                <span className="ml-2">Ejecutar auditoría</span>
               </Button>
 
               {aiAnalysis && (
@@ -922,7 +1120,7 @@ Responde en español, de forma concisa.`;
           <div className="flex items-center gap-2 md:gap-3">
             <FileText className="w-4 h-4 md:w-5 md:h-5 text-primary shrink-0" />
             <div className="min-w-0">
-              <h4 className="font-medium text-sm">Docs</h4>
+              <h4 className="font-medium text-sm">Documentación</h4>
               <p className="text-[10px] md:text-xs text-muted-foreground truncate">
                 /docs/metrics_definition.md
               </p>
@@ -930,6 +1128,8 @@ Responde en español, de forma concisa.`;
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 }
