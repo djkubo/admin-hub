@@ -157,10 +157,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Periodic refresh while the tab is visible.
+    // With `autoRefreshToken: false` on the Supabase client, we need a single place that
+    // refreshes safely (locked) to avoid random logouts from token-rotation races.
+    const intervalId = window.setInterval(() => {
+      if (!mounted) return;
+      if (document.visibilityState !== 'visible') return;
+
+      getValidSession({ refreshIfExpiringWithinMs: 10 * 60 * 1000 }).then((nextSession) => {
+        if (!mounted) return;
+        if (nextSession) {
+          sessionRef.current = nextSession;
+          setSession(nextSession);
+          setUser(nextSession.user);
+        }
+      });
+    }, 5 * 60 * 1000);
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearInterval(intervalId);
     };
   }, []); // Empty dependencies - run once on mount
 

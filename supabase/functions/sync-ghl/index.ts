@@ -513,34 +513,6 @@ Deno.serve(async (req) => {
     const ghlApiKey = Deno.env.get('GHL_API_KEY');
     const ghlLocationId = Deno.env.get('GHL_LOCATION_ID');
 
-    // ============= KILL SWITCH: Check if GHL is paused =============
-    const { data: ghlPausedConfig } = await supabase
-      .from('system_settings')
-      .select('value')
-      .eq('key', 'ghl_paused')
-      .single();
-
-    if (ghlPausedConfig?.value === 'true') {
-      logger.info('🛑 GHL PAUSED - Manual sync blocked');
-      return new Response(
-        JSON.stringify({ 
-          ok: false, 
-          success: false,
-          status: 'paused',
-          error: 'GoHighLevel está pausado. Actívalo desde Settings → Configuración del Sistema.' 
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    // ================================================================
-
-    if (!ghlApiKey || !ghlLocationId) {
-      return new Response(
-        JSON.stringify({ ok: false, error: 'GHL_API_KEY and GHL_LOCATION_ID secrets required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
     // Parse request
     let dryRun = false;
     let stageOnly = false; // NEW: Stage-only mode
@@ -566,6 +538,19 @@ Deno.serve(async (req) => {
 
     // ============ TEST ONLY MODE - Just verify API connection ============
     if (testOnly) {
+      if (!ghlApiKey || !ghlLocationId) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            success: false,
+            status: 'error',
+            error: 'GHL_API_KEY and GHL_LOCATION_ID secrets required',
+            testOnly: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
       logger.info('Test-only mode: Verifying GHL API connection');
       try {
         const testResponse = await fetch(
@@ -609,6 +594,34 @@ Deno.serve(async (req) => {
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+    }
+
+    // ============= KILL SWITCH: Check if GHL is paused =============
+    const { data: ghlPausedConfig } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'ghl_paused')
+      .single();
+
+    if (ghlPausedConfig?.value === 'true') {
+      logger.info('🛑 GHL PAUSED - Manual sync blocked');
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          success: false,
+          status: 'paused',
+          error: 'GoHighLevel está pausado. Actívalo desde Settings → Configuración del Sistema.' 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    // ================================================================
+
+    if (!ghlApiKey || !ghlLocationId) {
+      return new Response(
+        JSON.stringify({ ok: false, error: 'GHL_API_KEY and GHL_LOCATION_ID secrets required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // ============ FORCE CANCEL ALL SYNCS ============

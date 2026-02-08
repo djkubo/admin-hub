@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, CheckCircle, XCircle, RefreshCw, ExternalLink, Zap, CreditCard, MessageCircle, Users, Bot } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, PauseCircle, RefreshCw, ExternalLink, Zap, CreditCard, MessageCircle, Users, Bot } from 'lucide-react';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 
@@ -34,6 +34,7 @@ const integrations: Integration[] = [
     name: 'Twilio',
     icon: MessageCircle,
     secrets: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER'],
+    testEndpoint: 'test-twilio',
   },
   {
     id: 'ghl',
@@ -53,7 +54,7 @@ const integrations: Integration[] = [
 
 export function IntegrationsStatusPanel() {
   const [testing, setTesting] = useState<string | null>(null);
-  const [statuses, setStatuses] = useState<Record<string, 'connected' | 'error' | 'unknown'>>({});
+  const [statuses, setStatuses] = useState<Record<string, 'connected' | 'error' | 'unknown' | 'paused'>>({});
 
   const testConnection = async (integration: Integration) => {
     if (!integration.testEndpoint) {
@@ -71,12 +72,26 @@ export function IntegrationsStatusPanel() {
     }, 30000);
     
     try {
-      const result = await invokeWithAdminKey<{ success?: boolean; ok?: boolean; error?: string; testOnly?: boolean }>(
+      const result = await invokeWithAdminKey<{
+        success?: boolean;
+        ok?: boolean;
+        error?: string;
+        status?: string;
+        paused?: boolean;
+        testOnly?: boolean;
+      }>(
         integration.testEndpoint,
         { testOnly: true } // Fast health check mode - no sync, just API ping
       );
 
       clearTimeout(timeoutId);
+
+      const isPaused = result?.status === 'paused' || result?.paused === true;
+      if (isPaused) {
+        setStatuses(prev => ({ ...prev, [integration.id]: 'paused' }));
+        toast.info(`${integration.name}: ${result?.error || 'Pausado'}`);
+        return;
+      }
 
       if (result?.success || result?.ok) {
         setStatuses(prev => ({ ...prev, [integration.id]: 'connected' }));
@@ -111,6 +126,15 @@ export function IntegrationsStatusPanel() {
         <Badge variant="success">
           <CheckCircle className="h-3 w-3 mr-1" />
           Conectado
+        </Badge>
+      );
+    }
+
+    if (status === 'paused') {
+      return (
+        <Badge variant="warning">
+          <PauseCircle className="h-3 w-3 mr-1" />
+          Pausado
         </Badge>
       );
     }

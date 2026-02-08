@@ -14,6 +14,8 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABL
   auth: {
     storage: localStorage,
     persistSession: true,
-    autoRefreshToken: true,
+    // Disable supabase-js internal auto-refresh to avoid refresh-token rotation races.
+    // We refresh manually via a single in-app lock in `src/lib/authSession.ts`.
+    autoRefreshToken: false,
   }
 });
