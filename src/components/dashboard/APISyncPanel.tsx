@@ -215,7 +215,12 @@ export function APISyncPanel() {
           queryClient.invalidateQueries({ queryKey: ['transactions'] });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
           setStripeSyncing(false);
-        } else if (data.status === 'error' || data.status === 'cancelled') {
+        } else if (data.status === 'paused') {
+          setStripeProgress(null);
+          setStripeResult({ success: false, error: 'Sync pausado' });
+          toast.warning('Stripe: Sincronización pausada', { id: 'stripe-sync' });
+          setStripeSyncing(false);
+        } else if (data.status === 'failed' || data.status === 'cancelled') {
           setStripeProgress(null);
           setStripeResult({ success: false, error: 'Sync failed or cancelled' });
           toast.error('Stripe: Sincronización falló', { id: 'stripe-sync' });
@@ -272,7 +277,12 @@ export function APISyncPanel() {
           queryClient.invalidateQueries({ queryKey: ['invoices'] });
           queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
           setInvoicesSyncing(false);
-        } else if (data.status === 'error' || data.status === 'cancelled') {
+        } else if (data.status === 'paused') {
+          setInvoicesProgress(null);
+          setInvoicesResult({ success: false, error: 'Sync pausado' });
+          toast.warning('Facturas: Sincronización pausada', { id: 'invoices-sync' });
+          setInvoicesSyncing(false);
+        } else if (data.status === 'failed' || data.status === 'cancelled') {
           setInvoicesProgress(null);
           setInvoicesResult({ success: false, error: 'Sync failed or cancelled' });
           toast.error('Facturas: Sincronización falló', { id: 'invoices-sync' });
@@ -637,6 +647,8 @@ export function APISyncPanel() {
 
       // Check if it's running in background
       if (data.status === 'running' && data.syncRunId) {
+        // Immediate UI feedback; polling will fill real numbers.
+        setStripeProgress({ current: 0, total: 0 });
         toast.info('Stripe: Sincronización iniciada en background...', { id: 'stripe-sync' });
         pollSyncProgress(data.syncRunId, 'stripe');
         // Don't setStripeSyncing(false) - polling will handle it
@@ -714,6 +726,7 @@ export function APISyncPanel() {
 
       // Check if it's running in background with auto-continuation
       if ((data.status === 'running' || data.status === 'continuing') && data.syncRunId) {
+        setPaypalProgress({ current: 0, total: 0 });
         toast.info('PayPal: Sincronización iniciada en background...', { id: 'paypal-sync' });
         pollPayPalProgress(data.syncRunId);
         // Don't setPaypalSyncing(false) - polling will handle it

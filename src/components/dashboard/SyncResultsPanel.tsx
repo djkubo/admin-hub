@@ -120,8 +120,9 @@ export function SyncResultsPanel() {
 
   useEffect(() => {
     fetchRuns();
-    // OPTIMIZATION: Reduced polling from 5s to 30s - Realtime handles instant updates
-    const interval = setInterval(fetchRuns, 30000);
+    // If realtime isn't enabled in this environment, polling is the only feedback.
+    // Poll faster while something is running so progress feels "live".
+    const interval = setInterval(fetchRuns, 8000);
     return () => clearInterval(interval);
   }, []);
 
