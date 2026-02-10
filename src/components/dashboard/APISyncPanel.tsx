@@ -969,453 +969,333 @@ export function APISyncPanel() {
     await syncPayPal('allHistory');
   };
 
+  const getResultBadge = (r: SyncResult | null) => {
+    if (!r) return null;
+    return r.success ? (
+      <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 gap-1">
+        <CheckCircle className="h-3 w-3" /> OK
+      </Badge>
+    ) : (
+      <Badge className="bg-red-500/15 text-red-400 border border-red-500/25 gap-1">
+        <AlertCircle className="h-3 w-3" /> Error
+      </Badge>
+    );
+  };
+
+  const isAnyRunning =
+    stripeSyncing ||
+    paypalSyncing ||
+    invoicesSyncing ||
+    ghlSyncing ||
+    manychatSyncing ||
+    Boolean(stripeProgress || paypalProgress || invoicesProgress || ghlProgress || manychatProgress);
+
   // Each sync can run independently - no global blocking
   return (
-    <Card className="bg-card border-border/50">
-      <CardHeader className="pb-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Zap className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <CardTitle className="text-lg text-white">Sincronización API</CardTitle>
-            <CardDescription>
-              Importa automáticamente todas las transacciones desde Stripe y PayPal
-            </CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Stripe Progress indicator */}
-        {stripeProgress && (
-          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-white">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Stripe: {stripeProgress.current.toLocaleString()} transacciones sincronizadas</span>
+    <div className="space-y-4">
+      <Card className="border-border/50">
+        <CardHeader className="p-4 md:p-6">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-lg bg-primary/10 p-2">
+                <Zap className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-base md:text-lg">Sincronización API</CardTitle>
+                <CardDescription className="text-xs md:text-sm">
+                  Ejecuta Stripe, PayPal, Facturas y CRM. El progreso se refleja en “Estado de Sincronización” arriba.
+                </CardDescription>
+              </div>
             </div>
-            <div className="flex items-center gap-2 text-xs text-zinc-400">
-              {stripeProgress.page && (
-                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
-                  Página {stripeProgress.page}
+
+            <div className="flex items-center gap-2">
+              {isAnyRunning ? (
+                <Badge className="bg-blue-500/15 text-blue-400 border border-blue-500/25">
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  En progreso
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Listo
                 </Badge>
               )}
             </div>
-            <Progress 
-              value={stripeProgress.page ? Math.min(stripeProgress.page * 0.1, 95) : 50} 
-              className="h-2"
-            />
-            <p className="text-xs text-zinc-500">
-              Procesando en background... Actualizando cada 3s
-            </p>
           </div>
-        )}
-
-        {/* PayPal Progress indicator */}
-        {paypalProgress && (
-          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-white">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>PayPal: {paypalProgress.current.toLocaleString()} transacciones sincronizadas</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-zinc-400">
-              {paypalProgress.chunkIndex !== undefined && paypalProgress.totalChunks && (
-                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
-                  Chunk {paypalProgress.chunkIndex + 1}/{paypalProgress.totalChunks}
-                </Badge>
-              )}
-              {paypalProgress.page && (
-                <Badge variant="outline" className="text-zinc-300 border-zinc-600">
-                  Página {paypalProgress.page}
-                </Badge>
-              )}
-            </div>
-            <Progress 
-              value={paypalProgress.totalChunks ? ((paypalProgress.chunkIndex || 0) + 1) / paypalProgress.totalChunks * 100 : 50} 
-              className="h-2"
-            />
-            <p className="text-xs text-zinc-500">
-              Procesando en background... Actualizando cada 3s
-            </p>
-          </div>
-        )}
-
-        {/* GHL Progress indicator */}
-        {ghlProgress && (
-          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-white">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>GoHighLevel: {ghlProgress.current.toLocaleString()} contactos descargados</span>
-            </div>
-            <Progress 
-              value={100} 
-              className="h-2 animate-pulse"
-            />
-            <p className="text-xs text-zinc-500">
-              Descargando a staging... Actualizando cada 3s
-            </p>
-          </div>
-        )}
-
-        {/* ManyChat Progress indicator */}
-        {manychatProgress && (
-          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-white">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>ManyChat: {manychatProgress.current.toLocaleString()} contactos sincronizados</span>
-            </div>
-            <Progress 
-              value={100} 
-              className="h-2 animate-pulse"
-            />
-            <p className="text-xs text-zinc-500">
-              Procesando... Actualizando cada 3s
-            </p>
-          </div>
-        )}
-
-        {/* Invoices Progress indicator */}
-        {invoicesProgress && (
-          <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700 space-y-2">
-            <div className="flex items-center gap-2 text-sm text-white">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Facturas: {invoicesProgress.current.toLocaleString()} sincronizadas</span>
-            </div>
-            <Progress 
-              value={100} 
-              className="h-2 animate-pulse"
-            />
-            <p className="text-xs text-zinc-500">
-              Procesando en background... Actualizando cada 3s
-            </p>
-          </div>
-        )}
-
-        {/* Stripe Sync */}
-        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <span className="text-white font-bold text-sm">S</span>
-              </div>
-              <div>
-                <h4 className="font-medium text-white">Stripe</h4>
-                <p className="text-xs text-zinc-400">
-                  {stripeResult?.success 
-                    ? `${stripeResult.synced_transactions} transacciones (${stripeResult.paid_count} pagos, ${stripeResult.failed_count} fallidos)`
-                    : 'Sincroniza desde Stripe API'
-                  }
+        </CardHeader>
+        <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4">
+          {(stripeProgress || paypalProgress || invoicesProgress || ghlProgress || manychatProgress) && (
+            <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Progreso en vivo
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  Actualiza cada ~3s
                 </p>
               </div>
-            </div>
-            {stripeResult && (
-              <Badge variant={stripeResult.success ? 'default' : 'destructive'} className="gap-1">
-                {stripeResult.success ? (
-                  <><CheckCircle className="h-3 w-3" /> OK</>
-                ) : (
-                  <><AlertCircle className="h-3 w-3" /> Error</>
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {stripeProgress && (
+                  <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Stripe</p>
+                      <Badge variant="outline" className="text-[10px]">
+                        {stripeProgress.page ? `Página ${stripeProgress.page}` : 'Procesando'}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {stripeProgress.current.toLocaleString()} procesadas
+                    </p>
+                    <Progress
+                      value={stripeProgress.page ? Math.min(stripeProgress.page * 0.1, 95) : 20}
+                      className="mt-2 h-2"
+                    />
+                  </div>
                 )}
-              </Badge>
-            )}
-          </div>
-          
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncStripe('last24h')}
-              disabled={stripeSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
-            >
-              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
-              Últimas 24h
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncStripe('last31d')}
-              disabled={stripeSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
-            >
-              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              31 días
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncStripe('all6months')}
-              disabled={stripeSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${stripeSyncing ? 'animate-pulse' : ''}`}
-            >
-              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              6 Meses
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => syncStripe('allHistory')}
-              disabled={stripeSyncing}
-              className={`gap-2 bg-primary hover:bg-primary/90 ${stripeSyncing ? 'animate-pulse' : ''}`}
-            >
-              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
-              Todo Historial
-            </Button>
-          </div>
-        </div>
 
-        {/* PayPal Sync */}
-        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <span className="text-white font-bold text-sm">P</span>
-              </div>
-              <div>
-                <h4 className="font-medium text-white">PayPal</h4>
-                <p className="text-xs text-zinc-400">
-                  {paypalResult?.success 
-                    ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
-                    : 'Sincroniza desde PayPal API'
-                  }
-                </p>
-              </div>
-            </div>
-            {paypalResult && (
-              <Badge variant={paypalResult.success ? 'default' : 'destructive'} className="gap-1">
-                {paypalResult.success ? (
-                  <><CheckCircle className="h-3 w-3" /> OK</>
-                ) : (
-                  <><AlertCircle className="h-3 w-3" /> Error</>
+                {paypalProgress && (
+                  <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">PayPal</p>
+                      <Badge variant="outline" className="text-[10px]">
+                        {paypalProgress.totalChunks
+                          ? `Chunk ${(paypalProgress.chunkIndex ?? 0) + 1}/${paypalProgress.totalChunks}`
+                          : paypalProgress.page
+                            ? `Pág ${paypalProgress.page}`
+                            : 'Procesando'}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {paypalProgress.current.toLocaleString()} procesadas
+                    </p>
+                    <Progress
+                      value={
+                        paypalProgress.totalChunks
+                          ? (((paypalProgress.chunkIndex ?? 0) + 1) / paypalProgress.totalChunks) * 100
+                          : 20
+                      }
+                      className="mt-2 h-2"
+                    />
+                  </div>
                 )}
-              </Badge>
-            )}
-          </div>
-          
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncPayPal('last24h')}
-              disabled={paypalSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
-            >
-              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
-              Últimas 24h
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncPayPal('last31d')}
-              disabled={paypalSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
-            >
-              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              31 días
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncPayPal('all6months')}
-              disabled={paypalSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${paypalSyncing ? 'animate-pulse' : ''}`}
-            >
-              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              6 Meses
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => syncPayPal('allHistory')}
-              disabled={paypalSyncing}
-              className={`gap-2 bg-primary hover:bg-primary/90 ${paypalSyncing ? 'animate-pulse' : ''}`}
-            >
-              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
-              Todo Historial
-            </Button>
-          </div>
-        </div>
 
-        {/* Invoices/Facturas Sync */}
-        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <FileText className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h4 className="font-medium text-white">Facturas Stripe</h4>
-                <p className="text-xs text-zinc-400">
-                  {invoicesResult?.success 
-                    ? invoicesResult.message
-                    : 'Sincroniza todas las facturas (draft, open, paid, void)'
-                  }
-                </p>
+                {invoicesProgress && (
+                  <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Facturas</p>
+                      <Badge variant="outline" className="text-[10px]">Procesando</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {invoicesProgress.current.toLocaleString()} procesadas
+                    </p>
+                    <Progress value={35} className="mt-2 h-2" />
+                  </div>
+                )}
+
+                {ghlProgress && (
+                  <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">GoHighLevel</p>
+                      <Badge variant="outline" className="text-[10px]">Staging</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {ghlProgress.current.toLocaleString()} descargados
+                    </p>
+                    <Progress value={60} className="mt-2 h-2" />
+                  </div>
+                )}
+
+                {manychatProgress && (
+                  <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">ManyChat</p>
+                      <Badge variant="outline" className="text-[10px]">Procesando</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {manychatProgress.current.toLocaleString()} procesados
+                    </p>
+                    <Progress value={60} className="mt-2 h-2" />
+                  </div>
+                )}
               </div>
             </div>
-            {invoicesResult && (
-              <Badge variant={invoicesResult.success ? 'default' : 'destructive'} className="gap-1">
-                {invoicesResult.success ? (
-                  <><CheckCircle className="h-3 w-3" /> OK</>
-                ) : (
-                  <><AlertCircle className="h-3 w-3" /> Error</>
-                )}
-              </Badge>
-            )}
-          </div>
-          
-          
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => syncInvoices('recent')}
-              disabled={invoicesSyncing}
-              className={`gap-2 border-zinc-700 text-white hover:bg-zinc-800 ${invoicesSyncing ? 'animate-pulse' : ''}`}
-            >
-              {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
-              Últimos 90 días
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => syncInvoices('full')}
-              disabled={invoicesSyncing}
-              className={`gap-2 bg-primary hover:bg-primary/90 ${invoicesSyncing ? 'animate-pulse' : ''}`}
-            >
-              {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
-              Todo Historial
-            </Button>
-          </div>
-          
-          <p className="text-xs text-zinc-500">
-            📄 Sincroniza facturas con status, paid_at, raw_data y client_id vinculado
-          </p>
-        </div>
-
-        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <MessageCircle className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h4 className="font-medium text-white">ManyChat</h4>
-                <p className="text-xs text-zinc-400">
-                  {manychatResult?.success 
-                    ? `${manychatResult.total_fetched} contactos (${manychatResult.total_inserted} nuevos, ${manychatResult.total_updated} actualizados)`
-                    : 'Sincroniza todos tus suscriptores de ManyChat'
-                  }
-                </p>
-              </div>
-            </div>
-            {manychatResult && (
-              <Badge variant={manychatResult.success ? 'default' : 'destructive'} className="gap-1">
-                {manychatResult.success ? (
-                  <><CheckCircle className="h-3 w-3" /> OK</>
-                ) : (
-                  <><AlertCircle className="h-3 w-3" /> Error</>
-                )}
-              </Badge>
-            )}
-          </div>
-          
-          <Button
-            onClick={syncManyChat}
-            disabled={manychatSyncing}
-            className={`w-full gap-2 bg-primary hover:bg-primary/90 ${manychatSyncing ? 'animate-pulse' : ''}`}
-          >
-            {manychatSyncing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Sincronizando contactos...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4" />
-                Importar Todos los Contactos
-              </>
-            )}
-          </Button>
-          
-          <p className="text-xs text-zinc-500">
-            📱 Importa suscriptores de Instagram, Messenger y WhatsApp. Unifica por email/phone.
-          </p>
-        </div>
-
-        {/* GoHighLevel Sync */}
-        <div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <Users className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h4 className="font-medium text-white">GoHighLevel</h4>
-                <p className="text-xs text-zinc-400">
-                  {ghlResult?.success 
-                    ? (ghlResult.message || `${ghlResult.total_fetched?.toLocaleString() || 0} contactos (${ghlResult.total_inserted?.toLocaleString() || 0} nuevos, ${ghlResult.total_updated?.toLocaleString() || 0} actualizados)`)
-                    : ghlResult?.error
-                      ? ghlResult.error
-                      : 'Sincroniza todos tus contactos de GHL (150k+ soportado)'
-                  }
-                </p>
-              </div>
-            </div>
-            {ghlResult && (
-              <Badge variant={ghlResult.success ? 'default' : 'destructive'} className="gap-1">
-                {ghlResult.success ? (
-                  <><CheckCircle className="h-3 w-3" /> OK</>
-                ) : (
-                  <><AlertCircle className="h-3 w-3" /> Error</>
-                )}
-              </Badge>
-            )}
-          </div>
-          
-          <Button
-            onClick={syncGHL}
-            disabled={ghlSyncing}
-            className={`w-full gap-2 bg-primary hover:bg-primary/90 ${ghlSyncing ? 'animate-pulse' : ''}`}
-          >
-            {ghlSyncing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Sincronizando contactos...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4" />
-                Importar Todos los Contactos
-              </>
-            )}
-          </Button>
-          
-          <p className="text-xs text-zinc-500">
-            📋 Importa contactos de tu CRM GoHighLevel. Unifica por email/phone.
-          </p>
-        </div>
-
-        {/* Sync All Button */}
-        <Button 
-          onClick={syncAllHistory}
-          disabled={stripeSyncing || paypalSyncing}
-          className={`w-full bg-primary hover:bg-primary/90 ${(stripeSyncing || paypalSyncing) ? 'animate-pulse' : ''}`}
-        >
-          {(stripeSyncing || paypalSyncing) ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Sincronizando...
-            </>
-          ) : (
-            <>
-              <History className="mr-2 h-4 w-4" />
-              Sincronizar TODO el Historial (Stripe + PayPal)
-            </>
           )}
-        </Button>
 
-        <p className="text-xs text-zinc-500 text-center">
-          💡 Backend procesa todo el historial automáticamente con paginación interna
-        </p>
-        
-        {/* Note: SyncResultsPanel is rendered at the /ops/sync page level to avoid duplication. */}
-      </CardContent>
-    </Card>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-lg border border-border/50 bg-muted/20 p-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-foreground">Acción rápida</p>
+              <p className="text-xs text-muted-foreground">
+                Para “traer todo”: corre Stripe y luego PayPal (secuencial para evitar límites).
+              </p>
+            </div>
+            <Button
+              onClick={syncAllHistory}
+              disabled={stripeSyncing || paypalSyncing}
+              size="sm"
+              className="gap-2 self-start sm:self-auto"
+            >
+              {(stripeSyncing || paypalSyncing) ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Sincronizando...
+                </>
+              ) : (
+                <>
+                  <History className="h-4 w-4" />
+                  Sincronizar TODO (Stripe + PayPal)
+                </>
+              )}
+            </Button>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card className="border-border/50">
+              <CardHeader className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Stripe</CardTitle>
+                    <CardDescription className="text-xs">
+                      {stripeResult?.success
+                        ? `${(stripeResult.synced_transactions ?? 0).toLocaleString()} transacciones (${stripeResult.paid_count ?? 0} pagos, ${stripeResult.failed_count ?? 0} fallidos)`
+                        : 'Sincroniza desde Stripe API'}
+                    </CardDescription>
+                  </div>
+                  {getResultBadge(stripeResult)}
+                </div>
+              </CardHeader>
+              <CardContent className="p-4 pt-0 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncStripe('last24h')} disabled={stripeSyncing} className="gap-2">
+                    {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+                    24h
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncStripe('last31d')} disabled={stripeSyncing} className="gap-2">
+                    {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    31d
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncStripe('all6months')} disabled={stripeSyncing} className="gap-2">
+                    {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    6m
+                  </Button>
+                  <Button size="sm" onClick={() => syncStripe('allHistory')} disabled={stripeSyncing} className="gap-2">
+                    {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
+                    Todo
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/50">
+              <CardHeader className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">PayPal</CardTitle>
+                    <CardDescription className="text-xs">
+                      {paypalResult?.success
+                        ? `${(paypalResult.synced_transactions ?? 0).toLocaleString()} transacciones (${paypalResult.paid_count ?? 0} pagos, ${paypalResult.failed_count ?? 0} fallidos)`
+                        : 'Sincroniza desde PayPal API'}
+                    </CardDescription>
+                  </div>
+                  {getResultBadge(paypalResult)}
+                </div>
+              </CardHeader>
+              <CardContent className="p-4 pt-0 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncPayPal('last24h')} disabled={paypalSyncing} className="gap-2">
+                    {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+                    24h
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncPayPal('last31d')} disabled={paypalSyncing} className="gap-2">
+                    {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    31d
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncPayPal('all6months')} disabled={paypalSyncing} className="gap-2">
+                    {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    6m
+                  </Button>
+                  <Button size="sm" onClick={() => syncPayPal('allHistory')} disabled={paypalSyncing} className="gap-2">
+                    {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
+                    Todo
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/50">
+              <CardHeader className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Facturas (Stripe)</CardTitle>
+                    <CardDescription className="text-xs">
+                      {invoicesResult?.success ? invoicesResult.message : 'Draft/open/paid/void (incluye raw_data y link a cliente)'}
+                    </CardDescription>
+                  </div>
+                  {getResultBadge(invoicesResult)}
+                </div>
+              </CardHeader>
+              <CardContent className="p-4 pt-0 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncInvoices('recent')} disabled={invoicesSyncing} className="gap-2">
+                    {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+                    90d
+                  </Button>
+                  <Button size="sm" onClick={() => syncInvoices('full')} disabled={invoicesSyncing} className="gap-2">
+                    {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                    Todo
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/50">
+              <CardHeader className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">CRM</CardTitle>
+                    <CardDescription className="text-xs">
+                      Sincroniza contactos a staging (y luego unifica en “Unificar identidad”).
+                    </CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="p-4 pt-0 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">ManyChat</p>
+                    {getResultBadge(manychatResult)}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {manychatResult?.success
+                      ? `${(manychatResult.total_inserted ?? 0).toLocaleString()} nuevos, ${(manychatResult.total_updated ?? 0).toLocaleString()} actualizados`
+                      : 'Importa suscriptores'}
+                  </p>
+                  <Button onClick={syncManyChat} disabled={manychatSyncing} size="sm" className="mt-2 w-full gap-2">
+                    {manychatSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}
+                    Importar
+                  </Button>
+                </div>
+
+                <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">GoHighLevel</p>
+                    {getResultBadge(ghlResult)}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {ghlResult?.success
+                      ? (ghlResult.message || 'Sincronizado')
+                      : ghlResult?.error
+                        ? ghlResult.error
+                        : '150k+ soportado'}
+                  </p>
+                  <Button onClick={syncGHL} disabled={ghlSyncing} size="sm" className="mt-2 w-full gap-2">
+                    {ghlSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
+                    Importar
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
