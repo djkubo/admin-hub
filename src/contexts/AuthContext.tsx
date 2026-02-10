@@ -46,6 +46,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    // Safety: never get stuck on "Verificando sesión..." forever.
+    // If auth initialization hangs (network/locks/weird browser), let the app render and
+    // allow the user to re-login.
+    const safetyTimeoutId = window.setTimeout(() => {
+      if (!mounted) return;
+      console.warn('[Auth] Initialization timeout - continuing without session');
+      setIsInitialized(true);
+      setLoading(false);
+    }, 10_000);
+
     const initializeAuth = async () => {
       try {
         // Check for an existing session FIRST before setting up listener.
@@ -66,6 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setIsInitialized(true);
           setLoading(false);
         }
+      } finally {
+        window.clearTimeout(safetyTimeoutId);
       }
     };
 
@@ -162,11 +174,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionRef.current = newSession;
         setSession(newSession);
         setUser(newSession?.user ?? null);
-        
-        // Ensure loading is false after any auth event
-        if (isInitialized) {
-          setLoading(false);
-        }
+
+        // Ensure loading is false after any auth event (avoid stale-closure bugs and hangs)
+        setLoading(false);
       }
     );
 
@@ -204,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       mounted = false;
+      window.clearTimeout(safetyTimeoutId);
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.clearInterval(intervalId);
