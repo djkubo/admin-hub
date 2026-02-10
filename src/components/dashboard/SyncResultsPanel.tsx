@@ -343,16 +343,9 @@ export function SyncResultsPanel() {
     setIsResuming(sync.id);
     try {
       const checkpoint = sync.checkpoint as Record<string, unknown> | null;
-      const cursor = checkpoint?.cursor as string | undefined;
+      const cursor = checkpoint?.cursor as unknown;
       const runningTotal = checkpoint?.runningTotal as number || 0;
       
-      if (!cursor) {
-        toast.error('No hay punto de reanudación', {
-          description: 'El sync no tiene un cursor guardado para continuar.',
-        });
-        return;
-      }
-
       // Map source to edge function - now pass syncRunId to resume existing run!
       let endpoint = '';
       let payload: Record<string, unknown> = {};
@@ -361,31 +354,71 @@ export function SyncResultsPanel() {
         case 'stripe':
           endpoint = 'fetch-stripe';
           // Pass the sync run ID so we continue the SAME sync, not create a new one
+          if (!cursor) {
+            toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
+            return;
+          }
           payload = { 
             syncRunId: sync.id,
-            resumeFromCursor: cursor 
+            resumeFromCursor: cursor as string
           };
           break;
         case 'paypal':
           endpoint = 'fetch-paypal';
+          if (!cursor) {
+            toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
+            return;
+          }
           payload = { 
             syncRunId: sync.id,
-            resumeFromCursor: cursor 
+            resumeFromCursor: cursor as string
           };
           break;
         case 'ghl':
           endpoint = 'sync-ghl';
-          payload = { resumeFromCursor: cursor };
+          // GHL uses a cursor of [timestamp, id] (stored as JSON in checkpoint.cursor),
+          // plus startAfter/startAfterId for compatibility. Always pass syncRunId to resume same run.
+          {
+            const stageOnlyForGhl = typeof checkpoint?.stageOnly === 'boolean' ? checkpoint.stageOnly : true;
+            const startAfterId = typeof checkpoint?.startAfterId === 'string' ? checkpoint.startAfterId : null;
+            const startAfter = typeof checkpoint?.startAfter === 'number' ? checkpoint.startAfter : null;
+
+            if (cursor) {
+              payload = { 
+                syncRunId: sync.id,
+                stageOnly: stageOnlyForGhl,
+                resumeFromCursor: cursor
+              };
+            } else if (startAfterId && startAfter !== null) {
+              payload = {
+                syncRunId: sync.id,
+                stageOnly: stageOnlyForGhl,
+                startAfterId,
+                startAfter
+              };
+            } else {
+              toast.error('No hay punto de reanudación', { description: 'El sync de GHL no tiene cursor/startAfter guardado.' });
+              return;
+            }
+          }
           break;
         case 'manychat':
           endpoint = 'sync-manychat';
-          payload = { resumeFromCursor: cursor };
+          if (!cursor) {
+            toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
+            return;
+          }
+          payload = { resumeFromCursor: cursor as string };
           break;
         case 'stripe_invoices':
           endpoint = 'fetch-invoices';
+          if (!cursor) {
+            toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
+            return;
+          }
           payload = { 
             syncRunId: sync.id,
-            resumeFromCursor: cursor 
+            resumeFromCursor: cursor as string
           };
           break;
         default:
