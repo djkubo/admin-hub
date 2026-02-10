@@ -870,7 +870,7 @@ Deno.serve(async (req) => {
       let hasMore = true;
 
       while (hasMore && pagesProcessed < maxPagesToProcess) {
-        if (Date.now() > invocationDeadline) {
+        if (pagesProcessed > 0 && Date.now() > invocationDeadline) {
           logger.warn('Invocation time budget reached; stopping early', { syncRunId, pagesProcessed });
           break;
         }
@@ -1204,7 +1204,7 @@ Deno.serve(async (req) => {
     let hasMore = true;
 
     while (hasMore && pagesProcessed < maxPagesToProcess) {
-      if (Date.now() > invocationDeadline) {
+      if (pagesProcessed > 0 && Date.now() > invocationDeadline) {
         logger.warn('Invocation time budget reached; stopping early', { syncRunId, pagesProcessed });
         break;
       }
