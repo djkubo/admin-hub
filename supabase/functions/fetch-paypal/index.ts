@@ -13,6 +13,8 @@ const FUNCTION_VERSION = '2026-02-10-1';
 // Continuation reliability (prevents "stuck at N" when the auto-chain request fails silently)
 const CHAIN_RETRY_ATTEMPTS = 3;
 const CHAIN_FETCH_TIMEOUT_MS = 10_000;
+const PAYPAL_OAUTH_FETCH_TIMEOUT_MS = 15_000;
+const PAYPAL_API_FETCH_TIMEOUT_MS = 25_000;
 
 // Process multiple pages per invocation to reduce dependency on auto-chain
 const INVOCATION_TIME_BUDGET_MS = 50_000; // keep under common 60s function limits
@@ -31,6 +33,26 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function fetchWithTimeoutRetryable(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  try {
+    return await fetchWithTimeout(url, init, timeoutMs);
+  } catch (err) {
+    // Make AbortError retryable by mapping it to an ETIMEDOUT error signature.
+    const name =
+      (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
+    if (name === 'AbortError') {
+      const e = new Error('ETIMEDOUT: request timed out');
+      (e as { code?: string }).code = 'ETIMEDOUT';
+      throw e;
+    }
+    throw err;
+  }
+}
+
+function isCancelledStatus(status: string | null | undefined): boolean {
+  return status === 'cancelled' || status === 'canceled';
 }
 
 const corsHeaders = {
@@ -158,14 +180,18 @@ async function getPayPalAccessToken(clientId: string, clientSecret: string): Pro
   const credentials = btoa(`${clientId}:${clientSecret}`);
 
   const response = await retryWithBackoff(
-    () => fetch("https://api-m.paypal.com/v1/oauth2/token", {
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${credentials}`,
-        "Content-Type": "application/x-www-form-urlencoded",
+    () => fetchWithTimeoutRetryable(
+      "https://api-m.paypal.com/v1/oauth2/token",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Basic ${credentials}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "grant_type=client_credentials",
       },
-      body: "grant_type=client_credentials",
-    }),
+      PAYPAL_OAUTH_FETCH_TIMEOUT_MS
+    ),
     { ...RETRY_CONFIGS.FAST, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
   );
 
@@ -245,12 +271,16 @@ async function fetchPayPalPage(
   logger.info("Fetching PayPal transactions", { startDate, endDate, page });
 
   const response = await retryWithBackoff(
-    () => fetch(url.toString(), {
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    () => fetchWithTimeoutRetryable(
+      url.toString(),
+      {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
       },
-    }),
+      PAYPAL_API_FETCH_TIMEOUT_MS
+    ),
     { ...RETRY_CONFIGS.STANDARD, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
   );
 
@@ -375,12 +405,12 @@ async function triggerNextChunkOrPage(
       new Error('Continuation failed'),
       { syncRunId }
     );
-    try {
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'paused',
-          error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
+	    try {
+	      await supabase
+	        .from('sync_runs')
+	        .update({
+	          status: 'paused',
+	          error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
           checkpoint: {
             page: nextPage,
             chunkIndex,
@@ -394,22 +424,24 @@ async function triggerNextChunkOrPage(
             functionVersion: FUNCTION_VERSION,
             maxPagesPerInvocation
           }
-        })
-        .eq('id', syncRunId);
-    } catch (updateErr) {
-      logger.error('Failed to mark sync as paused after continuation failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
-    }
-  };
+	        })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing']);
+	    } catch (updateErr) {
+	      logger.error('Failed to mark sync as paused after continuation failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
+	    }
+	  };
 
   if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
     EdgeRuntime.waitUntil(invokeNext());
   } else {
     // No waitUntil: do not attempt best-effort background work, pause instead so user can resume.
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: 'paused',
-        error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
+	    await supabase
+	      .from('sync_runs')
+	      .update({
+	        status: 'paused',
+	        error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
         checkpoint: {
           page: nextPage,
           chunkIndex,
@@ -423,9 +455,11 @@ async function triggerNextChunkOrPage(
           functionVersion: FUNCTION_VERSION,
           maxPagesPerInvocation
         }
-      })
-      .eq('id', syncRunId);
-  }
+	      })
+	      .eq('id', syncRunId)
+	      // Don't override user cancellation
+	      .in('status', ['running', 'continuing']);
+	  }
 
   return true;
 }
@@ -981,17 +1015,19 @@ Deno.serve(async (req) => {
     let accessToken: string;
     try {
       accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Auth failed';
-      logger.error('PayPal auth failed', error instanceof Error ? error : new Error(String(error)));
-      await supabase
-        .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
-        .eq('id', syncRunId);
+	    } catch (error) {
+	      const errorMsg = error instanceof Error ? error.message : 'Auth failed';
+	      logger.error('PayPal auth failed', error instanceof Error ? error : new Error(String(error)));
+	      await supabase
+	        .from('sync_runs')
+	        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing']);
 
-      return new Response(
-        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	      return new Response(
+	        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
+	        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -999,17 +1035,19 @@ Deno.serve(async (req) => {
     let result: PayPalPageResult;
     try {
       result = await fetchPayPalPage(accessToken, chunkStart, chunkEnd, page);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Fetch failed';
-      logger.error('PayPal fetch failed', error instanceof Error ? error : new Error(String(error)));
-      await supabase
-        .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
-        .eq('id', syncRunId);
+	    } catch (error) {
+	      const errorMsg = error instanceof Error ? error.message : 'Fetch failed';
+	      logger.error('PayPal fetch failed', error instanceof Error ? error : new Error(String(error)));
+	      await supabase
+	        .from('sync_runs')
+	        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: errorMsg })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing']);
 
-      return new Response(
-        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	      return new Response(
+	        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
+	        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -1139,34 +1177,85 @@ Deno.serve(async (req) => {
     const hasMoreChunks = chunkIndex < totalChunks - 1;
     const hasMore = fetchAll && (hasMorePagesInChunk || hasMoreChunks);
 
-    if (hasMore) {
-      // INCREMENTAL COUNTERS
-      const { data: currentRun } = await supabase
-        .from('sync_runs')
-        .select('total_fetched, total_inserted, checkpoint')
-        .eq('id', syncRunId)
-        .single();
+	    if (hasMore) {
+	      // INCREMENTAL COUNTERS
+	      const { data: currentRun } = await supabase
+	        .from('sync_runs')
+	        .select('status, total_fetched, total_inserted, checkpoint')
+	        .eq('id', syncRunId)
+	        .single();
 
-      const accumulatedFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
-      const accumulatedInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
+	      if (isCancelledStatus(currentRun?.status)) {
+	        logger.info('PayPal sync cancelled mid-run; stopping before scheduling continuation', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ success: false, status: 'cancelled', syncRunId, message: 'Sync cancelled by user', version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	        );
+	      }
 
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'continuing',
-          total_fetched: accumulatedFetched,
-          total_inserted: accumulatedInserted,
-          metadata: { 
-            fetchAll, 
-            originalStartDate, 
-            originalEndDate,
-            totalChunks,
-            currentChunk: chunkIndex + 1,
-            currentPage: page,
-            totalPagesInChunk: result.totalPages
-          }
-        })
-        .eq('id', syncRunId);
+	      if (currentRun?.status === 'completed') {
+	        logger.info('PayPal sync completed mid-run; stopping before scheduling continuation', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ success: true, status: 'completed', syncRunId, message: 'Sync already completed', version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	        );
+	      }
+
+	      const accumulatedFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
+	      const accumulatedInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
+
+	      const { data: continuingRows } = await supabase
+	        .from('sync_runs')
+	        .update({
+	          status: 'continuing',
+	          total_fetched: accumulatedFetched,
+	          total_inserted: accumulatedInserted,
+	          metadata: { 
+	            fetchAll, 
+	            originalStartDate, 
+	            originalEndDate,
+	            totalChunks,
+	            currentChunk: chunkIndex + 1,
+	            currentPage: page,
+	            totalPagesInChunk: result.totalPages,
+	            functionVersion: FUNCTION_VERSION,
+	            maxPagesPerInvocation
+	          }
+	        })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing'])
+	        .select('id');
+
+	      if (!continuingRows || continuingRows.length === 0) {
+	        const { data: statusAfter } = await supabase
+	          .from('sync_runs')
+	          .select('status')
+	          .eq('id', syncRunId)
+	          .single() as { data: { status: string } | null };
+
+	        if (isCancelledStatus(statusAfter?.status)) {
+	          logger.info('PayPal sync not updated to continuing (cancelled); skipping continuation', { syncRunId });
+	          return new Response(
+	            JSON.stringify({ success: false, status: 'cancelled', syncRunId, message: 'Sync cancelled by user', version: FUNCTION_VERSION }),
+	            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	          );
+	        }
+
+	        if (statusAfter?.status === 'completed') {
+	          logger.info('PayPal sync not updated to continuing because it is already completed', { syncRunId });
+	          return new Response(
+	            JSON.stringify({ success: true, status: 'completed', syncRunId, message: 'Sync already completed', version: FUNCTION_VERSION }),
+	            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	          );
+	        }
+
+	        logger.warn('PayPal sync not updated to continuing; run not active', { syncRunId, status: statusAfter?.status ?? null });
+	        return new Response(
+	          JSON.stringify({ success: false, status: statusAfter?.status ?? 'failed', syncRunId, error: 'Sync not active', version: FUNCTION_VERSION }),
+	          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	        );
+	      }
 
       // Determine next step: next page in same chunk, or first page of next chunk
       let nextPage: number;
@@ -1239,18 +1328,47 @@ Deno.serve(async (req) => {
     const finalFetched = (finalRun?.total_fetched || 0) + transactionsSaved;
     const finalInserted = (finalRun?.total_inserted || 0) + transactionsSaved;
 
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        total_fetched: finalFetched,
-        total_inserted: finalInserted,
-        checkpoint: null
-      })
-      .eq('id', syncRunId);
+	    const { data: completedRows } = await supabase
+	      .from('sync_runs')
+	      .update({
+	        status: 'completed',
+	        completed_at: new Date().toISOString(),
+	        total_fetched: finalFetched,
+	        total_inserted: finalInserted,
+	        checkpoint: null
+	      })
+	      .eq('id', syncRunId)
+	      // Don't override user cancellation
+	      .in('status', ['running', 'continuing'])
+	      .select('id');
 
-    logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions across ${totalChunks} chunks in ${Date.now() - startTime}ms`);
+	    if (!completedRows || completedRows.length === 0) {
+	      const { data: finalStatus } = await supabase
+	        .from('sync_runs')
+	        .select('status')
+	        .eq('id', syncRunId)
+	        .single() as { data: { status: string } | null };
+
+	      if (isCancelledStatus(finalStatus?.status)) {
+	        logger.info('PayPal sync was cancelled before completion write; leaving as cancelled', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ success: false, status: 'cancelled', syncRunId, message: 'Sync cancelled by user', version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	        );
+	      }
+
+	      if (finalStatus?.status === 'completed') {
+	        logger.info('PayPal sync already completed (completion write skipped)', { syncRunId });
+	      } else {
+	        logger.warn('PayPal sync completion write skipped; run not active', { syncRunId, status: finalStatus?.status ?? null });
+	        return new Response(
+	          JSON.stringify({ success: false, status: finalStatus?.status ?? 'failed', syncRunId, error: 'Sync not active', version: FUNCTION_VERSION }),
+	          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+	        );
+	      }
+	    } else {
+	      logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions across ${totalChunks} chunks in ${Date.now() - startTime}ms`);
+	    }
 
     return new Response(
       JSON.stringify({

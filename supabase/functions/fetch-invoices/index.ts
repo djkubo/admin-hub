@@ -548,6 +548,19 @@ async function runFullInvoiceSync(
     while (hasMore && pageCount < PAGES_PER_BATCH) {
       pageCount++;
       const pageStart = Date.now();
+
+      // Respect user cancellation (or any non-active state) as quickly as possible.
+      const { data: statusCheck } = await supabase
+        .from('sync_runs')
+        .select('status')
+        .eq('id', syncRunId)
+        .single() as { data: { status: string } | null };
+
+      const status = statusCheck?.status ?? null;
+      if (status && status !== 'running' && status !== 'continuing') {
+        console.log(`🛑 [Background] Sync not active (status=${status}). Stopping.`);
+        return;
+      }
       
       // Fetch page from Stripe
       const result = await fetchSinglePage(stripeSecretKey, mode, startDate, endDate, cursor);
@@ -589,7 +602,7 @@ async function runFullInvoiceSync(
       hasMore = result.hasMore && cursor !== null;
       
       // Update progress in sync_runs with lastActivity for stale detection
-      await supabase.from('sync_runs').update({
+      const { data: progressRows } = await supabase.from('sync_runs').update({
         status: hasMore ? 'continuing' : 'completed',
         total_fetched: totalFetched,
         total_inserted: totalInserted,
@@ -599,7 +612,16 @@ async function runFullInvoiceSync(
         } : null,
         completed_at: hasMore ? null : new Date().toISOString(),
         metadata: { mode, startDate, endDate, stats, pageCount: (currentRun?.metadata?.pageCount || 0) + pageCount }
-      }).eq('id', syncRunId);
+      })
+      .eq('id', syncRunId)
+      // Don't override user cancellation
+      .in('status', ['running', 'continuing'])
+      .select('id');
+
+      if (!progressRows || progressRows.length === 0) {
+        console.log(`🛑 [Background] Progress not saved (sync not active). Stopping.`);
+        return;
+      }
       
       console.log(`📈 [Background] Progress: ${totalFetched} fetched, ${totalInserted} inserted`);
       
@@ -609,6 +631,18 @@ async function runFullInvoiceSync(
     
     // ============= AUTO-CONTINUATION =============
     if (hasMore && cursor) {
+      const { data: endStatus } = await supabase
+        .from('sync_runs')
+        .select('status')
+        .eq('id', syncRunId)
+        .single() as { data: { status: string } | null };
+
+      const s = endStatus?.status ?? null;
+      if (s && s !== 'running' && s !== 'continuing') {
+        console.log(`🛑 [Background] Not scheduling continuation (status=${s}).`);
+        return;
+      }
+
       console.log(`🔄 [Background] Batch limit (${PAGES_PER_BATCH} pages) reached. Scheduling continuation...`);
       
       // Schedule next batch via self-invocation
@@ -630,7 +664,10 @@ async function runFullInvoiceSync(
       completed_at: new Date().toISOString(),
       total_fetched: totalFetched,
       total_inserted: totalInserted,
-    }).eq('id', syncRunId);
+    })
+    .eq('id', syncRunId)
+    // Don't override user cancellation
+    .in('status', ['running', 'continuing']);
   }
 }
 

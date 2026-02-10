@@ -394,7 +394,7 @@ Deno.serve(async (req) => {
     
     if (hasMore) {
       // Update sync run with progress
-      await supabase
+      const { data: progressRows } = await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
@@ -406,7 +406,20 @@ Deno.serve(async (req) => {
             lastActivity: new Date().toISOString()
           }
         })
-        .eq('id', currentSyncRunId);
+        .eq('id', currentSyncRunId)
+        // Don't override user cancellation
+        .in('status', ['running', 'continuing'])
+        .select('id');
+
+      if (!progressRows || progressRows.length === 0) {
+        logger.info('Sync not active (likely cancelled); stopping before scheduling next chunk', { syncRunId: currentSyncRunId });
+        return new Response(JSON.stringify({
+          ok: false,
+          status: 'cancelled',
+          error: 'Sync was cancelled by user',
+          syncRunId: currentSyncRunId
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
       
       // CRITICAL: Use EdgeRuntime.waitUntil for background processing
       const nextChunkUrl = `${Deno.env.get('SUPABASE_URL')!}/functions/v1/sync-manychat`;
@@ -453,7 +466,7 @@ Deno.serve(async (req) => {
     }
     
     // Sync complete
-    await supabase
+    const { data: completedRows } = await supabase
       .from('sync_runs')
       .update({
         status: 'completed',
@@ -461,7 +474,20 @@ Deno.serve(async (req) => {
         total_fetched: newAccumulatedTotal,
         total_inserted: newAccumulatedStored
       })
-      .eq('id', currentSyncRunId);
+      .eq('id', currentSyncRunId)
+      // Don't override user cancellation
+      .in('status', ['running', 'continuing'])
+      .select('id');
+
+    if (!completedRows || completedRows.length === 0) {
+      logger.info('Sync not marked completed (likely cancelled); stopping', { syncRunId: currentSyncRunId });
+      return new Response(JSON.stringify({
+        ok: false,
+        status: 'cancelled',
+        error: 'Sync was cancelled by user',
+        syncRunId: currentSyncRunId
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
     
     logger.info(`=== ManyChat Sync Complete: ${newAccumulatedStored} stored ===`);
     

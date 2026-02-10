@@ -100,6 +100,9 @@ const DECLINE_REASONS_ES: Record<string, string> = {
 const customerEmailCache = new Map<string, { email: string | null; name: string | null; phone: string | null }>();
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+const isCancelledStatus = (status: string | null | undefined): boolean =>
+  status === 'cancelled' || status === 'canceled';
+
 // ============= TEST ONLY: Quick API verification =============
 async function handleTestOnly(stripeSecretKey: string, corsHeaders: Record<string, string>): Promise<Response> {
   logger.info('Test-only mode: Verifying Stripe API connection');
@@ -330,6 +333,19 @@ async function processChunk(
   logger.info(`CHUNK ${chunkNumber} START`, { cursor: currentCursor?.slice(-10), runningTotal });
 
   for (let page = 0; page < PAGES_PER_CHUNK && hasMore; page++) {
+    // Respect user cancellation (or any non-active state) as quickly as possible.
+    const { data: statusCheck } = await supabase
+      .from('sync_runs')
+      .select('status')
+      .eq('id', syncRunId)
+      .single() as { data: { status: string } | null };
+
+    const status = statusCheck?.status ?? null;
+    if (status && status !== 'running' && status !== 'continuing') {
+      logger.info('Sync run is not active; stopping chunk processing', { syncRunId, status });
+      return;
+    }
+
     const pageStart = Date.now();
     const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, currentCursor);
 
@@ -354,7 +370,10 @@ async function processChunk(
             startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
             endDate: endDate ? new Date(endDate * 1000).toISOString() : null
           }
-        }).eq('id', syncRunId);
+        })
+        .eq('id', syncRunId)
+        // Don't override user cancellation
+        .in('status', ['running', 'continuing']);
         
         logger.warn('Sync paused due to consecutive errors - can resume later');
         return; // Exit gracefully, can resume
@@ -390,7 +409,10 @@ async function processChunk(
             startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
             endDate: endDate ? new Date(endDate * 1000).toISOString() : null
           }
-        }).eq('id', syncRunId);
+        })
+        .eq('id', syncRunId)
+        // Don't override user cancellation
+        .in('status', ['running', 'continuing']);
         return;
       } else {
         totalInChunk += result.transactions.length;
@@ -404,7 +426,7 @@ async function processChunk(
     const shouldSaveCheckpoint = page % CHECKPOINT_SAVE_INTERVAL === 0 || page === PAGES_PER_CHUNK - 1;
     
     if (shouldSaveCheckpoint) {
-      await supabase.from('sync_runs').update({
+      const { data: checkpointRows } = await supabase.from('sync_runs').update({
         total_fetched: runningTotal + totalInChunk,
         total_inserted: runningTotal + totalInChunk,
         checkpoint: { 
@@ -418,7 +440,16 @@ async function processChunk(
           startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
           endDate: endDate ? new Date(endDate * 1000).toISOString() : null
         }
-      }).eq('id', syncRunId);
+      })
+      .eq('id', syncRunId)
+      // Don't override user cancellation
+      .in('status', ['running', 'continuing'])
+      .select('id');
+
+      if (!checkpointRows || checkpointRows.length === 0) {
+        logger.info('Checkpoint not saved (sync not active); stopping', { syncRunId });
+        return;
+      }
       
       logger.info(`Checkpoint saved: chunk ${chunkNumber}, page ${page + 1}, total ${runningTotal + totalInChunk}`);
     }
@@ -438,7 +469,7 @@ async function processChunk(
     logger.info(`AUTO-CHAIN: Invoking next chunk ${chunkNumber + 1}`);
 
     // Update status to "continuing" with lastActivity for stale detection and full recovery info
-    await supabase.from('sync_runs').update({
+    const { data: chainRows } = await supabase.from('sync_runs').update({
       status: 'continuing',
       checkpoint: { 
         cursor: currentCursor, 
@@ -449,7 +480,16 @@ async function processChunk(
         startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
         endDate: endDate ? new Date(endDate * 1000).toISOString() : null
       }
-    }).eq('id', syncRunId);
+    })
+    .eq('id', syncRunId)
+    // Don't override user cancellation
+    .in('status', ['running', 'continuing'])
+    .select('id');
+
+    if (!chainRows || chainRows.length === 0) {
+      logger.info('Sync not updated for chaining (sync not active); stopping', { syncRunId });
+      return;
+    }
 
     // Self-invoke via EdgeRuntime.waitUntil (fire-and-forget pattern)
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -510,14 +550,17 @@ async function processChunk(
           startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
           endDate: endDate ? new Date(endDate * 1000).toISOString() : null
         }
-      }).eq('id', syncRunId);
+      })
+      .eq('id', syncRunId)
+      // Don't override user cancellation
+      .in('status', ['running', 'continuing']);
     })());
 
     logger.info('Chain invocation scheduled via waitUntil');
 
   } else {
     // ============= SYNC COMPLETE =============
-    await supabase.from('sync_runs').update({
+    const { data: completedRows } = await supabase.from('sync_runs').update({
       status: lastError ? 'completed_with_errors' : 'completed',
       completed_at: new Date().toISOString(),
       total_fetched: newTotal,
@@ -525,7 +568,16 @@ async function processChunk(
       error_message: lastError,
       checkpoint: null,
       metadata: { chunks: chunkNumber, finalTotal: newTotal }
-    }).eq('id', syncRunId);
+    })
+    .eq('id', syncRunId)
+    // Don't override user cancellation
+    .in('status', ['running', 'continuing'])
+    .select('id');
+
+    if (!completedRows || completedRows.length === 0) {
+      logger.info('Sync not marked completed (sync not active); stopping', { syncRunId });
+      return;
+    }
 
     logger.info('SYNC COMPLETE', { totalTransactions: newTotal, chunks: chunkNumber });
   }

@@ -997,13 +997,15 @@ Deno.serve(async (req) => {
           maxPages: maxPagesToProcess
         });
 
-        if (pageResult.error) {
-          await supabase
-            .from('sync_runs')
-            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
-            .eq('id', syncRunId);
-          return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
-        }
+	      if (pageResult.error) {
+	        await supabase
+	          .from('sync_runs')
+	          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
+	          .eq('id', syncRunId)
+	          // Don't override user cancellation
+	          .in('status', ['running', 'continuing']);
+	        return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
+	      }
 
         runningFetched += pageResult.contactsFetched;
         runningInserted += pageResult.staged;
@@ -1011,31 +1013,35 @@ Deno.serve(async (req) => {
 
         if (hasMore) {
           // Guardrail: prevent an infinite loop if pagination cursor is missing or not advancing.
-          if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
-            const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
-            logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
-            await supabase
-              .from('sync_runs')
-              .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-              .eq('id', syncRunId);
-            return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
-          }
-          if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
-            const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
-            logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
-            await supabase
-              .from('sync_runs')
-              .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-              .eq('id', syncRunId);
-            return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
-          }
+	        if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
+	          const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
+	          logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+	          await supabase
+	            .from('sync_runs')
+	            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+	            .eq('id', syncRunId)
+	            // Don't override user cancellation
+	            .in('status', ['running', 'continuing']);
+	          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+	        }
+	        if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
+	          const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
+	          logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+	          await supabase
+	            .from('sync_runs')
+	            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+	            .eq('id', syncRunId)
+	            // Don't override user cancellation
+	            .in('status', ['running', 'continuing']);
+	          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+	        }
 
           currentStartAfterId = pageResult.nextStartAfterId;
           currentStartAfter = pageResult.nextStartAfter;
         }
 
         // Save progress after each page so the UI never looks stuck on 100.
-        await supabase
+        const { data: progressRows } = await supabase
           .from('sync_runs')
           .update({
             status: hasMore ? 'continuing' : 'running',
@@ -1055,7 +1061,18 @@ Deno.serve(async (req) => {
               noChainRequested: noChain
             }
           })
-          .eq('id', syncRunId);
+          .eq('id', syncRunId)
+          // Don't override user cancellation
+          .in('status', ['running', 'continuing'])
+          .select('id');
+
+        if (!progressRows || progressRows.length === 0) {
+          logger.info('Sync not active (likely cancelled); stopping', { syncRunId });
+          return new Response(
+            JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         pagesProcessed++;
         if (!hasMore) break;
@@ -1063,7 +1080,7 @@ Deno.serve(async (req) => {
 
       // If this invocation finished the dataset, mark completed.
       if (!hasMore) {
-        await supabase
+        const { data: completedRows } = await supabase
           .from('sync_runs')
           .update({
             status: 'completed',
@@ -1072,7 +1089,18 @@ Deno.serve(async (req) => {
             total_inserted: runningInserted,
             checkpoint: null
           })
-          .eq('id', syncRunId);
+          .eq('id', syncRunId)
+          // Don't override user cancellation
+          .in('status', ['running', 'continuing'])
+          .select('id');
+
+        if (!completedRows || completedRows.length === 0) {
+          logger.info('Sync not marked completed (likely cancelled); stopping', { syncRunId });
+          return new Response(
+            JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         return new Response(
           JSON.stringify({
@@ -1109,7 +1137,7 @@ Deno.serve(async (req) => {
         const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
 
         // Mark that we intend to chain (helps debugging "stuck at 100" cases).
-        await supabase
+        const { data: chainRows } = await supabase
           .from('sync_runs')
           .update({
             status: 'continuing',
@@ -1126,7 +1154,18 @@ Deno.serve(async (req) => {
               maxPagesPerInvocation: maxPagesToProcess
             }
           })
-          .eq('id', syncRunId);
+          .eq('id', syncRunId)
+          // Don't override user cancellation
+          .in('status', ['running', 'continuing'])
+          .select('id');
+
+        if (!chainRows || chainRows.length === 0) {
+          logger.info('Sync not updated for chaining (likely cancelled); stopping', { syncRunId });
+          return new Response(
+            JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         const invokeNextChunk = async () => {
           const payload = JSON.stringify({
@@ -1178,11 +1217,11 @@ Deno.serve(async (req) => {
           // All retries failed - mark sync paused for manual resume.
           const msg = 'Auto-chain failed after retries; sync paused for manual resume.';
           logger.error(msg, new Error(msg), { syncRunId });
-          try {
-            await supabase
-              .from('sync_runs')
-              .update({
-                status: 'paused',
+	        try {
+	          await supabase
+	            .from('sync_runs')
+	            .update({
+	              status: 'paused',
                 error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
                 checkpoint: {
                   startAfterId: nextStartAfterId,
@@ -1194,23 +1233,25 @@ Deno.serve(async (req) => {
                   stageOnly: true,
                   chainFailed: true,
                   functionVersion: FUNCTION_VERSION,
-                  maxPagesPerInvocation: maxPagesToProcess
-                }
-              })
-              .eq('id', syncRunId);
-          } catch (updateErr) {
-            logger.error('Failed to mark sync as paused after chain failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
-          }
-        };
+	                  maxPagesPerInvocation: maxPagesToProcess
+	                }
+	              })
+	              .eq('id', syncRunId)
+	              // Don't override user cancellation
+	              .in('status', ['running', 'continuing']);
+	          } catch (updateErr) {
+	            logger.error('Failed to mark sync as paused after chain failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
+	          }
+	        };
 
         if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
           EdgeRuntime.waitUntil(invokeNextChunk());
         } else {
           // If waitUntil isn't available, we can't reliably continue in background.
-          await supabase
-            .from('sync_runs')
-            .update({
-              status: 'paused',
+	          await supabase
+	            .from('sync_runs')
+	            .update({
+	              status: 'paused',
               error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
               checkpoint: {
                 startAfterId: nextStartAfterId,
@@ -1222,10 +1263,12 @@ Deno.serve(async (req) => {
                 stageOnly: true,
                 chainFailed: true,
                 functionVersion: FUNCTION_VERSION,
-                maxPagesPerInvocation: maxPagesToProcess
-              }
-            })
-            .eq('id', syncRunId);
+	                maxPagesPerInvocation: maxPagesToProcess
+	              }
+	            })
+	            .eq('id', syncRunId)
+	            // Don't override user cancellation
+	            .in('status', ['running', 'continuing']);
 
           return new Response(
             JSON.stringify({
@@ -1375,13 +1418,13 @@ Deno.serve(async (req) => {
         currentStartAfter = pageResult.nextStartAfter;
       }
 
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: hasMore ? 'continuing' : 'running',
-          total_fetched: runningFetched,
-          total_inserted: runningInserted,
-          total_updated: runningUpdated,
+	      const { data: progressRows } = await supabase
+	        .from('sync_runs')
+	        .update({
+	          status: hasMore ? 'continuing' : 'running',
+	          total_fetched: runningFetched,
+	          total_inserted: runningInserted,
+	          total_updated: runningUpdated,
           total_skipped: runningSkipped,
           total_conflicts: runningConflicts,
           checkpoint: {
@@ -1394,30 +1437,52 @@ Deno.serve(async (req) => {
             stageOnly: false,
             functionVersion: FUNCTION_VERSION,
             pagesProcessedThisInvocation: pagesProcessed + 1,
-            maxPagesPerInvocation: maxPagesToProcess,
-            noChainRequested: noChain
-          }
-        })
-        .eq('id', syncRunId);
+	            maxPagesPerInvocation: maxPagesToProcess,
+	            noChainRequested: noChain
+	          }
+	        })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing'])
+	        .select('id');
+
+	      if (!progressRows || progressRows.length === 0) {
+	        logger.info('Sync not active (likely cancelled); stopping', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+	        );
+	      }
 
       pagesProcessed++;
       if (!hasMore) break;
     }
 
-    if (!hasMore) {
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
+	    if (!hasMore) {
+	      const { data: completedRows } = await supabase
+	        .from('sync_runs')
+	        .update({
+	          status: 'completed',
+	          completed_at: new Date().toISOString(),
           total_fetched: runningFetched,
           total_inserted: runningInserted,
           total_updated: runningUpdated,
           total_skipped: runningSkipped,
-          total_conflicts: runningConflicts,
-          checkpoint: null
-        })
-        .eq('id', syncRunId);
+	          total_conflicts: runningConflicts,
+	          checkpoint: null
+	        })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing'])
+	        .select('id');
+
+	      if (!completedRows || completedRows.length === 0) {
+	        logger.info('Sync not marked completed (likely cancelled); stopping', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+	        );
+	      }
 
       return new Response(
         JSON.stringify({ ok: true, status: 'completed', syncRunId, processed: runningFetched, hasMore: false, version: FUNCTION_VERSION }),
@@ -1428,24 +1493,26 @@ Deno.serve(async (req) => {
     const nextStartAfterId = currentStartAfterId;
     const nextStartAfter = currentStartAfter;
 
-    if (!nextStartAfterId || nextStartAfter === null) {
-      const msg = 'GHL pagination cursor missing after processing; cannot continue.';
-      logger.error(msg, new Error(msg), { syncRunId, nextStartAfterId, nextStartAfter });
-      await supabase
-        .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-        .eq('id', syncRunId);
-      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
-    }
+	    if (!nextStartAfterId || nextStartAfter === null) {
+	      const msg = 'GHL pagination cursor missing after processing; cannot continue.';
+	      logger.error(msg, new Error(msg), { syncRunId, nextStartAfterId, nextStartAfter });
+	      await supabase
+	        .from('sync_runs')
+	        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing']);
+	      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+	    }
 
     if (!noChain) {
       const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
 
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'continuing',
-          checkpoint: {
+	      const { data: chainRows } = await supabase
+	        .from('sync_runs')
+	        .update({
+	          status: 'continuing',
+	          checkpoint: {
             startAfterId: nextStartAfterId,
             startAfter: nextStartAfter,
             cursor: [nextStartAfter, nextStartAfterId],
@@ -1455,10 +1522,21 @@ Deno.serve(async (req) => {
             stageOnly: false,
             functionVersion: FUNCTION_VERSION,
             chainScheduledAt: new Date().toISOString(),
-            maxPagesPerInvocation: maxPagesToProcess
-          }
-        })
-        .eq('id', syncRunId);
+	            maxPagesPerInvocation: maxPagesToProcess
+	          }
+	        })
+	        .eq('id', syncRunId)
+	        // Don't override user cancellation
+	        .in('status', ['running', 'continuing'])
+	        .select('id');
+
+	      if (!chainRows || chainRows.length === 0) {
+	        logger.info('Sync not updated for chaining (likely cancelled); stopping', { syncRunId });
+	        return new Response(
+	          JSON.stringify({ ok: false, status: 'cancelled', error: 'Sync was cancelled by user', syncRunId, version: FUNCTION_VERSION }),
+	          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+	        );
+	      }
 
       const invokeNextChunk = async () => {
         const payload = JSON.stringify({
@@ -1529,23 +1607,25 @@ Deno.serve(async (req) => {
                 stageOnly: false,
                 chainFailed: true,
                 functionVersion: FUNCTION_VERSION,
-                maxPagesPerInvocation: maxPagesToProcess
-              }
-            })
-            .eq('id', syncRunId);
-        } catch (updateErr) {
-          logger.error('Failed to mark sync as paused after chain failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
-        }
-      };
+	                maxPagesPerInvocation: maxPagesToProcess
+	              }
+	            })
+	            .eq('id', syncRunId)
+	            // Don't override user cancellation
+	            .in('status', ['running', 'continuing']);
+	        } catch (updateErr) {
+	          logger.error('Failed to mark sync as paused after chain failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
+	        }
+	      };
 
       if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
         EdgeRuntime.waitUntil(invokeNextChunk());
       } else {
-        await supabase
-          .from('sync_runs')
-          .update({
-            status: 'paused',
-            error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
+	        await supabase
+	          .from('sync_runs')
+	          .update({
+	            status: 'paused',
+	            error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
             checkpoint: {
               startAfterId: nextStartAfterId,
               startAfter: nextStartAfter,
@@ -1556,10 +1636,12 @@ Deno.serve(async (req) => {
               stageOnly: false,
               chainFailed: true,
               functionVersion: FUNCTION_VERSION,
-              maxPagesPerInvocation: maxPagesToProcess
-            }
-          })
-          .eq('id', syncRunId);
+	              maxPagesPerInvocation: maxPagesToProcess
+	            }
+	          })
+	          .eq('id', syncRunId)
+	          // Don't override user cancellation
+	          .in('status', ['running', 'continuing']);
 
         return new Response(
           JSON.stringify({
@@ -1606,15 +1688,17 @@ Deno.serve(async (req) => {
     // CRITICAL: Mark sync_runs as failed so frontend stops polling
     if (syncRunId) {
       try {
-        await supabase
-          .from('sync_runs')
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: errorMessage
-          })
-          .eq('id', syncRunId);
-        logger.info('Marked sync run as failed', { id: syncRunId });
+	        await supabase
+	          .from('sync_runs')
+	          .update({
+	            status: 'failed',
+	            completed_at: new Date().toISOString(),
+	            error_message: errorMessage
+	          })
+	          .eq('id', syncRunId)
+	          // Don't override user cancellation
+	          .in('status', ['running', 'continuing']);
+	        logger.info('Marked sync run as failed', { id: syncRunId });
       } catch (updateErr) {
         const updateErrObj = updateErr instanceof Error ? updateErr : new Error(String(updateErr));
         logger.error('Failed to update sync_runs status', updateErrObj);
