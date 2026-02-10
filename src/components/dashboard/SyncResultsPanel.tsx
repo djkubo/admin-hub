@@ -72,6 +72,7 @@ export function SyncResultsPanel() {
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeSyncs, setActiveSyncs] = useState<SyncRun[]>([]);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [isForceKilling, setIsForceKilling] = useState(false);
   const [isResuming, setIsResuming] = useState<string | null>(null);
 
@@ -293,6 +294,45 @@ export function SyncResultsPanel() {
       });
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  // Cancel a single sync run (by id), without affecting other sources/runs.
+  const handleCancelSingleSyncRun = async (sync: SyncRun) => {
+    setCancellingRunId(sync.id);
+    try {
+      const { data, error } = await supabase
+        .from('sync_runs')
+        .update({
+          status: 'cancelled',
+          completed_at: new Date().toISOString(),
+          error_message: 'Cancelado por el usuario'
+        })
+        .eq('id', sync.id)
+        .in('status', ['running', 'continuing', 'paused'])
+        .select('id');
+
+      if (error) throw error;
+
+      const cancelledCount = (data || []).length;
+      if (cancelledCount === 0) {
+        toast.info('No se pudo cancelar', {
+          description: 'El sync ya no está activo (o ya terminó).'
+        });
+      } else {
+        toast.success('Sync cancelado', {
+          description: `Sincronización de ${getSourceConfig(sync.source).label} cancelada`
+        });
+      }
+
+      fetchRuns();
+    } catch (error) {
+      console.error('Cancel single sync error:', error);
+      toast.error('Error al cancelar', {
+        description: error instanceof Error ? error.message : 'Error desconocido'
+      });
+    } finally {
+      setCancellingRunId(null);
     }
   };
 
@@ -674,7 +714,46 @@ export function SyncResultsPanel() {
                           </Badge>
                         )}
                       </div>
-                      <span className="text-xs text-muted-foreground">{elapsed}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{elapsed}</span>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={cancellingRunId === sync.id}
+                              className="h-7 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                            >
+                              {cancellingRunId === sync.id ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              ) : (
+                                <StopCircle className="h-3 w-3 mr-1" />
+                              )}
+                              Cancelar
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent className="bg-card border-border">
+                            <AlertDialogHeader>
+                              <AlertDialogTitle className="flex items-center gap-2 text-red-400">
+                                <StopCircle className="h-5 w-5" />
+                                ¿Cancelar este sync?
+                              </AlertDialogTitle>
+                              <AlertDialogDescription className="text-muted-foreground">
+                                Esto cancelará solo la sincronización de <strong>{config.label}</strong> y dejará las demás corriendo.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel className="border-border">No</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => handleCancelSingleSyncRun(sync)}
+                                className="bg-red-600 hover:bg-red-700 text-white"
+                              >
+                                Cancelar sync
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
                     </div>
                     
                     {/* Progress bar with pulse animation */}

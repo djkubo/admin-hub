@@ -800,7 +800,11 @@ Deno.serve(async (req) => {
           status: 'running',
           checkpoint: { startAfterId, startAfter, lastActivity: new Date().toISOString() }
         })
-        .eq('id', syncRunId);
+        // IMPORTANT: Do not resurrect cancelled/completed runs. This also makes
+        // "cancel individual sync" reliable even if a background chain request
+        // is already in-flight.
+        .eq('id', syncRunId)
+        .in('status', ['running', 'continuing', 'paused', 'failed']);
     }
 
     // ============ CHECK IF CANCELLED BEFORE PROCESSING ============
