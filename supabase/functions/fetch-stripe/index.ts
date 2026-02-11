@@ -80,8 +80,11 @@ interface TransactionRecord {
 const RECORDS_PER_PAGE = 100;
 const PAGES_PER_CHUNK = 10; // Process 10 pages per invocation (~1000 tx, ~120s) - more frequent checkpoints
 const MAX_CHUNKS = 300; // Max ~30,000 tx total
-const STRIPE_API_DELAY_MS = 30;
-const CHECKPOINT_SAVE_INTERVAL = 2; // Save checkpoint every 2 pages for more granular recovery
+const STRIPE_API_DELAY_MS = 20;
+// DB writes are often the bottleneck vs. Stripe fetch. Save checkpoints less frequently to reduce roundtrips.
+const CHECKPOINT_SAVE_INTERVAL = 5;
+// Avoid a status DB read on every page; still respond reasonably fast to cancel/pause.
+const STATUS_CHECK_INTERVAL = 3;
 
 const DECLINE_REASONS_ES: Record<string, string> = {
   'insufficient_funds': 'Fondos insuficientes',
@@ -161,6 +164,8 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
   }
 
   try {
+    // Small jitter to be polite with Stripe when we need an extra call beyond the expanded list response.
+    await delay(STRIPE_API_DELAY_MS);
     const response = await retryWithBackoff(
       () => fetch(`https://api.stripe.com/v1/customers/${customerId}`, {
         headers: { Authorization: `Bearer ${stripeSecretKey}` }
@@ -227,17 +232,16 @@ async function processSinglePage(
       let customerId: string | null = null;
 
       if (pi.customer) {
-        if (typeof pi.customer === 'object') {
-          email = email || pi.customer.email || null;
-          customerName = pi.customer.name || null;
-          customerId = pi.customer.id;
-        } else if (typeof pi.customer === 'string') {
-          customerId = pi.customer;
-          await delay(STRIPE_API_DELAY_MS);
-          const info = await getCustomerInfo(pi.customer, stripeSecretKey);
-          email = email || info.email;
-          customerName = info.name;
-        }
+      if (typeof pi.customer === 'object') {
+        email = email || pi.customer.email || null;
+        customerName = pi.customer.name || null;
+        customerId = pi.customer.id;
+      } else if (typeof pi.customer === 'string') {
+        customerId = pi.customer;
+        const info = await getCustomerInfo(pi.customer, stripeSecretKey);
+        email = email || info.email;
+        customerName = info.name;
+      }
       }
 
       if (!email) continue;
@@ -335,17 +339,19 @@ async function processChunk(
   logger.info(`CHUNK ${chunkNumber} START`, { cursor: currentCursor?.slice(-10), runningTotal });
 
   for (let page = 0; page < PAGES_PER_CHUNK && hasMore; page++) {
-    // Respect user cancellation (or any non-active state) as quickly as possible.
-    const { data: statusCheck } = await supabase
-      .from('sync_runs')
-      .select('status')
-      .eq('id', syncRunId)
-      .single() as { data: { status: string } | null };
+    // Respect user cancellation (or any non-active state) without hammering DB every page.
+    if (page % STATUS_CHECK_INTERVAL === 0) {
+      const { data: statusCheck } = await supabase
+        .from('sync_runs')
+        .select('status')
+        .eq('id', syncRunId)
+        .single() as { data: { status: string } | null };
 
-    const status = statusCheck?.status ?? null;
-    if (status && status !== 'running' && status !== 'continuing') {
-      logger.info('Sync run is not active; stopping chunk processing', { syncRunId, status });
-      return;
+      const status = statusCheck?.status ?? null;
+      if (status && status !== 'running' && status !== 'continuing') {
+        logger.info('Sync run is not active; stopping chunk processing', { syncRunId, status });
+        return;
+      }
     }
 
     const pageStart = Date.now();
@@ -471,7 +477,8 @@ async function processChunk(
     const pageDuration = Date.now() - pageStart;
     logger.debug(`Page ${page + 1}: ${result.transactions.length} tx in ${pageDuration}ms`);
 
-    await delay(100);
+    // Minimal spacing between page requests to reduce rate-limit pressure without adding noticeable overhead.
+    await delay(25);
   }
 
   const newTotal = runningTotal + totalInChunk;

@@ -6,7 +6,8 @@ import { formatUnknownError } from '@/lib/errorUtils';
 
 // Friendly error messages for common scenarios
 const getErrorMessage = (error: unknown): { title: string; description: string } => {
-  const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
+  // Use a longer, detail-rich string for classification, but keep user-facing text short.
+  const errorMessage = formatUnknownError(error, { maxLen: 800, includeDetails: true });
   const lowerMessage = errorMessage.toLowerCase();
 
   // Network errors
@@ -60,7 +61,13 @@ const getErrorMessage = (error: unknown): { title: string; description: string }
   // Default
   return {
     title: 'Error inesperado',
-    description: errorMessage.length > 100 ? 'Ocurrió un problema. Por favor, inténtalo de nuevo.' : errorMessage,
+    // Don't hide the message just because it's long; truncate it for the toast.
+    // Also avoid leaking deep details by default.
+    description: formatUnknownError(error, {
+      fallback: 'Ocurrió un problema. Por favor, inténtalo de nuevo.',
+      maxLen: 180,
+      includeDetails: false,
+    }),
   };
 };
 
@@ -74,6 +81,11 @@ export function QueryErrorHandler() {
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (event.type === 'updated' && event.query.state.status === 'error') {
         const error = event.query.state.error;
+        if (import.meta.env.DEV) {
+          // Helpful for identifying which query is failing without spamming users with raw errors.
+          // eslint-disable-next-line no-console
+          console.error('[react-query] error', { queryKey: event.query.queryKey, error });
+        }
         // Only show toast for queries that don't have their own error handling
         const meta = event.query.options.meta as { suppressErrorToast?: boolean } | undefined;
         if (!meta?.suppressErrorToast) {
