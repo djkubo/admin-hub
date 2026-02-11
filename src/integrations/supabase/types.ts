@@ -2467,6 +2467,45 @@ export type Database = {
         }
         Relationships: []
       }
+      sync_state: {
+        Row: {
+          backfill_start: string | null
+          fresh_until: string | null
+          last_error_at: string | null
+          last_error_message: string | null
+          last_success_at: string | null
+          last_success_meta: Json | null
+          last_success_run_id: string | null
+          last_success_status: string | null
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          backfill_start?: string | null
+          fresh_until?: string | null
+          last_error_at?: string | null
+          last_error_message?: string | null
+          last_success_at?: string | null
+          last_success_meta?: Json | null
+          last_success_run_id?: string | null
+          last_success_status?: string | null
+          source: string
+          updated_at?: string
+        }
+        Update: {
+          backfill_start?: string | null
+          fresh_until?: string | null
+          last_error_at?: string | null
+          last_error_message?: string | null
+          last_success_at?: string | null
+          last_success_meta?: Json | null
+          last_success_run_id?: string | null
+          last_success_status?: string | null
+          source?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       system_settings: {
         Row: {
           created_at: string
