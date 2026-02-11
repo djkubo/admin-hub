@@ -940,8 +940,8 @@ Deno.serve(async (req) => {
       const recentlySucceeded =
         syncState?.last_success_at ? (now - Date.parse(syncState.last_success_at)) < (30 * 24 * 60 * 60 * 1000) : false;
 
-      const lastMode = (syncState?.last_success_meta as any)?.mode;
-      const isFullMode = mode === "full" || mode === "all" || lastMode === "full" || lastMode === "all";
+      const lastMode = (syncState?.last_success_meta as Record<string, unknown>)?.mode as string | undefined;
+      const isFullMode = lastMode === "full" || lastMode === "all";
 
       // Only treat it as a true range-coverage check when we have a finite start bound.
       if (reqStartMs !== null && coversRange) {
