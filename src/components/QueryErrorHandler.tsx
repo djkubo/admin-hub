@@ -4,6 +4,16 @@ import { toast } from 'sonner';
 import { refreshSessionLocked } from '@/lib/authSession';
 import { formatUnknownError } from '@/lib/errorUtils';
 
+function shouldDebugErrors(): boolean {
+  // Allow debugging in production without exposing raw errors to all users.
+  // Enable by running in the browser console: localStorage.setItem('debug_errors', '1')
+  try {
+    return import.meta.env.DEV || window.localStorage.getItem('debug_errors') === '1';
+  } catch {
+    return import.meta.env.DEV;
+  }
+}
+
 // Friendly error messages for common scenarios
 const getErrorMessage = (error: unknown): { title: string; description: string } => {
   // Use a longer, detail-rich string for classification, but keep user-facing text short.
@@ -66,6 +76,8 @@ const getErrorMessage = (error: unknown): { title: string; description: string }
     description: formatUnknownError(error, {
       fallback: 'Ocurrió un problema. Por favor, inténtalo de nuevo.',
       maxLen: 180,
+      // If a backend sends a "details/hint" string, keep it out of the toast by default,
+      // but still allow the main message through.
       includeDetails: false,
     }),
   };
@@ -81,7 +93,7 @@ export function QueryErrorHandler() {
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (event.type === 'updated' && event.query.state.status === 'error') {
         const error = event.query.state.error;
-        if (import.meta.env.DEV) {
+        if (shouldDebugErrors()) {
           // Helpful for identifying which query is failing without spamming users with raw errors.
           // eslint-disable-next-line no-console
           console.error('[react-query] error', { queryKey: event.query.queryKey, error });
