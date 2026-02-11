@@ -67,6 +67,15 @@ function isRateLimitErrorMessage(message: string | null | undefined): boolean {
   return msg.includes('429') || msg.includes('too many requests') || msg.includes('rate limit');
 }
 
+function toNumberOrNull(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 async function fetchGhlContactsSearch(
   ghlUrl: string,
   ghlApiKey: string,
@@ -661,6 +670,7 @@ Deno.serve(async (req) => {
     let maxPages: number | null = null;
     let noChain = false;
     let force = false;
+    let existingCheckpoint: Record<string, unknown> | null = null;
 
     try {
       const body = await req.json();
@@ -677,8 +687,14 @@ Deno.serve(async (req) => {
       testOnly = body.testOnly ?? false; // TEST MODE
       cleanupStale = body.cleanupStale === true;
       forceCancel = body.forceCancel === true;
-      startAfterId = body.startAfterId ?? null;
-      startAfter = body.startAfter ?? null;
+      const bodyStartAfterId = body.startAfterId ?? body.start_after_id ?? null;
+      startAfterId =
+        typeof bodyStartAfterId === 'string'
+          ? bodyStartAfterId
+          : bodyStartAfterId != null
+            ? String(bodyStartAfterId)
+            : null;
+      startAfter = toNumberOrNull(body.startAfter ?? body.start_after);
       syncRunId = body.syncRunId ?? null;
       // Common aliases used by other sync functions
       const bodyAccumFetched = body.accumulatedFetched ?? body.accumulatedTotal;
@@ -706,6 +722,47 @@ Deno.serve(async (req) => {
         if (startAfterId === null && parsed.startAfterId) startAfterId = parsed.startAfterId;
         if (startAfter === null && parsed.startAfter !== null) startAfter = parsed.startAfter;
         if (!stageOnlyProvided && typeof parsed.stageOnly === 'boolean') stageOnly = parsed.stageOnly;
+      }
+    }
+
+    // For explicit resume by syncRunId, recover cursor/startAfter from DB checkpoint when body omits it.
+    if (syncRunId) {
+      const { data: existingRun } = await supabase
+        .from('sync_runs')
+        .select('checkpoint, metadata')
+        .eq('id', syncRunId)
+        .maybeSingle();
+
+      existingCheckpoint =
+        existingRun && typeof existingRun.checkpoint === 'object' && existingRun.checkpoint !== null
+          ? (existingRun.checkpoint as Record<string, unknown>)
+          : null;
+
+      if (!stageOnlyProvided && existingCheckpoint && typeof existingCheckpoint.stageOnly === 'boolean') {
+        stageOnly = existingCheckpoint.stageOnly;
+      }
+
+      if (startAfterId === null || startAfter === null) {
+        const cpStartAfterIdRaw = existingCheckpoint?.startAfterId;
+        const cpStartAfterId =
+          typeof cpStartAfterIdRaw === 'string'
+            ? cpStartAfterIdRaw
+            : cpStartAfterIdRaw != null
+              ? String(cpStartAfterIdRaw)
+              : null;
+        const cpStartAfter = toNumberOrNull(existingCheckpoint?.startAfter);
+
+        if (startAfterId === null && cpStartAfterId) startAfterId = cpStartAfterId;
+        if (startAfter === null && cpStartAfter !== null) startAfter = cpStartAfter;
+
+        if ((startAfterId === null || startAfter === null) && existingCheckpoint?.cursor) {
+          const parsedCpCursor = parseGhlCursor(existingCheckpoint.cursor);
+          if (parsedCpCursor) {
+            if (startAfterId === null && parsedCpCursor.startAfterId) startAfterId = parsedCpCursor.startAfterId;
+            if (startAfter === null && parsedCpCursor.startAfter !== null) startAfter = parsedCpCursor.startAfter;
+            if (!stageOnlyProvided && typeof parsedCpCursor.stageOnly === 'boolean') stageOnly = parsedCpCursor.stageOnly;
+          }
+        }
       }
     }
 
@@ -946,11 +1003,23 @@ Deno.serve(async (req) => {
         .select('id').single();
       syncRunId = syncRun?.id;
     } else {
+      const checkpointPayload: Record<string, unknown> = {
+        ...(existingCheckpoint ?? {}),
+        lastActivity: new Date().toISOString(),
+        stageOnly,
+        functionVersion: FUNCTION_VERSION,
+      };
+      if (startAfterId && startAfter !== null) {
+        checkpointPayload.startAfterId = startAfterId;
+        checkpointPayload.startAfter = startAfter;
+        checkpointPayload.cursor = [startAfter, startAfterId];
+      }
+
       await supabase
         .from('sync_runs')
         .update({
           status: 'running',
-          checkpoint: { startAfterId, startAfter, lastActivity: new Date().toISOString() }
+          checkpoint: checkpointPayload
         })
         // IMPORTANT: Do not resurrect cancelled/completed runs. This also makes
         // "cancel individual sync" reliable even if a background chain request

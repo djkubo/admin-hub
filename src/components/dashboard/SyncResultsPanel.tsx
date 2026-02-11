@@ -502,8 +502,11 @@ export function SyncResultsPanel() {
                 startAfter
               };
             } else {
-              toast.error('No hay punto de reanudación', { description: 'El sync de GHL no tiene cursor/startAfter guardado.' });
-              return;
+              // Let the backend recover checkpoint/cursor from sync_runs by syncRunId.
+              payload = {
+                syncRunId: sync.id,
+                stageOnly: stageOnlyForGhl
+              };
             }
           }
           break;
