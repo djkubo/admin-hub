@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -53,6 +54,9 @@ export function AddClientDialog({ open, onOpenChange, onAdd, isLoading }: AddCli
       <DialogContent className="sm:max-w-md bg-card border-border">
         <DialogHeader>
           <DialogTitle>Agregar Nuevo Cliente</DialogTitle>
+          <DialogDescription>
+            Completa los datos del cliente para agregarlo al sistema.
+          </DialogDescription>
         </DialogHeader>
         
         <form onSubmit={handleSubmit} className="space-y-4">

@@ -18,7 +18,13 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface ClientEvent {
@@ -82,6 +88,9 @@ export function ClientEventsTimeline({ clientId, clientName, open, onOpenChange 
             <Activity className="h-5 w-5 text-primary" />
             Timeline de {clientName}
           </DialogTitle>
+          <DialogDescription>
+            Historial reciente de eventos y actividad del cliente.
+          </DialogDescription>
         </DialogHeader>
 
         <ScrollArea className="h-[400px] pr-4">

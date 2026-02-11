@@ -17,6 +17,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -279,6 +280,9 @@ export function TemplateManager() {
             <DialogTitle>
               {editingTemplate ? 'Editar Plantilla' : 'Nueva Plantilla'}
             </DialogTitle>
+            <DialogDescription>
+              Configura canal, contenido y variables dinámicas de la plantilla.
+            </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-4 py-4">
@@ -361,6 +365,9 @@ export function TemplateManager() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Vista Previa: {previewTemplate?.name}</DialogTitle>
+            <DialogDescription>
+              Revisa cómo se verá la plantilla antes de usarla en campañas.
+            </DialogDescription>
           </DialogHeader>
           
           {previewTemplate && (

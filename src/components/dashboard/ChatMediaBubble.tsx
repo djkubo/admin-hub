@@ -13,6 +13,9 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
@@ -77,6 +80,10 @@ export function ChatMediaBubble({
           </div>
         </DialogTrigger>
         <DialogContent className="max-w-4xl p-2">
+          <DialogHeader className="sr-only">
+            <DialogTitle>{filename || "Image preview"}</DialogTitle>
+            <DialogDescription>Expanded image preview for chat media.</DialogDescription>
+          </DialogHeader>
           <img
             src={mediaUrl}
             alt={filename || "Image"}

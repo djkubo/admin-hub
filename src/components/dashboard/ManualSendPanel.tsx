@@ -22,6 +22,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -329,6 +330,9 @@ export function ManualSendPanel() {
               <AlertTriangle className="h-5 w-5 text-amber-400" />
               Confirmar Envío
             </DialogTitle>
+            <DialogDescription>
+              Revisa el resumen antes de iniciar el envío masivo.
+            </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-4 py-4">

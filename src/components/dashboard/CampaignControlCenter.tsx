@@ -35,6 +35,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -547,6 +548,9 @@ export function CampaignControlCenter() {
               <DialogContent className="max-w-2xl">
                 <DialogHeader>
                   <DialogTitle>{editingCampaign ? 'Editar' : 'Nueva'} Campaña</DialogTitle>
+                  <DialogDescription>
+                    Define segmento, canal, plantilla y guardrails de la campaña.
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid gap-2">
@@ -767,6 +771,9 @@ export function CampaignControlCenter() {
               <DialogContent className="max-w-2xl">
                 <DialogHeader>
                   <DialogTitle>{editingTemplate ? 'Editar' : 'Nueva'} Plantilla</DialogTitle>
+                  <DialogDescription>
+                    Configura el contenido y canal de la plantilla para campañas.
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-2 gap-4">
@@ -925,6 +932,9 @@ export function CampaignControlCenter() {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Preview: {previewCampaign?.name}</DialogTitle>
+            <DialogDescription>
+              Revisa mensaje y destinatarios antes de ejecutar la campaña.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
