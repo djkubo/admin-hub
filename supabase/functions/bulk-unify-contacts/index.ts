@@ -419,16 +419,16 @@ async function updateSyncRunProgress(
 ): Promise<void> {
   const totalProcessed = progress.ghlProcessed + progress.mcProcessed + progress.csvProcessed + progress.phoneInserted;
   const totalRecords = progress.ghlTotal + progress.mcTotal + progress.csvTotal;
-  
+
   const status = hasMore ? 'running' : 'completed';
-  
+
   await supabase
     .from('sync_runs')
     .update({
       status,
-      processed_count: totalProcessed,
-      total_count: totalRecords,
-      error_count: progress.errors,
+      total_fetched: totalProcessed,
+      total_inserted: totalProcessed,
+      total_skipped: progress.errors,
       completed_at: hasMore ? null : new Date().toISOString(),
       checkpoint: {
         ghlProcessed: progress.ghlProcessed,
@@ -436,7 +436,13 @@ async function updateSyncRunProgress(
         csvProcessed: progress.csvProcessed,
         phoneInserted: progress.phoneInserted,
         lastUpdated: new Date().toISOString()
-      }
+      },
+      metadata: {
+        ghlTotal: progress.ghlTotal,
+        mcTotal: progress.mcTotal,
+        csvTotal: progress.csvTotal,
+        errors: progress.errors,
+      },
     })
     .eq('id', syncRunId);
 }
@@ -509,12 +515,12 @@ Deno.serve(async (req) => {
       // Nothing to process
       if (syncRunId) {
         await supabase
-          .from('sync_runs')
-          .update({ 
-            status: 'completed', 
-            completed_at: new Date().toISOString() 
-          })
-          .eq('id', syncRunId);
+        .from('sync_runs')
+        .update({
+          status: 'completed', 
+          completed_at: new Date().toISOString() 
+        })
+        .eq('id', syncRunId);
       }
       
       return new Response(JSON.stringify({
@@ -531,8 +537,12 @@ Deno.serve(async (req) => {
         .insert({
           source: 'bulk_unify',
           status: 'running',
-          total_count: totalPending,
-          processed_count: 0,
+          total_fetched: totalPending,
+          total_inserted: 0,
+          total_skipped: 0,
+          metadata: {
+            expected_total: totalPending,
+          },
         })
         .select('id')
         .single();
