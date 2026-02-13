@@ -2842,7 +2842,14 @@ export type Database = {
           mrr: number
         }[]
       }
-      kpi_new_customers: { Args: never; Returns: Json }
+      kpi_new_customers: {
+        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
+        Returns: {
+          currency: string
+          new_customer_count: number
+          total_revenue: number
+        }[]
+      }
       kpi_refunds: {
         Args: { p_range?: string }
         Returns: {
@@ -2875,6 +2882,12 @@ export type Database = {
           conversion_count: number
           conversion_rate: number
           total_revenue: number
+        }[]
+      }
+      kpi_trials_started: {
+        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
+        Returns: {
+          trial_count: number
         }[]
       }
       match_knowledge: {
