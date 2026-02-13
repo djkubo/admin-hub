@@ -197,14 +197,14 @@ async function processGHLBatch(
       const payload = raw.raw_payload || {};
       
       const { error: unifyError } = await supabase.rpc('unify_identity', {
+        p_source: 'ghl_sync',
         p_email: raw.email?.toLowerCase()?.trim() || null,
         p_phone: raw.phone || null,
-        p_ghl_id: raw.contact_id || null,
-        p_manychat_id: null,
-        p_stripe_id: null,
-        p_paypal_id: null,
-        p_name: raw.name || payload.firstName || null,
-        p_source: 'ghl_sync'
+        p_ghl_contact_id: raw.contact_id || null,
+        p_manychat_subscriber_id: null,
+        p_stripe_customer_id: null,
+        p_paypal_customer_id: null,
+        p_full_name: raw.name || payload.firstName || null,
       });
       
       if (unifyError) {
@@ -251,14 +251,14 @@ async function processManyChatBatch(
   for (const raw of rawRecords) {
     try {
       const { error: unifyError } = await supabase.rpc('unify_identity', {
+        p_source: 'manychat_sync',
         p_email: raw.email?.toLowerCase()?.trim() || null,
         p_phone: raw.phone || null,
-        p_ghl_id: null,
-        p_manychat_id: raw.subscriber_id || null,
-        p_stripe_id: null,
-        p_paypal_id: null,
-        p_name: raw.name || raw.first_name || null,
-        p_source: 'manychat_sync'
+        p_ghl_contact_id: null,
+        p_manychat_subscriber_id: raw.subscriber_id || null,
+        p_stripe_customer_id: null,
+        p_paypal_customer_id: null,
+        p_full_name: raw.name || raw.first_name || null,
       });
       
       if (unifyError) {
@@ -335,14 +335,14 @@ async function processCSVBatch(
       const payload = raw.raw_row || {};
       
       const { error: unifyError } = await supabase.rpc('unify_identity', {
+        p_source: 'csv_import',
         p_email: (raw.email || payload.email || payload.Email)?.toLowerCase()?.trim() || null,
         p_phone: raw.phone || payload.phone || payload.telefono || null,
-        p_ghl_id: null,
-        p_manychat_id: null,
-        p_stripe_id: payload.stripe_customer_id || null,
-        p_paypal_id: payload.paypal_customer_id || null,
-        p_name: raw.name || payload.name || payload.nombre || null,
-        p_source: 'csv_import'
+        p_ghl_contact_id: null,
+        p_manychat_subscriber_id: null,
+        p_stripe_customer_id: payload.stripe_customer_id || null,
+        p_paypal_customer_id: payload.paypal_customer_id || null,
+        p_full_name: raw.name || payload.name || payload.nombre || null,
       });
       
       if (unifyError) {
