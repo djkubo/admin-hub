@@ -93,6 +93,7 @@ export function SyncOrchestrator() {
   const [pendingCounts, setPendingCounts] = useState<PendingCounts>({ ghl: 0, manychat: 0, csv: 0, total: 0 });
   const [isUnifying, setIsUnifying] = useState(false);
   const [unifyProgress, setUnifyProgress] = useState(0);
+  const [countsMode, setCountsMode] = useState<"accurate" | "fast">("accurate");
   const [unifyStats, setUnifyStats] = useState<{
     processed: number;
     merged: number;
@@ -105,63 +106,54 @@ export function SyncOrchestrator() {
   const [loading, setLoading] = useState(true);
   const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch current counts using accurate RPC (with partial indexes for speed)
+  const applyCountsPayload = useCallback((counts: Record<string, number>) => {
+    const ghlUnprocessed = counts.ghl_unprocessed || 0;
+    const manychatUnprocessed = counts.manychat_unprocessed || 0;
+    const csvStaged = counts.csv_staged || 0;
+
+    setRawCounts({
+      ghl_total: counts.ghl_total || 0,
+      ghl_unprocessed: ghlUnprocessed,
+      manychat_total: counts.manychat_total || 0,
+      manychat_unprocessed: manychatUnprocessed,
+      csv_staged: csvStaged,
+      csv_total: counts.csv_total || 0,
+    });
+    setPendingCounts({
+      ghl: ghlUnprocessed,
+      manychat: manychatUnprocessed,
+      csv: csvStaged,
+      total: ghlUnprocessed + manychatUnprocessed + csvStaged,
+    });
+  }, []);
+
+  // Fetch current counts using accurate RPC first, fallback to fast on timeout and persist mode.
   const fetchCounts = useCallback(async () => {
     try {
-      // Try new accurate RPC first
-      const { data, error } = await supabase.rpc('get_staging_counts_accurate');
+      const rpcName = countsMode === "accurate" ? "get_staging_counts_accurate" : "get_staging_counts_fast";
+      const { data, error } = await supabase.rpc(rpcName);
 
       if (error) {
-        console.error('RPC error, trying fast fallback:', error);
-        // Fallback to fast RPC
-        const { data: fastData } = await supabase.rpc('get_staging_counts_fast');
-        if (fastData) {
-          const counts = fastData as Record<string, number>;
-          setRawCounts({
-            ghl_total: counts.ghl_total || 0,
-            ghl_unprocessed: counts.ghl_unprocessed || 0,
-            manychat_total: counts.manychat_total || 0,
-            manychat_unprocessed: counts.manychat_unprocessed || 0,
-            csv_staged: counts.csv_staged || 0,
-            csv_total: counts.csv_total || 0
-          });
-          setPendingCounts({
-            ghl: counts.ghl_unprocessed || 0,
-            manychat: counts.manychat_unprocessed || 0,
-            csv: counts.csv_staged || 0,
-            total: (counts.ghl_unprocessed || 0) + (counts.manychat_unprocessed || 0) + (counts.csv_staged || 0)
-          });
+        if (countsMode === "accurate") {
+          console.error("RPC error, switching to fast fallback:", error);
+          setCountsMode("fast");
+        } else {
+          console.error("Error fetching fast staging counts:", error);
         }
+
+        const { data: fastData, error: fastError } = await supabase.rpc("get_staging_counts_fast");
+        if (fastError) {
+          console.error("Error fetching fast staging counts:", fastError);
+          return;
+        }
+
+        if (fastData) applyCountsPayload(fastData as Record<string, number>);
         setLoading(false);
         return;
       }
 
-      const counts = data as {
-        ghl_total: number;
-        ghl_unprocessed: number;
-        manychat_total: number;
-        manychat_unprocessed: number;
-        csv_total: number;
-        csv_staged: number;
-        clients_total: number;
-        transactions_total: number;
-      };
-
-      setRawCounts({
-        ghl_total: counts.ghl_total || 0,
-        ghl_unprocessed: counts.ghl_unprocessed || 0,
-        manychat_total: counts.manychat_total || 0,
-        manychat_unprocessed: counts.manychat_unprocessed || 0,
-        csv_staged: counts.csv_staged || 0,
-        csv_total: counts.csv_total || 0
-      });
-
-      setPendingCounts({
-        ghl: counts.ghl_unprocessed || 0,
-        manychat: counts.manychat_unprocessed || 0,
-        csv: counts.csv_staged || 0,
-        total: (counts.ghl_unprocessed || 0) + (counts.manychat_unprocessed || 0) + (counts.csv_staged || 0)
-      });
+      if (!data) return;
+      applyCountsPayload(data as Record<string, number>);
 
       setLoading(false);
     } catch (error) {
@@ -169,7 +161,7 @@ export function SyncOrchestrator() {
       console.error('Error fetching counts:', errorMessage);
       setLoading(false);
     }
-  }, []);
+  }, [countsMode, applyCountsPayload]);
 
   // Check for active syncs on mount and start polling
   const checkActiveSync = useCallback(async (source: string) => {
@@ -649,7 +641,7 @@ export function SyncOrchestrator() {
     try {
       console.log('[SyncOrchestrator] Invoking bulk-unify-contacts...');
       const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
-        body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 2000 }
+        body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 50 }
       });
 
       console.log('[SyncOrchestrator] Response:', { data, error });
@@ -691,11 +683,15 @@ export function SyncOrchestrator() {
 
   // Resume paused unification
   const resumeUnification = async () => {
+    if (!unifyStats.syncRunId) {
+      toast.error('No hay una unificación pausada para reanudar');
+      return;
+    }
     setIsUnifying(true);
     
     try {
       const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
-        body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 2000 }
+        body: { syncRunId: unifyStats.syncRunId, sources: ['ghl', 'manychat', 'csv'], batchSize: 50 }
       });
 
       if (error) throw error;
@@ -716,7 +712,11 @@ export function SyncOrchestrator() {
   // Cancel unification
   const cancelUnification = async () => {
     try {
-      await supabase.functions.invoke('bulk-unify-contacts', { body: { forceCancel: true } });
+      await supabase.functions.invoke('bulk-unify-contacts', { 
+        body: unifyStats.syncRunId 
+          ? { syncRunId: unifyStats.syncRunId, forceCancel: true }
+          : { forceCancel: true }
+      });
       setIsUnifying(false);
       if (pollingTimeoutRef.current) {
         clearTimeout(pollingTimeoutRef.current);

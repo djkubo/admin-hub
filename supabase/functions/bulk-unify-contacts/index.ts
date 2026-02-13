@@ -1,641 +1,853 @@
-// Edge Function: bulk-unify-contacts v5
-// Single Batch Per Invocation - Prevents timeouts via auto-chaining
+// Edge Function: bulk-unify-contacts v6
+// Single batch per invocation + auto-chaining (EdgeRuntime.waitUntil).
+// Uses merge_contact() to unify identities consistently with the rest of the system.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createLogger, LogLevel } from "../_shared/logger.ts";
+
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
+
+const logger = createLogger("bulk-unify-contacts", LogLevel.INFO);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-declare const EdgeRuntime: {
-  waitUntil: (promise: Promise<unknown>) => void;
-};
+type Source = "ghl" | "manychat" | "csv";
 
-// ============================================================================
-// CONFIGURACIÓN v5 - Single Batch Per Invocation (Anti-Timeout)
-// ============================================================================
-const BATCH_SIZE_DEFAULT = 50; // Reduced from 100 to prevent memory issues
+interface BulkUnifyBody {
+  sources?: Source[];
+  batchSize?: number;
+  syncRunId?: string;
+  importId?: string;
+  forceCancel?: boolean;
 
-const logger = {
-  info: (msg: string, data?: Record<string, unknown>) => console.log(`[INFO] ${msg}`, data ? JSON.stringify(data) : ''),
-  warn: (msg: string, data?: Record<string, unknown>) => console.warn(`[WARN] ${msg}`, data ? JSON.stringify(data) : ''),
-  error: (msg: string, data?: Record<string, unknown>) => console.error(`[ERROR] ${msg}`, data ? JSON.stringify(data) : ''),
-};
-
-interface UnifyProgress {
-  ghlProcessed: number;
-  ghlTotal: number;
-  mcProcessed: number;
-  mcTotal: number;
-  csvProcessed: number;
-  csvTotal: number;
-  phoneInserted: number;
-  errors: number;
+  // Internal (auto-chain)
+  isChainedCall?: boolean;
 }
 
-// deno-lint-ignore no-explicit-any
-type SupabaseClient = ReturnType<typeof createClient<any>>;
-
-// ============================================================================
-// PHONE MERGE LOGIC - Optimized with Pre-fetch (TAREA 3)
-// ============================================================================
-async function insertPhoneOnlyRecords(
-  supabase: SupabaseClient,
-  records: Array<{ phone_e164: string; source: string; name?: string; [key: string]: unknown }>
-): Promise<{ inserted: number; updated: number; errors: number }> {
-  if (!records.length) return { inserted: 0, updated: 0, errors: 0 };
-  
-  logger.info(`Processing ${records.length} phone-only records`);
-  
-  // Step 1: Get all existing phones in ONE query
-  const allPhones = records.map(r => r.phone_e164).filter(Boolean);
-  
-  const { data: existingClients, error: fetchError } = await supabase
-    .from('clients')
-    .select('id, phone_e164, email, name, last_sync')
-    .in('phone_e164', allPhones);
-  
-  if (fetchError) {
-    logger.error('Error fetching existing phones', { error: fetchError.message });
-    return { inserted: 0, updated: 0, errors: records.length };
-  }
-  
-  // Step 2: Create a map for quick lookup
-  const existingPhoneMap = new Map<string, { id: string; email: string | null; name: string | null }>();
-  for (const client of (existingClients || [])) {
-    if (client.phone_e164) {
-      existingPhoneMap.set(client.phone_e164, {
-        id: client.id,
-        email: client.email,
-        name: client.name
-      });
-    }
-  }
-  
-  // Step 3: Separate into UPDATE vs INSERT
-  const toUpdate: Array<{ id: string; name?: string; last_sync: string }> = [];
-  const toInsert: Array<Record<string, unknown>> = [];
-  
-  const now = new Date().toISOString();
-  
-  for (const record of records) {
-    const existing = existingPhoneMap.get(record.phone_e164);
-    
-    if (existing) {
-      // Already exists - only update if we have new data
-      const updateData: { id: string; name?: string; last_sync: string } = {
-        id: existing.id,
-        last_sync: now
-      };
-      
-      // Only update name if current is empty and we have one
-      if (!existing.name && record.name) {
-        updateData.name = record.name;
-      }
-      
-      toUpdate.push(updateData);
-    } else {
-      // New record
-      toInsert.push({
-        phone_e164: record.phone_e164,
-        name: record.name || null,
-        source: record.source || 'phone_sync',
-        lifecycle_stage: 'LEAD',
-        created_at: now,
-        last_sync: now,
-      });
-    }
-  }
-  
-  logger.info(`Phone merge: ${toUpdate.length} to update, ${toInsert.length} to insert`);
-  
-  let updated = 0;
-  let inserted = 0;
-  let errors = 0;
-  
-  // Step 4: Bulk UPDATE existing records
-  if (toUpdate.length > 0) {
-    const UPDATE_BATCH = 100;
-    for (let i = 0; i < toUpdate.length; i += UPDATE_BATCH) {
-      const batch = toUpdate.slice(i, i + UPDATE_BATCH);
-      
-      const { error: updateError } = await supabase
-        .from('clients')
-        .upsert(batch, { onConflict: 'id' });
-      
-      if (updateError) {
-        logger.error('Error updating phone records', { error: updateError.message, batch: i });
-        errors += batch.length;
-      } else {
-        updated += batch.length;
-      }
-    }
-  }
-  
-  // Step 5: Bulk INSERT new records
-  if (toInsert.length > 0) {
-    const INSERT_BATCH = 50;
-    for (let i = 0; i < toInsert.length; i += INSERT_BATCH) {
-      const batch = toInsert.slice(i, i + INSERT_BATCH);
-      
-      const { error: insertError } = await supabase
-        .from('clients')
-        .insert(batch);
-      
-      if (insertError) {
-        // If batch insert fails, try one by one
-        logger.warn('Batch insert failed, trying individually', { error: insertError.message });
-        
-        for (const record of batch) {
-          const { error: singleError } = await supabase
-            .from('clients')
-            .insert(record);
-          
-          if (singleError) {
-            logger.warn('Single insert failed', { phone: String(record.phone_e164), error: singleError.message });
-            errors++;
-          } else {
-            inserted++;
-          }
-        }
-      } else {
-        inserted += batch.length;
-      }
-    }
-  }
-  
-  logger.info(`Phone merge complete: ${inserted} inserted, ${updated} updated, ${errors} errors`);
-  return { inserted, updated, errors };
-}
-
-// ============================================================================
-// PROCESS RAW RECORDS FROM STAGING TABLES
-// ============================================================================
-async function processGHLBatch(
-  supabase: SupabaseClient,
-  batchSize: number
-): Promise<{ processed: number; errors: number }> {
-  const { data: rawRecords, error } = await supabase
-    .from('ghl_contacts_raw')
-    .select('*')
-    .is('processed_at', null)
-    .order('fetched_at', { ascending: true })
-    .limit(batchSize);
-  
-  if (error || !rawRecords?.length) {
-    return { processed: 0, errors: 0 };
-  }
-  
-  logger.info(`Processing ${rawRecords.length} GHL raw records`);
-  
-  let processed = 0;
-  let errors = 0;
-  
-  for (const raw of rawRecords) {
-    try {
-      const payload = raw.raw_payload || {};
-      
-      const { error: unifyError } = await supabase.rpc('unify_identity', {
-        p_source: 'ghl_sync',
-        p_email: raw.email?.toLowerCase()?.trim() || null,
-        p_phone: raw.phone || null,
-        p_ghl_contact_id: raw.contact_id || null,
-        p_manychat_subscriber_id: null,
-        p_stripe_customer_id: null,
-        p_paypal_customer_id: null,
-        p_full_name: raw.name || payload.firstName || null,
-      });
-      
-      if (unifyError) {
-        logger.warn('Unify error for GHL record', { id: raw.id, error: unifyError.message });
-        errors++;
-      } else {
-        processed++;
-      }
-      
-      await supabase
-        .from('ghl_contacts_raw')
-        .update({ processed_at: new Date().toISOString() })
-        .eq('id', raw.id);
-        
-    } catch (e) {
-      logger.error('Error processing GHL record', { id: raw.id, error: String(e) });
-      errors++;
-    }
-  }
-  
-  return { processed, errors };
-}
-
-async function processManyChatBatch(
-  supabase: SupabaseClient,
-  batchSize: number
-): Promise<{ processed: number; errors: number }> {
-  const { data: rawRecords, error } = await supabase
-    .from('manychat_contacts_raw')
-    .select('*')
-    .is('processed_at', null)
-    .order('fetched_at', { ascending: true })
-    .limit(batchSize);
-  
-  if (error || !rawRecords?.length) {
-    return { processed: 0, errors: 0 };
-  }
-  
-  logger.info(`Processing ${rawRecords.length} ManyChat raw records`);
-  
-  let processed = 0;
-  let errors = 0;
-  
-  for (const raw of rawRecords) {
-    try {
-      const { error: unifyError } = await supabase.rpc('unify_identity', {
-        p_source: 'manychat_sync',
-        p_email: raw.email?.toLowerCase()?.trim() || null,
-        p_phone: raw.phone || null,
-        p_ghl_contact_id: null,
-        p_manychat_subscriber_id: raw.subscriber_id || null,
-        p_stripe_customer_id: null,
-        p_paypal_customer_id: null,
-        p_full_name: raw.name || raw.first_name || null,
-      });
-      
-      if (unifyError) {
-        logger.warn('Unify error for ManyChat record', { id: raw.id, error: unifyError.message });
-        errors++;
-      } else {
-        processed++;
-      }
-      
-      await supabase
-        .from('manychat_contacts_raw')
-        .update({ processed_at: new Date().toISOString() })
-        .eq('id', raw.id);
-        
-    } catch (e) {
-      logger.error('Error processing ManyChat record', { id: raw.id, error: String(e) });
-      errors++;
-    }
-  }
-  
-  return { processed, errors };
-}
-
-async function processCSVBatch(
-  supabase: SupabaseClient,
-  batchSize: number,
-  importId?: string
-): Promise<{ processed: number; errors: number }> {
-  let query = supabase
-    .from('csv_imports_raw')
-    .select('*')
-    .is('processed_at', null)
-    .order('created_at', { ascending: true })
-    .limit(batchSize);
-  
-  if (importId) {
-    query = query.eq('import_id', importId);
-  }
-  
-  const { data: rawRecords, error } = await query;
-  
-  if (error || !rawRecords?.length) {
-    return { processed: 0, errors: 0 };
-  }
-  
-  logger.info(`Processing ${rawRecords.length} CSV raw records`);
-  
-  let processed = 0;
-  let errors = 0;
-  
-  // Group records by whether they have email or just phone
-  const emailRecords: typeof rawRecords = [];
-  const phoneOnlyRecords: Array<{ phone_e164: string; source: string; name?: string }> = [];
-  
-  for (const raw of rawRecords) {
-    const payload = raw.raw_row || {};
-    const email = raw.email || payload.email || payload.Email || payload.EMAIL;
-    const phone = raw.phone || payload.phone || payload.telefono || payload.Phone || payload.TELEFONO;
-    
-    if (email) {
-      emailRecords.push(raw);
-    } else if (phone) {
-      phoneOnlyRecords.push({
-        phone_e164: phone,
-        source: 'csv_import',
-        name: raw.name || payload.name || payload.nombre || payload.Name || null
-      });
-    }
-  }
-  
-  // Process email records via unify_identity
-  for (const raw of emailRecords) {
-    try {
-      const payload = raw.raw_row || {};
-      
-      const { error: unifyError } = await supabase.rpc('unify_identity', {
-        p_source: 'csv_import',
-        p_email: (raw.email || payload.email || payload.Email)?.toLowerCase()?.trim() || null,
-        p_phone: raw.phone || payload.phone || payload.telefono || null,
-        p_ghl_contact_id: null,
-        p_manychat_subscriber_id: null,
-        p_stripe_customer_id: payload.stripe_customer_id || null,
-        p_paypal_customer_id: payload.paypal_customer_id || null,
-        p_full_name: raw.name || payload.name || payload.nombre || null,
-      });
-      
-      if (unifyError) {
-        errors++;
-      } else {
-        processed++;
-      }
-      
-      await supabase
-        .from('csv_imports_raw')
-        .update({ processed_at: new Date().toISOString() })
-        .eq('id', raw.id);
-        
-    } catch {
-      errors++;
-    }
-  }
-  
-  // Process phone-only records with optimized batch logic
-  if (phoneOnlyRecords.length > 0) {
-    const phoneResult = await insertPhoneOnlyRecords(supabase, phoneOnlyRecords);
-    processed += phoneResult.inserted + phoneResult.updated;
-    errors += phoneResult.errors;
-    
-    // Mark phone-only CSV records as processed
-    const phoneOnlyIds = rawRecords
-      .filter(r => {
-        const payload = r.raw_row || {};
-        const email = r.email || payload.email || payload.Email;
-        return !email;
-      })
-      .map(r => r.id);
-    
-    if (phoneOnlyIds.length > 0) {
-      await supabase
-        .from('csv_imports_raw')
-        .update({ processed_at: new Date().toISOString() })
-        .in('id', phoneOnlyIds);
-    }
-  }
-  
-  return { processed, errors };
-}
-
-// ============================================================================
-// COUNT PENDING RECORDS
-// ============================================================================
-async function countPendingRecords(supabase: SupabaseClient): Promise<{
+interface PendingCounts {
   ghl: number;
   manychat: number;
   csv: number;
-}> {
-  const [ghlResult, mcResult, csvResult] = await Promise.all([
-    supabase.from('ghl_contacts_raw').select('id', { count: 'exact', head: true }).is('processed_at', null),
-    supabase.from('manychat_contacts_raw').select('id', { count: 'exact', head: true }).is('processed_at', null),
-    supabase.from('csv_imports_raw').select('id', { count: 'exact', head: true }).is('processed_at', null),
-  ]);
-  
+  total: number;
+}
+
+interface BatchTotals {
+  processed: number;
+  inserted: number;
+  updated: number;
+  conflicts: number;
+  skipped: number;
+  errors: number;
+}
+
+interface SyncRunRow {
+  id: string;
+  status: string;
+  total_fetched: number | null;
+  total_inserted: number | null;
+  total_updated: number | null;
+  total_skipped: number | null;
+  total_conflicts: number | null;
+  checkpoint: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+  error_message: string | null;
+}
+
+const DEFAULT_SOURCES: Source[] = ["ghl", "manychat", "csv"];
+const BATCH_SIZE_DEFAULT = 50;
+const BATCH_SIZE_MAX = 100;
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function clampBatchSize(v: unknown): number {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return BATCH_SIZE_DEFAULT;
+  const rounded = Math.floor(n);
+  return Math.max(1, Math.min(rounded, BATCH_SIZE_MAX));
+}
+
+function isCancelledStatus(status: string | null | undefined): boolean {
+  return status === "cancelled" || status === "canceled";
+}
+
+async function verifyAdminOrServiceRole(req: Request): Promise<{ valid: boolean; isServiceRole: boolean; error?: string }> {
+  const authHeader = req.headers.get("Authorization") || "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+  // Allow service role token for internal auto-chaining.
+  if (authHeader.startsWith("Bearer ") && serviceRoleKey) {
+    const token = authHeader.slice("Bearer ".length);
+    if (token === serviceRoleKey) {
+      return { valid: true, isServiceRole: true };
+    }
+  }
+
+  // Require a real JWT for panel calls.
+  if (!authHeader.startsWith("Bearer ")) {
+    return { valid: false, isServiceRole: false, error: "Missing Authorization header" };
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
+  const { data: isAdmin, error: adminError } = await (supabase as any).rpc("is_admin");
+  if (adminError) {
+    return { valid: false, isServiceRole: false, error: `Auth check failed: ${adminError.message}` };
+  }
+  if (!isAdmin) {
+    return { valid: false, isServiceRole: false, error: "Not authorized as admin" };
+  }
+
+  return { valid: true, isServiceRole: false };
+}
+
+async function fetchSyncRun(supabase: any, syncRunId: string): Promise<SyncRunRow | null> {
+  const { data, error } = await supabase
+    .from("sync_runs")
+    .select(
+      "id,status,total_fetched,total_inserted,total_updated,total_skipped,total_conflicts,checkpoint,metadata,error_message",
+    )
+    .eq("id", syncRunId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Failed to fetch sync run: ${error.message}`);
+  return (data as SyncRunRow | null) || null;
+}
+
+async function findLatestActiveBulkUnifyRun(supabase: any): Promise<SyncRunRow | null> {
+  const { data, error } = await supabase
+    .from("sync_runs")
+    .select(
+      "id,status,total_fetched,total_inserted,total_updated,total_skipped,total_conflicts,checkpoint,metadata,error_message",
+    )
+    .eq("source", "bulk_unify")
+    .in("status", ["running", "continuing", "paused"])
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`Failed to query active sync run: ${error.message}`);
+  return (data as SyncRunRow | null) || null;
+}
+
+async function countPendingRecords(supabase: any, sources: Source[], importId?: string): Promise<PendingCounts> {
+  const want = new Set(sources);
+
+  const ghlPromise = want.has("ghl")
+    ? supabase.from("ghl_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
+    : Promise.resolve({ count: 0 });
+  const mcPromise = want.has("manychat")
+    ? supabase.from("manychat_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
+    : Promise.resolve({ count: 0 });
+
+  const csvBase = want.has("csv")
+    ? supabase
+        .from("csv_imports_raw")
+        .select("id", { count: "exact", head: true })
+        .is("processed_at", null)
+        .in("processing_status", ["pending", "staged"])
+    : null;
+  const csvPromise = csvBase ? (importId ? csvBase.eq("import_id", importId) : csvBase) : Promise.resolve({ count: 0 });
+
+  const [ghlRes, mcRes, csvRes] = await Promise.all([ghlPromise, mcPromise, csvPromise]);
+
+  const pending: PendingCounts = {
+    ghl: (ghlRes as any).count || 0,
+    manychat: (mcRes as any).count || 0,
+    csv: (csvRes as any).count || 0,
+    total: 0,
+  };
+  pending.total = pending.ghl + pending.manychat + pending.csv;
+  return pending;
+}
+
+function emptyTotals(): BatchTotals {
+  return { processed: 0, inserted: 0, updated: 0, conflicts: 0, skipped: 0, errors: 0 };
+}
+
+function addTotals(a: BatchTotals, b: BatchTotals): BatchTotals {
   return {
-    ghl: ghlResult.count || 0,
-    manychat: mcResult.count || 0,
-    csv: csvResult.count || 0,
+    processed: a.processed + b.processed,
+    inserted: a.inserted + b.inserted,
+    updated: a.updated + b.updated,
+    conflicts: a.conflicts + b.conflicts,
+    skipped: a.skipped + b.skipped,
+    errors: a.errors + b.errors,
   };
 }
 
-// ============================================================================
-// UPDATE SYNC RUN PROGRESS
-// ============================================================================
-async function updateSyncRunProgress(
-  supabase: SupabaseClient,
-  syncRunId: string,
-  progress: UnifyProgress,
-  hasMore: boolean
-): Promise<void> {
-  const totalProcessed = progress.ghlProcessed + progress.mcProcessed + progress.csvProcessed + progress.phoneInserted;
-  const totalRecords = progress.ghlTotal + progress.mcTotal + progress.csvTotal;
-
-  const status = hasMore ? 'running' : 'completed';
-
-  await supabase
-    .from('sync_runs')
-    .update({
-      status,
-      total_fetched: totalProcessed,
-      total_inserted: totalProcessed,
-      total_skipped: progress.errors,
-      completed_at: hasMore ? null : new Date().toISOString(),
-      checkpoint: {
-        ghlProcessed: progress.ghlProcessed,
-        mcProcessed: progress.mcProcessed,
-        csvProcessed: progress.csvProcessed,
-        phoneInserted: progress.phoneInserted,
-        lastUpdated: new Date().toISOString()
-      },
-      metadata: {
-        ghlTotal: progress.ghlTotal,
-        mcTotal: progress.mcTotal,
-        csvTotal: progress.csvTotal,
-        errors: progress.errors,
-      },
+function normalizeTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return tags
+    .map((t) => {
+      if (typeof t === "string") return t;
+      if (t && typeof t === "object" && "name" in (t as any) && typeof (t as any).name === "string") return (t as any).name;
+      return "";
     })
-    .eq('id', syncRunId);
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-// ============================================================================
-// AUTO-CHAIN: Invoke next chunk
-// ============================================================================
-async function invokeNextChunk(
+async function processGHLBatch(supabase: any, syncRunId: string, batchSize: number): Promise<BatchTotals> {
+  const totals = emptyTotals();
+
+  const { data: rawContacts, error: fetchError } = await supabase
+    .from("ghl_contacts_raw")
+    .select("id, external_id, payload, processed_at")
+    .is("processed_at", null)
+    .order("fetched_at", { ascending: true })
+    .limit(batchSize);
+
+  if (fetchError) {
+    logger.error("Error fetching GHL raw contacts", new Error(fetchError.message));
+    totals.errors += 1;
+    return totals;
+  }
+
+  const contacts = (rawContacts || []) as Array<{ id: string; external_id: string; payload: any }>;
+  if (contacts.length === 0) return totals;
+
+  logger.info("Processing GHL batch", { count: contacts.length, batchSize });
+
+  for (const contact of contacts) {
+    try {
+      const payload = contact.payload || {};
+      const email = (payload.email as string) || null;
+      const phone = (payload.phone as string) || null;
+
+      if (!email && !phone) {
+        await supabase.from("ghl_contacts_raw").update({ processed_at: new Date().toISOString() }).eq("id", contact.id);
+        totals.processed++;
+        totals.skipped++;
+        continue;
+      }
+
+      const firstName = (payload.firstName as string) || "";
+      const lastName = (payload.lastName as string) || "";
+      const fullName =
+        (payload.contactName as string) || [firstName, lastName].filter(Boolean).join(" ") || null;
+      const tags = normalizeTags(payload.tags as unknown);
+
+      const dndSettings = payload.dndSettings as Record<string, { status?: string }> | undefined;
+      const inboundDndSettings = payload.inboundDndSettings as Record<string, { status?: string }> | undefined;
+      const waOptIn =
+        !payload.dnd &&
+        dndSettings?.whatsApp?.status !== "active" &&
+        inboundDndSettings?.whatsApp?.status !== "active";
+      const smsOptIn =
+        !payload.dnd && dndSettings?.sms?.status !== "active" && inboundDndSettings?.sms?.status !== "active";
+      const emailOptIn =
+        !payload.dnd && dndSettings?.email?.status !== "active" && inboundDndSettings?.email?.status !== "active";
+
+      const { data: mergeResult, error: mergeError } = await (supabase as any).rpc("merge_contact", {
+        p_source: "ghl",
+        p_external_id: contact.external_id,
+        p_email: email,
+        p_phone: phone,
+        p_full_name: fullName,
+        p_tags: tags,
+        p_wa_opt_in: waOptIn,
+        p_sms_opt_in: smsOptIn,
+        p_email_opt_in: emailOptIn,
+        p_extra_data: payload,
+        p_dry_run: false,
+        p_sync_run_id: syncRunId,
+      });
+
+      if (mergeError) {
+        logger.error(`Merge error for GHL contact ${contact.external_id}`, new Error(mergeError.message));
+        totals.errors++;
+      } else {
+        const action = (mergeResult as { action?: string })?.action;
+        if (action === "inserted") totals.inserted++;
+        else if (action === "updated") totals.updated++;
+        else if (action === "conflict") totals.conflicts++;
+      }
+
+      await supabase.from("ghl_contacts_raw").update({ processed_at: new Date().toISOString() }).eq("id", contact.id);
+      totals.processed++;
+    } catch (err) {
+      logger.error("Error processing GHL contact", err instanceof Error ? err : new Error(String(err)));
+      totals.errors++;
+    }
+  }
+
+  return totals;
+}
+
+async function processManyChatBatch(supabase: any, syncRunId: string, batchSize: number): Promise<BatchTotals> {
+  const totals = emptyTotals();
+
+  const { data: rawContacts, error: fetchError } = await supabase
+    .from("manychat_contacts_raw")
+    .select("id, subscriber_id, payload, processed_at")
+    .is("processed_at", null)
+    .order("fetched_at", { ascending: true })
+    .limit(batchSize);
+
+  if (fetchError) {
+    logger.error("Error fetching ManyChat raw contacts", new Error(fetchError.message));
+    totals.errors += 1;
+    return totals;
+  }
+
+  const contacts = (rawContacts || []) as Array<{ id: string; subscriber_id: string; payload: any }>;
+  if (contacts.length === 0) return totals;
+
+  logger.info("Processing ManyChat batch", { count: contacts.length, batchSize });
+
+  for (const contact of contacts) {
+    try {
+      const payload = contact.payload || {};
+      const email = (payload.email as string) || null;
+      const phone = (payload.phone as string) || (payload.whatsapp_phone as string) || null;
+
+      if (!email && !phone) {
+        await supabase.from("manychat_contacts_raw").update({ processed_at: new Date().toISOString() }).eq("id", contact.id);
+        totals.processed++;
+        totals.skipped++;
+        continue;
+      }
+
+      const fullName =
+        [payload.first_name, payload.last_name].filter(Boolean).join(" ") || (payload.name as string) || null;
+      const tags = normalizeTags(payload.tags as unknown);
+
+      // Use nulls when unknown to avoid overwriting existing opt-in flags.
+      const waOptIn = typeof payload.optin_whatsapp === "boolean" ? payload.optin_whatsapp : null;
+      const smsOptIn = typeof payload.optin_sms === "boolean" ? payload.optin_sms : null;
+      const emailOptIn = typeof payload.optin_email === "boolean" ? payload.optin_email : null;
+
+      const { data: mergeResult, error: mergeError } = await (supabase as any).rpc("merge_contact", {
+        p_source: "manychat",
+        p_external_id: contact.subscriber_id,
+        p_email: email,
+        p_phone: phone,
+        p_full_name: fullName,
+        p_tags: tags,
+        p_wa_opt_in: waOptIn,
+        p_sms_opt_in: smsOptIn,
+        p_email_opt_in: emailOptIn,
+        p_extra_data: payload,
+        p_dry_run: false,
+        p_sync_run_id: syncRunId,
+      });
+
+      if (mergeError) {
+        logger.error(`Merge error for ManyChat contact ${contact.subscriber_id}`, new Error(mergeError.message));
+        totals.errors++;
+      } else {
+        const action = (mergeResult as { action?: string })?.action;
+        if (action === "inserted") totals.inserted++;
+        else if (action === "updated") totals.updated++;
+        else if (action === "conflict") totals.conflicts++;
+      }
+
+      await supabase.from("manychat_contacts_raw").update({ processed_at: new Date().toISOString() }).eq("id", contact.id);
+      totals.processed++;
+    } catch (err) {
+      logger.error("Error processing ManyChat contact", err instanceof Error ? err : new Error(String(err)));
+      totals.errors++;
+    }
+  }
+
+  return totals;
+}
+
+async function processCSVBatch(
+  supabase: any,
   syncRunId: string,
   batchSize: number,
-  currentProgress: UnifyProgress
-): Promise<void> {
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  
-  logger.info('Auto-chaining to next chunk', { syncRunId, progress: currentProgress });
-  
-  try {
-    await fetch(`${supabaseUrl}/functions/v1/bulk-unify-contacts`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        syncRunId,
-        batchSize,
-        continueFrom: currentProgress,
-        isChainedCall: true
-      }),
-    });
-  } catch (e) {
-    logger.error('Failed to auto-chain', { error: String(e) });
+  importId?: string,
+): Promise<BatchTotals> {
+  const totals = emptyTotals();
+
+  let query = supabase
+    .from("csv_imports_raw")
+    .select("id, import_id, email, phone, full_name, raw_data, processing_status, source_type, processed_at")
+    .is("processed_at", null)
+    .in("processing_status", ["pending", "staged"])
+    .order("created_at", { ascending: true })
+    .limit(batchSize);
+
+  if (importId) query = query.eq("import_id", importId);
+
+  const { data: rawContacts, error: fetchError } = await query;
+
+  if (fetchError) {
+    logger.error("Error fetching CSV raw contacts", new Error(fetchError.message));
+    totals.errors += 1;
+    return totals;
   }
+
+  const contacts = (rawContacts || []) as Array<{
+    id: string;
+    email: string | null;
+    phone: string | null;
+    full_name: string | null;
+    raw_data: Record<string, unknown>;
+    source_type: string;
+  }>;
+
+  if (contacts.length === 0) return totals;
+
+  logger.info("Processing CSV batch", { count: contacts.length, batchSize, importId: importId || null });
+
+  for (const contact of contacts) {
+    try {
+      if (!contact.email && !contact.phone) {
+        await supabase
+          .from("csv_imports_raw")
+          .update({ processing_status: "skipped", error_message: "No email or phone", processed_at: new Date().toISOString() })
+          .eq("id", contact.id);
+        totals.processed++;
+        totals.skipped++;
+        continue;
+      }
+
+      const extraData = contact.raw_data || {};
+      const tags = normalizeTags((extraData as any).tags);
+
+      const { data: mergeResult, error: mergeError } = await (supabase as any).rpc("merge_contact", {
+        p_source: "csv",
+        p_external_id: contact.id,
+        p_email: contact.email,
+        p_phone: contact.phone,
+        p_full_name: contact.full_name,
+        p_tags: tags,
+        p_wa_opt_in: null,
+        p_sms_opt_in: null,
+        p_email_opt_in: null,
+        p_extra_data: extraData,
+        p_dry_run: false,
+        p_sync_run_id: syncRunId,
+      });
+
+      if (mergeError) {
+        logger.error(`Merge error for CSV contact ${contact.id}`, new Error(mergeError.message));
+        await supabase
+          .from("csv_imports_raw")
+          .update({
+            processing_status: "error",
+            error_message: mergeError.message,
+            processed_at: new Date().toISOString(),
+          })
+          .eq("id", contact.id);
+        totals.errors++;
+      } else {
+        const action = (mergeResult as { action?: string; client_id?: string })?.action;
+        const clientId = (mergeResult as { client_id?: string })?.client_id || null;
+
+        if (action === "inserted") totals.inserted++;
+        else if (action === "updated") totals.updated++;
+        else if (action === "conflict") totals.conflicts++;
+
+        const nextStatus = action === "conflict" ? "conflict" : "merged";
+        await supabase
+          .from("csv_imports_raw")
+          .update({
+            processing_status: nextStatus,
+            merged_client_id: clientId,
+            processed_at: new Date().toISOString(),
+          })
+          .eq("id", contact.id);
+      }
+
+      totals.processed++;
+    } catch (err) {
+      logger.error("Error processing CSV contact", err instanceof Error ? err : new Error(String(err)));
+      totals.errors++;
+    }
+  }
+
+  return totals;
 }
 
-// ============================================================================
-// MAIN HANDLER - Single Batch Per Invocation (TAREA 2)
-// ============================================================================
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+async function invokeNextChunk(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  syncRunId: string;
+  batchSize: number;
+  sources: Source[];
+  importId?: string;
+  chunk: number;
+}): Promise<{ ok: boolean }> {
+  const { supabaseUrl, serviceRoleKey, syncRunId, batchSize, sources, importId, chunk } = params;
+  const body: BulkUnifyBody = { syncRunId, batchSize, sources, importId, isChainedCall: true };
+
+  await delay(500);
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${supabaseUrl}/functions/v1/bulk-unify-contacts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceRoleKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (res.ok) {
+        logger.info("Chain invocation succeeded", { syncRunId, attempt, chunk });
+        return { ok: true };
+      }
+
+      logger.warn("Chain invocation returned non-2xx", { syncRunId, attempt, chunk, status: res.status });
+    } catch (e) {
+      logger.warn("Chain invocation failed", { syncRunId, attempt, chunk, error: String(e) });
+    }
+
+    await delay(2000 * attempt);
   }
-  
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-  
-  try {
-    const body = await req.json().catch(() => ({}));
-    
-    const batchSize = body.batchSize || BATCH_SIZE_DEFAULT;
-    let syncRunId = body.syncRunId;
-    const isChainedCall = body.isChainedCall === true;
-    const continueFrom = body.continueFrom as UnifyProgress | undefined;
-    
-    logger.info('=== Bulk Unify v5 - Single Batch Mode ===', { 
-      batchSize, 
-      syncRunId, 
-      isChainedCall 
+
+  return { ok: false };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  const auth = await verifyAdminOrServiceRole(req);
+  if (!auth.valid) {
+    return new Response(JSON.stringify({ ok: false, error: auth.error || "Forbidden" }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-    
-    // Get current pending counts
-    const pending = await countPendingRecords(supabase);
-    const totalPending = pending.ghl + pending.manychat + pending.csv;
-    
-    logger.info('Pending records', pending);
-    
-    if (totalPending === 0) {
-      // Nothing to process
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+  const startedAt = Date.now();
+
+  let syncRunId: string | undefined;
+
+  try {
+    const body = (await req.json().catch(() => ({}))) as BulkUnifyBody;
+
+    const batchSize = clampBatchSize(body.batchSize);
+    const sources = Array.isArray(body.sources) && body.sources.length > 0 ? body.sources : DEFAULT_SOURCES;
+    const importId = typeof body.importId === "string" && body.importId.length > 0 ? body.importId : undefined;
+    const requestedSyncRunId = typeof body.syncRunId === "string" && body.syncRunId.length > 0 ? body.syncRunId : undefined;
+    const isChainedCall = body.isChainedCall === true;
+    const forceCancel = body.forceCancel === true;
+
+    logger.info("Bulk unify request", {
+      syncRunId: requestedSyncRunId || null,
+      batchSize,
+      sources,
+      isChainedCall,
+      importId: importId || null,
+      forceCancel,
+    });
+
+    // Cancel: either by id or cancel all active bulk_unify runs.
+    if (forceCancel) {
+      let q = supabase
+        .from("sync_runs")
+        .update({
+          status: "cancelled",
+          completed_at: new Date().toISOString(),
+          error_message: "Cancelado por el usuario",
+        })
+        .eq("source", "bulk_unify")
+        .in("status", ["running", "continuing", "paused"]);
+
+      if (requestedSyncRunId) q = q.eq("id", requestedSyncRunId);
+
+      const { data: cancelled, error: cancelError } = await q.select("id");
+      if (cancelError) throw new Error(`Cancel failed: ${cancelError.message}`);
+
+      return new Response(
+        JSON.stringify({ ok: true, status: "cancelled", cancelled: (cancelled || []).length }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // If no id provided, reuse a running/paused run to avoid duplicates.
+    let syncRun: SyncRunRow | null = requestedSyncRunId
+      ? await fetchSyncRun(supabase, requestedSyncRunId)
+      : await findLatestActiveBulkUnifyRun(supabase);
+    syncRunId = syncRun?.id || requestedSyncRunId;
+
+    const pendingBefore = await countPendingRecords(supabase, sources, importId);
+    if (pendingBefore.total === 0) {
       if (syncRunId) {
         await supabase
-        .from('sync_runs')
-        .update({
-          status: 'completed', 
-          completed_at: new Date().toISOString() 
-        })
-        .eq('id', syncRunId);
+          .from("sync_runs")
+          .update({ status: "completed", completed_at: new Date().toISOString() })
+          .eq("id", syncRunId);
       }
-      
-      return new Response(JSON.stringify({
-        ok: true,
-        message: 'No pending records to unify',
-        hasMore: false
-      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          status: "no_work",
+          message: "No hay registros pendientes de unificar",
+          pending: pendingBefore,
+          duration_ms: Date.now() - startedAt,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
-    
-    // Create sync run if not chained
+
+    // Create sync run if needed.
     if (!syncRunId) {
-      const { data: newRun, error: runError } = await supabase
-        .from('sync_runs')
+      const nowIso = new Date().toISOString();
+      const { data: created, error: createError } = await supabase
+        .from("sync_runs")
         .insert({
-          source: 'bulk_unify',
-          status: 'running',
-          total_fetched: totalPending,
+          source: "bulk_unify",
+          status: "running",
+          total_fetched: 0,
           total_inserted: 0,
+          total_updated: 0,
           total_skipped: 0,
+          total_conflicts: 0,
+          checkpoint: {
+            chunk: 0,
+            runningTotal: 0,
+            progressPct: 0,
+            lastActivity: nowIso,
+            canResume: false,
+            errorCount: 0,
+          },
           metadata: {
-            expected_total: totalPending,
+            sources,
+            batchSize,
+            pending: pendingBefore,
+            importId: importId || null,
           },
         })
-        .select('id')
+        .select(
+          "id,status,total_fetched,total_inserted,total_updated,total_skipped,total_conflicts,checkpoint,metadata,error_message",
+        )
         .single();
-      
-      if (runError) {
-        throw new Error(`Failed to create sync run: ${runError.message}`);
-      }
-      
-      syncRunId = newRun.id;
-      logger.info('Created new sync run', { syncRunId });
+
+      if (createError) throw new Error(`Failed to create sync run: ${createError.message}`);
+
+      syncRun = created as unknown as SyncRunRow;
+      syncRunId = syncRun.id;
+    } else if (!syncRun) {
+      // syncRunId provided but not found: create a new one.
+      const nowIso = new Date().toISOString();
+      const { data: created, error: createError } = await supabase
+        .from("sync_runs")
+        .insert({
+          source: "bulk_unify",
+          status: "running",
+          total_fetched: 0,
+          total_inserted: 0,
+          total_updated: 0,
+          total_skipped: 0,
+          total_conflicts: 0,
+          checkpoint: {
+            chunk: 0,
+            runningTotal: 0,
+            progressPct: 0,
+            lastActivity: nowIso,
+            canResume: false,
+            errorCount: 0,
+          },
+          metadata: {
+            sources,
+            batchSize,
+            pending: pendingBefore,
+            importId: importId || null,
+          },
+        })
+        .select(
+          "id,status,total_fetched,total_inserted,total_updated,total_skipped,total_conflicts,checkpoint,metadata,error_message",
+        )
+        .single();
+
+      if (createError) throw new Error(`Failed to create sync run: ${createError.message}`);
+
+      syncRun = created as unknown as SyncRunRow;
+      syncRunId = syncRun.id;
     }
-    
-    // Initialize progress from checkpoint or start fresh
-    const progress: UnifyProgress = continueFrom || {
-      ghlProcessed: 0,
-      ghlTotal: pending.ghl,
-      mcProcessed: 0,
-      mcTotal: pending.manychat,
-      csvProcessed: 0,
-      csvTotal: pending.csv,
-      phoneInserted: 0,
-      errors: 0,
+
+    // If run was cancelled, do not continue.
+    if (syncRun && isCancelledStatus(syncRun.status)) {
+      return new Response(
+        JSON.stringify({ ok: true, status: "cancelled", syncRunId, pending: pendingBefore, remainingPending: pendingBefore }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // If paused, flip back to running.
+    if (syncRun && syncRun.status === "paused") {
+      await supabase.from("sync_runs").update({ status: "running", error_message: null }).eq("id", syncRunId);
+    }
+
+    // Process ONE batch per source.
+    let batchTotals = emptyTotals();
+
+    if (sources.includes("ghl") && pendingBefore.ghl > 0) {
+      batchTotals = addTotals(batchTotals, await processGHLBatch(supabase, syncRunId!, batchSize));
+    }
+    if (sources.includes("manychat") && pendingBefore.manychat > 0) {
+      batchTotals = addTotals(batchTotals, await processManyChatBatch(supabase, syncRunId!, batchSize));
+    }
+    if (sources.includes("csv") && pendingBefore.csv > 0) {
+      batchTotals = addTotals(batchTotals, await processCSVBatch(supabase, syncRunId!, batchSize, importId));
+    }
+
+    const remainingPending = await countPendingRecords(supabase, sources, importId);
+    const hasMore = remainingPending.total > 0;
+
+    const current = await fetchSyncRun(supabase, syncRunId!);
+    const prevFetched = current?.total_fetched || 0;
+    const prevInserted = current?.total_inserted || 0;
+    const prevUpdated = current?.total_updated || 0;
+    const prevSkipped = current?.total_skipped || 0;
+    const prevConflicts = current?.total_conflicts || 0;
+
+    const prevCheckpoint = (current?.checkpoint || {}) as Record<string, unknown>;
+    const prevChunk = typeof prevCheckpoint.chunk === "number" ? (prevCheckpoint.chunk as number) : 0;
+    const prevErrorCount = typeof prevCheckpoint.errorCount === "number" ? (prevCheckpoint.errorCount as number) : 0;
+
+    const nextChunk = prevChunk + 1;
+    const totalFetched = prevFetched + batchTotals.processed;
+    const totalInserted = prevInserted + batchTotals.inserted;
+    const totalUpdated = prevUpdated + batchTotals.updated;
+    const totalSkipped = prevSkipped + batchTotals.skipped;
+    const totalConflicts = prevConflicts + batchTotals.conflicts;
+    const errorCount = prevErrorCount + batchTotals.errors;
+
+    const initialPending =
+      (current?.metadata as any)?.pending?.total ??
+      (current?.metadata as any)?.pendingTotal ??
+      (remainingPending.total + totalFetched);
+    const progressPct =
+      typeof initialPending === "number" && initialPending > 0
+        ? Math.min((totalFetched / initialPending) * 100, 100)
+        : 0;
+
+    const status = hasMore ? "running" : "completed";
+    const nowIso = new Date().toISOString();
+
+    const nextCheckpoint: Record<string, unknown> = {
+      ...prevCheckpoint,
+      chunk: nextChunk,
+      runningTotal: totalFetched,
+      progressPct,
+      lastActivity: nowIso,
+      errorCount,
+      lastBatch: batchTotals,
+      canResume: false,
     };
-    
-    // ========================================================================
-    // SINGLE BATCH PROCESSING (The key change for TAREA 2)
-    // Process ONE batch from each source, then return immediately
-    // ========================================================================
-    
-    // Process GHL batch
-    if (pending.ghl > 0) {
-      const ghlResult = await processGHLBatch(supabase, batchSize);
-      progress.ghlProcessed += ghlResult.processed;
-      progress.errors += ghlResult.errors;
-      logger.info('GHL batch done', ghlResult);
-    }
-    
-    // Process ManyChat batch
-    if (pending.manychat > 0) {
-      const mcResult = await processManyChatBatch(supabase, batchSize);
-      progress.mcProcessed += mcResult.processed;
-      progress.errors += mcResult.errors;
-      logger.info('ManyChat batch done', mcResult);
-    }
-    
-    // Process CSV batch
-    if (pending.csv > 0) {
-      const csvResult = await processCSVBatch(supabase, batchSize, body.importId);
-      progress.csvProcessed += csvResult.processed;
-      progress.errors += csvResult.errors;
-      logger.info('CSV batch done', csvResult);
-    }
-    
-    // Check if there's more work
-    const newPending = await countPendingRecords(supabase);
-    const hasMore = (newPending.ghl + newPending.manychat + newPending.csv) > 0;
-    
-    // Update sync run progress
-    await updateSyncRunProgress(supabase, syncRunId, progress, hasMore);
-    
-    // If more work, schedule next chunk via waitUntil (non-blocking)
+
+    await supabase
+      .from("sync_runs")
+      .update({
+        status,
+        completed_at: hasMore ? null : nowIso,
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        total_updated: totalUpdated,
+        total_skipped: totalSkipped,
+        total_conflicts: totalConflicts,
+        checkpoint: nextCheckpoint,
+      })
+      .eq("id", syncRunId!)
+      // Don't override user cancellation.
+      .in("status", ["running", "continuing", "paused"]);
+
+    // Auto-chain the next chunk in the background.
     if (hasMore) {
-      EdgeRuntime.waitUntil(invokeNextChunk(syncRunId, batchSize, progress));
+      EdgeRuntime.waitUntil(
+        (async () => {
+          const chainRes = await invokeNextChunk({
+            supabaseUrl,
+            serviceRoleKey,
+            syncRunId: syncRunId!,
+            batchSize,
+            sources,
+            importId,
+            chunk: nextChunk,
+          });
+
+          if (chainRes.ok) return;
+
+          // If chaining fails consistently, pause so the UI can offer "Reanudar".
+          await supabase
+            .from("sync_runs")
+            .update({
+              status: "paused",
+              error_message: `Chain fallo despues de 3 intentos en chunk ${nextChunk}. Haz clic en "Reanudar".`,
+              checkpoint: {
+                ...nextCheckpoint,
+                canResume: true,
+                chainFailed: true,
+                lastActivity: new Date().toISOString(),
+              },
+            })
+            .eq("id", syncRunId!)
+            .in("status", ["running", "continuing"]);
+        })(),
+      );
     }
-    
-    // Return IMMEDIATELY with current progress
-    const totalProcessed = progress.ghlProcessed + progress.mcProcessed + progress.csvProcessed;
-    
-    return new Response(JSON.stringify({
-      ok: true,
-      syncRunId,
-      hasMore,
-      progress: {
-        ghl: { processed: progress.ghlProcessed, total: progress.ghlTotal },
-        manychat: { processed: progress.mcProcessed, total: progress.mcTotal },
-        csv: { processed: progress.csvProcessed, total: progress.csvTotal },
-        phones: progress.phoneInserted,
-        errors: progress.errors,
-      },
-      totalProcessed,
-      remainingPending: newPending,
-      message: hasMore 
-        ? `Processed ${totalProcessed} records, continuing in background...` 
-        : `Unification complete: ${totalProcessed} records processed`
-    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        status,
+        syncRunId,
+        hasMore,
+        pending: pendingBefore,
+        remainingPending,
+        batch: batchTotals,
+        totals: {
+          fetched: totalFetched,
+          inserted: totalInserted,
+          updated: totalUpdated,
+          skipped: totalSkipped,
+          conflicts: totalConflicts,
+          errors: errorCount,
+        },
+        progressPct,
+        chunk: nextChunk,
+        duration_ms: Date.now() - startedAt,
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error('Fatal error in bulk-unify-contacts', { error: errorMessage });
-    
-    return new Response(JSON.stringify({
-      ok: false,
-      error: errorMessage
-    }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    logger.error("Fatal error in bulk-unify-contacts", error instanceof Error ? error : new Error(errorMessage));
+
+    // Best-effort: mark run failed if we have an id.
+    if (syncRunId) {
+      try {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        const supabase = createClient(supabaseUrl, serviceRoleKey);
+        await supabase
+          .from("sync_runs")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage,
+          })
+          .eq("id", syncRunId);
+      } catch {
+        // ignore
+      }
+    }
+
+    return new Response(JSON.stringify({ ok: false, error: errorMessage }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
