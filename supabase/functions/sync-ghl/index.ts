@@ -294,31 +294,64 @@ async function processSinglePageStageOnly(
       };
     }
 
-    // STAGE ONLY: Save raw contacts in batches without merging
+    // STAGE ONLY: Save raw contacts in batches without merging.
+    // IMPORTANT: Do NOT include processed_at in upsert records.
+    // On INSERT (new contact): DB default is NULL → will be picked up by unifier.
+    // On UPDATE (existing contact): processed_at is NOT overwritten, so already-processed
+    // contacts keep their timestamp and won't re-enter the pending queue.
+    // Only reset processed_at if the payload actually changed (dateUpdated differs).
     const BATCH_SIZE = 50;
     for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
       const batch = contacts.slice(i, i + BATCH_SIZE);
-      
-      const rawRecords = batch.map((contact: Record<string, unknown>) => ({
-        external_id: contact.id as string,
-        payload: contact,
-        sync_run_id: syncRunId,
-        fetched_at: new Date().toISOString(),
-        processed_at: null // Will be set during unification
-      }));
 
-      // Try upsert first
+      // Split into truly new vs potentially existing
+      const externalIds = batch.map((c: Record<string, unknown>) => c.id as string);
+      const { data: existingRows } = await supabase
+        .from('ghl_contacts_raw')
+        .select('external_id, payload')
+        .in('external_id', externalIds);
+
+      const existingMap = new Map<string, any>();
+      for (const row of (existingRows || [])) {
+        existingMap.set(row.external_id, row.payload);
+      }
+
+      const toUpsert: Array<Record<string, unknown>> = [];
+      for (const contact of batch) {
+        const extId = contact.id as string;
+        const oldPayload = existingMap.get(extId);
+        const record: Record<string, unknown> = {
+          external_id: extId,
+          payload: contact,
+          sync_run_id: syncRunId,
+          fetched_at: new Date().toISOString(),
+        };
+
+        if (oldPayload) {
+          // Existing record: only reset processed_at if payload changed
+          const oldUpdated = oldPayload?.dateUpdated || oldPayload?.updatedAt;
+          const newUpdated = (contact as any).dateUpdated || (contact as any).updatedAt;
+          if (newUpdated && oldUpdated && newUpdated !== oldUpdated) {
+            record.processed_at = null; // payload changed → re-process
+          }
+          // else: don't touch processed_at (keeps existing value via upsert)
+        }
+        // New record: processed_at omitted → DB default NULL → picked up by unifier
+
+        toUpsert.push(record);
+      }
+
+      if (toUpsert.length === 0) continue;
+
       const { error: upsertError } = await supabase
         .from('ghl_contacts_raw')
-        .upsert(rawRecords, { onConflict: 'external_id' });
+        .upsert(toUpsert, { onConflict: 'external_id', ignoreDuplicates: false });
 
       if (upsertError) {
-        // Fallback: Delete existing and insert new if constraint error
         if (upsertError.message?.includes('ON CONFLICT') || upsertError.message?.includes('unique')) {
           logger.warn('Upsert failed, using delete+insert fallback', { error: upsertError.message });
-          const externalIds = rawRecords.map((r: { external_id: string }) => r.external_id);
           await supabase.from('ghl_contacts_raw').delete().in('external_id', externalIds);
-          const { error: insertError } = await supabase.from('ghl_contacts_raw').insert(rawRecords);
+          const { error: insertError } = await supabase.from('ghl_contacts_raw').insert(toUpsert);
           if (insertError) {
             logger.error('Error inserting raw contacts batch (fallback)', insertError);
           } else {
