@@ -121,12 +121,20 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     const paypalClientId = Deno.env.get('PAYPAL_CLIENT_ID');
-    const paypalClientSecret = Deno.env.get('PAYPAL_CLIENT_SECRET');
+    const paypalClientSecret = Deno.env.get('PAYPAL_SECRET') || Deno.env.get('PAYPAL_CLIENT_SECRET');
 
     if (!paypalClientId || !paypalClientSecret) {
+      const missing = [
+        !paypalClientId && 'PAYPAL_CLIENT_ID',
+        !paypalClientSecret && 'PAYPAL_SECRET',
+      ].filter(Boolean);
+      console.error('❌ Missing PayPal secrets:', missing.join(', '));
       return new Response(
-        JSON.stringify({ error: 'PayPal credentials not configured' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ 
+          error: 'PayPal credentials not configured',
+          message: `Missing secrets: ${missing.join(', ')}. Configure them in Lovable Cloud settings.`,
+        }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
