@@ -137,15 +137,16 @@ async function findLatestActiveBulkUnifyRun(supabase: any): Promise<SyncRunRow |
   return (data as SyncRunRow | null) || null;
 }
 
-async function countPendingRecords(supabase: any, sources: Source[], importId?: string): Promise<PendingCounts> {
+async function countPendingRecords(supabase: any, sources: Source[], importId?: string): Promise<PendingCounts & { countError?: boolean }> {
   const want = new Set(sources);
+  let countError = false;
 
   const ghlPromise = want.has("ghl")
     ? supabase.from("ghl_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
-    : Promise.resolve({ count: 0 });
+    : Promise.resolve({ count: 0, error: null });
   const mcPromise = want.has("manychat")
     ? supabase.from("manychat_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
-    : Promise.resolve({ count: 0 });
+    : Promise.resolve({ count: 0, error: null });
 
   const csvBase = want.has("csv")
     ? supabase
@@ -154,15 +155,30 @@ async function countPendingRecords(supabase: any, sources: Source[], importId?: 
         .is("processed_at", null)
         .in("processing_status", ["pending", "staged"])
     : null;
-  const csvPromise = csvBase ? (importId ? csvBase.eq("import_id", importId) : csvBase) : Promise.resolve({ count: 0 });
+  const csvPromise = csvBase ? (importId ? csvBase.eq("import_id", importId) : csvBase) : Promise.resolve({ count: 0, error: null });
 
   const [ghlRes, mcRes, csvRes] = await Promise.all([ghlPromise, mcPromise, csvPromise]);
 
-  const pending: PendingCounts = {
-    ghl: (ghlRes as any).count || 0,
-    manychat: (mcRes as any).count || 0,
-    csv: (csvRes as any).count || 0,
+  // If any count query errors, flag it so caller does NOT assume 0 pending
+  if ((ghlRes as any).error) {
+    logger.error("Count error on ghl_contacts_raw", new Error((ghlRes as any).error.message));
+    countError = true;
+  }
+  if ((mcRes as any).error) {
+    logger.error("Count error on manychat_contacts_raw", new Error((mcRes as any).error.message));
+    countError = true;
+  }
+  if ((csvRes as any).error) {
+    logger.error("Count error on csv_imports_raw", new Error((csvRes as any).error.message));
+    countError = true;
+  }
+
+  const pending: PendingCounts & { countError?: boolean } = {
+    ghl: (ghlRes as any).count ?? 0,
+    manychat: (mcRes as any).count ?? 0,
+    csv: (csvRes as any).count ?? 0,
     total: 0,
+    countError,
   };
   pending.total = pending.ghl + pending.manychat + pending.csv;
   return pending;
@@ -581,6 +597,34 @@ Deno.serve(async (req) => {
     syncRunId = syncRun?.id || requestedSyncRunId;
 
     const pendingBefore = await countPendingRecords(supabase, sources, importId);
+
+    // CRITICAL: If count query errored, do NOT treat as 0 pending.
+    // Pause instead of falsely completing.
+    if (pendingBefore.countError && pendingBefore.total === 0) {
+      logger.warn("Count query failed, refusing to mark as completed", { pendingBefore });
+      if (syncRunId) {
+        await supabase
+          .from("sync_runs")
+          .update({
+            status: "paused",
+            error_message: "No se pudo contar pendientes (timeout/error). Reintentar manualmente.",
+            checkpoint: { canResume: true, countError: true, lastActivity: new Date().toISOString() },
+          })
+          .eq("id", syncRunId);
+      }
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          status: "paused",
+          message: "Count query failed – cannot determine if there are pending records. Paused to avoid false completion.",
+          syncRunId,
+          pending: pendingBefore,
+          duration_ms: Date.now() - startedAt,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     if (pendingBefore.total === 0) {
       if (syncRunId) {
         await supabase
@@ -704,7 +748,8 @@ Deno.serve(async (req) => {
     }
 
     const remainingPending = await countPendingRecords(supabase, sources, importId);
-    const hasMore = remainingPending.total > 0;
+    // If count errored, assume there's more work to avoid false completion
+    const hasMore = remainingPending.total > 0 || !!remainingPending.countError;
 
     const current = await fetchSyncRun(supabase, syncRunId!);
     const prevFetched = current?.total_fetched || 0;
@@ -766,37 +811,51 @@ Deno.serve(async (req) => {
 
     // Auto-chain the next chunk in the background.
     if (hasMore) {
-      EdgeRuntime.waitUntil(
-        (async () => {
-          const chainRes = await invokeNextChunk({
-            supabaseUrl,
-            serviceRoleKey,
-            syncRunId: syncRunId!,
-            batchSize,
-            sources,
-            importId,
-            chunk: nextChunk,
-          });
+      const chainFn = async () => {
+        const chainRes = await invokeNextChunk({
+          supabaseUrl,
+          serviceRoleKey,
+          syncRunId: syncRunId!,
+          batchSize,
+          sources,
+          importId,
+          chunk: nextChunk,
+        });
 
-          if (chainRes.ok) return;
+        if (chainRes.ok) return;
 
-          // If chaining fails consistently, pause so the UI can offer "Reanudar".
-          await supabase
-            .from("sync_runs")
-            .update({
-              status: "paused",
-              error_message: `Chain fallo despues de 3 intentos en chunk ${nextChunk}. Haz clic en "Reanudar".`,
-              checkpoint: {
-                ...nextCheckpoint,
-                canResume: true,
-                chainFailed: true,
-                lastActivity: new Date().toISOString(),
-              },
-            })
-            .eq("id", syncRunId!)
-            .in("status", ["running", "continuing"]);
-        })(),
-      );
+        // If chaining fails consistently, pause so the UI can offer "Reanudar".
+        await supabase
+          .from("sync_runs")
+          .update({
+            status: "paused",
+            error_message: `Chain fallo despues de 3 intentos en chunk ${nextChunk}. Haz clic en "Reanudar".`,
+            checkpoint: {
+              ...nextCheckpoint,
+              canResume: true,
+              chainFailed: true,
+              lastActivity: new Date().toISOString(),
+            },
+          })
+          .eq("id", syncRunId!)
+          .in("status", ["running", "continuing"]);
+      };
+
+      // Guard: EdgeRuntime.waitUntil may not exist in all environments
+      if (typeof EdgeRuntime !== "undefined" && typeof EdgeRuntime.waitUntil === "function") {
+        EdgeRuntime.waitUntil(chainFn());
+      } else {
+        logger.warn("EdgeRuntime.waitUntil not available, pausing run for manual resume");
+        await supabase
+          .from("sync_runs")
+          .update({
+            status: "paused",
+            error_message: "EdgeRuntime.waitUntil no disponible. Reanudar manualmente.",
+            checkpoint: { ...nextCheckpoint, canResume: true, noEdgeRuntime: true },
+          })
+          .eq("id", syncRunId!)
+          .in("status", ["running", "continuing"]);
+      }
     }
 
     return new Response(
