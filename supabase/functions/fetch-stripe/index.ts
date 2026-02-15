@@ -167,9 +167,18 @@ async function getCustomerInfo(customerId: string, stripeSecretKey: string): Pro
     // Small jitter to be polite with Stripe when we need an extra call beyond the expanded list response.
     await delay(STRIPE_API_DELAY_MS);
     const response = await retryWithBackoff(
-      () => fetch(`https://api.stripe.com/v1/customers/${customerId}`, {
-        headers: { Authorization: `Bearer ${stripeSecretKey}` }
-      }),
+      async () => {
+        const res = await fetch(`https://api.stripe.com/v1/customers/${customerId}`, {
+          headers: { Authorization: `Bearer ${stripeSecretKey}` },
+        });
+
+        // Trigger retries on transient Stripe statuses.
+        if (!res.ok && [429, 500, 502, 503, 504].includes(res.status)) {
+          throw new Error(`Stripe API ${res.status}`);
+        }
+
+        return res;
+      },
       { ...RETRY_CONFIGS.FAST, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
     );
 
@@ -209,13 +218,39 @@ async function processSinglePage(
     if (cursor) url.searchParams.set("starting_after", cursor);
 
     const response = await retryWithBackoff(
-      () => fetch(url.toString(), { headers: { Authorization: `Bearer ${stripeSecretKey}` } }),
-      { ...RETRY_CONFIGS.STANDARD, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
+      async () => {
+        const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${stripeSecretKey}` } });
+
+        // fetch() does not throw on HTTP errors, so we throw explicitly for transient statuses
+        // to activate retryWithBackoff().
+        if (!res.ok && [429, 500, 502, 503, 504].includes(res.status)) {
+          let detail = '';
+          try {
+            detail = (await res.text()).replace(/\s+/g, ' ').slice(0, 200);
+          } catch {
+            // ignore
+          }
+          throw new Error(`Stripe API ${res.status}${detail ? ` - ${detail}` : ''}`);
+        }
+
+        return res;
+      },
+      { ...RETRY_CONFIGS.AGGRESSIVE, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] }
     );
 
     if (!response.ok) {
-      const errorText = await response.text();
-      return { transactions: [], hasMore: false, nextCursor: null, error: `Stripe API: ${response.status}` };
+      let errorText = '';
+      try {
+        errorText = (await response.text()).replace(/\s+/g, ' ').slice(0, 300);
+      } catch {
+        // ignore
+      }
+      return {
+        transactions: [],
+        hasMore: false,
+        nextCursor: null,
+        error: `Stripe API: ${response.status}${errorText ? ` - ${errorText}` : ''}`,
+      };
     }
 
     const data: StripeListResponse = await response.json();

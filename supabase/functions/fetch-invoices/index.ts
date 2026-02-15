@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from "../_shared/retry.ts";
 import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from "../_shared/sync_state.ts";
 
 // Declare EdgeRuntime for background processing
@@ -6,6 +7,7 @@ declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 // Auto-continuation: max pages per execution to avoid 60s timeout
 const PAGES_PER_BATCH = 25;
+const INVOCATION_TIME_BUDGET_MS = 50_000;
 const FUNCTION_VERSION = "2026-02-10-1";
 
 const corsHeaders = {
@@ -412,12 +414,30 @@ async function fetchSinglePage(
 
   const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
   
-  const response = await fetch(stripeUrl, {
-    headers: {
-      Authorization: `Bearer ${stripeSecretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
+  const response = await retryWithBackoff(
+    async () => {
+      const res = await fetch(stripeUrl, {
+        headers: {
+          Authorization: `Bearer ${stripeSecretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      });
+
+      // fetch() does not throw on HTTP errors. Throw for transient statuses to enable retries.
+      if (!res.ok && [429, 500, 502, 503, 504].includes(res.status)) {
+        let detail = '';
+        try {
+          detail = (await res.text()).replace(/\s+/g, ' ').slice(0, 200);
+        } catch {
+          // ignore
+        }
+        throw new Error(`Stripe API ${res.status}${detail ? ` - ${detail}` : ''}`);
+      }
+
+      return res;
     },
-  });
+    { ...RETRY_CONFIGS.AGGRESSIVE, retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.HTTP] },
+  );
 
   if (!response.ok) {
     const error = await response.text();
@@ -470,38 +490,57 @@ async function scheduleContinuation(
   startDate: string | null,
   endDate: string | null,
   cursor: string
-) {
+): Promise<{ ok: boolean; error?: string }> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   
   console.log(`🔄 [Background] Scheduling continuation for cursor ${cursor.slice(0, 10)}...`);
-  
-  try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/fetch-invoices`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${serviceRoleKey}`
-      },
-      body: JSON.stringify({
-        mode,
-        fetchAll: true,
-        syncRunId,
-        cursor,
-        startDate,
-        endDate,
-        _continuation: true
-      })
-    });
-    
-    if (!response.ok) {
-      console.error(`❌ Continuation request failed: ${response.status}`);
-    } else {
-      console.log(`✅ Continuation scheduled successfully`);
+
+  const payload = JSON.stringify({
+    mode,
+    fetchAll: true,
+    syncRunId,
+    cursor,
+    startDate,
+    endDate,
+    _continuation: true,
+  });
+
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(`${supabaseUrl}/functions/v1/fetch-invoices`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${serviceRoleKey}`,
+        },
+        body: payload,
+      });
+
+      if (response.ok) {
+        console.log(`✅ Continuation scheduled successfully (attempt ${attempt})`);
+        return { ok: true };
+      }
+
+      let detail = '';
+      try {
+        detail = (await response.text()).replace(/\s+/g, ' ').slice(0, 200);
+      } catch {
+        // ignore
+      }
+      lastError = `HTTP ${response.status}${detail ? ` - ${detail}` : ''}`;
+      console.error(`❌ Continuation request failed (attempt ${attempt}): ${lastError}`);
+    } catch (error) {
+      lastError = String(error);
+      console.error(`❌ Continuation scheduling error (attempt ${attempt}):`, lastError);
     }
-  } catch (error) {
-    console.error(`❌ Continuation scheduling error:`, error);
+
+    if (attempt < 3) await delay(2000 * attempt);
   }
+
+  return { ok: false, error: lastError || 'Unknown error' };
 }
 
 // ============= BACKGROUND FULL SYNC WITH AUTO-CONTINUATION =============
@@ -523,6 +562,7 @@ async function runFullInvoiceSync(
   let totalFetched = 0;
   let totalInserted = 0;
   const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+  const batchStartMs = Date.now();
   
   try {
     // Read existing progress from sync run (for continuation)
@@ -548,6 +588,11 @@ async function runFullInvoiceSync(
     console.log(`📊 [Background] Resuming from: ${totalFetched} fetched, ${totalInserted} inserted`);
     
     while (hasMore && pageCount < PAGES_PER_BATCH) {
+      if (Date.now() - batchStartMs > INVOCATION_TIME_BUDGET_MS) {
+        console.log(`⏱️ [Background] Time budget reached (${INVOCATION_TIME_BUDGET_MS}ms). Scheduling continuation...`);
+        break;
+      }
+
       pageCount++;
       const pageStart = Date.now();
 
@@ -645,10 +690,31 @@ async function runFullInvoiceSync(
         return;
       }
 
-      console.log(`🔄 [Background] Batch limit (${PAGES_PER_BATCH} pages) reached. Scheduling continuation...`);
+      console.log(`🔄 [Background] Scheduling continuation (pagesProcessed=${pageCount}, pagesPerBatch=${PAGES_PER_BATCH})...`);
       
       // Schedule next batch via self-invocation
-      await scheduleContinuation(syncRunId, mode, startDate, endDate, cursor);
+      const scheduled = await scheduleContinuation(syncRunId, mode, startDate, endDate, cursor);
+      if (!scheduled.ok) {
+        const errorMessage = `Pausado: No se pudo programar la continuación. ${scheduled.error || ''}`.trim();
+        console.error(`❌ [Background] Continuation schedule failed:`, scheduled.error);
+
+        await supabase.from('sync_runs').update({
+          status: 'paused',
+          error_message: errorMessage,
+          checkpoint: {
+            cursor,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            pauseReason: 'chain_failed',
+          },
+        })
+        .eq('id', syncRunId)
+        // Don't override user cancellation
+        .in('status', ['running', 'continuing']);
+
+        await writeSyncStateError({ supabase, source: "stripe_invoices", errorMessage });
+        return;
+      }
       
       console.log(`✅ [Background] Batch complete. Next batch will continue from cursor ${cursor.slice(0, 10)}...`);
     } else {
