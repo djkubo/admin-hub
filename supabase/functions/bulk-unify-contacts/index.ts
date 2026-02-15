@@ -142,16 +142,16 @@ async function countPendingRecords(supabase: any, sources: Source[], importId?: 
   let countError = false;
 
   const ghlPromise = want.has("ghl")
-    ? supabase.from("ghl_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
+    ? supabase.from("ghl_contacts_raw").select("id", { count: "estimated", head: true }).is("processed_at", null)
     : Promise.resolve({ count: 0, error: null });
   const mcPromise = want.has("manychat")
-    ? supabase.from("manychat_contacts_raw").select("id", { count: "exact", head: true }).is("processed_at", null)
+    ? supabase.from("manychat_contacts_raw").select("id", { count: "estimated", head: true }).is("processed_at", null)
     : Promise.resolve({ count: 0, error: null });
 
   const csvBase = want.has("csv")
     ? supabase
         .from("csv_imports_raw")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "estimated", head: true })
         .is("processed_at", null)
         .in("processing_status", ["pending", "staged"])
     : null;
@@ -598,34 +598,8 @@ Deno.serve(async (req) => {
 
     const pendingBefore = await countPendingRecords(supabase, sources, importId);
 
-    // CRITICAL: If count query errored, do NOT treat as 0 pending.
-    // Pause instead of falsely completing.
-    if (pendingBefore.countError && pendingBefore.total === 0) {
-      logger.warn("Count query failed, refusing to mark as completed", { pendingBefore });
-      if (syncRunId) {
-        await supabase
-          .from("sync_runs")
-          .update({
-            status: "paused",
-            error_message: "No se pudo contar pendientes (timeout/error). Reintentar manualmente.",
-            checkpoint: { canResume: true, countError: true, lastActivity: new Date().toISOString() },
-          })
-          .eq("id", syncRunId);
-      }
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          status: "paused",
-          message: "Count query failed – cannot determine if there are pending records. Paused to avoid false completion.",
-          syncRunId,
-          pending: pendingBefore,
-          duration_ms: Date.now() - startedAt,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    if (pendingBefore.total === 0) {
+    // Only treat "0 pending" as authoritative when counts are reliable.
+    if (pendingBefore.total === 0 && pendingBefore.countError !== true) {
       if (syncRunId) {
         await supabase
           .from("sync_runs")
@@ -737,19 +711,27 @@ Deno.serve(async (req) => {
     // Process ONE batch per source.
     let batchTotals = emptyTotals();
 
-    if (sources.includes("ghl") && pendingBefore.ghl > 0) {
+    // If pending counts can't be determined, still attempt a batch so we can make forward
+    // progress (or conclusively detect "no work") without blocking on COUNT(*).
+    const countsReliable = pendingBefore.countError !== true;
+
+    if (sources.includes("ghl") && (!countsReliable || pendingBefore.ghl > 0)) {
       batchTotals = addTotals(batchTotals, await processGHLBatch(supabase, syncRunId!, batchSize));
     }
-    if (sources.includes("manychat") && pendingBefore.manychat > 0) {
+    if (sources.includes("manychat") && (!countsReliable || pendingBefore.manychat > 0)) {
       batchTotals = addTotals(batchTotals, await processManyChatBatch(supabase, syncRunId!, batchSize));
     }
-    if (sources.includes("csv") && pendingBefore.csv > 0) {
+    if (sources.includes("csv") && (!countsReliable || pendingBefore.csv > 0)) {
       batchTotals = addTotals(batchTotals, await processCSVBatch(supabase, syncRunId!, batchSize, importId));
     }
 
     const remainingPending = await countPendingRecords(supabase, sources, importId);
-    // If count errored, assume there's more work to avoid false completion
-    const hasMore = remainingPending.total > 0 || !!remainingPending.countError;
+    // If count errored, assume there's more work to avoid false completion. But if we
+    // successfully ran a full processing pass and found nothing to do, complete anyway.
+    let hasMore = remainingPending.total > 0 || !!remainingPending.countError;
+    if (batchTotals.processed === 0 && batchTotals.errors === 0) {
+      hasMore = false;
+    }
 
     const current = await fetchSyncRun(supabase, syncRunId!);
     const prevFetched = current?.total_fetched || 0;
