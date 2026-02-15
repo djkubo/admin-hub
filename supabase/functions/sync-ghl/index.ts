@@ -307,9 +307,9 @@ async function processSinglePageStageOnly(
       // Split into truly new vs potentially existing
       const externalIds = batch.map((c: Record<string, unknown>) => c.id as string);
       const { data: existingRows } = await supabase
-        .from('ghl_contacts_raw')
+        .from('ghl_contacts_raw' as any)
         .select('external_id, payload')
-        .in('external_id', externalIds);
+        .in('external_id', externalIds) as { data: Array<{ external_id: string; payload: any }> | null; error: any };
 
       const existingMap = new Map<string, any>();
       for (const row of (existingRows || [])) {
@@ -343,15 +343,15 @@ async function processSinglePageStageOnly(
 
       if (toUpsert.length === 0) continue;
 
-      const { error: upsertError } = await supabase
-        .from('ghl_contacts_raw')
+      const { error: upsertError } = await (supabase
+        .from('ghl_contacts_raw' as any) as any)
         .upsert(toUpsert, { onConflict: 'external_id', ignoreDuplicates: false });
 
       if (upsertError) {
         if (upsertError.message?.includes('ON CONFLICT') || upsertError.message?.includes('unique')) {
           logger.warn('Upsert failed, using delete+insert fallback', { error: upsertError.message });
-          await supabase.from('ghl_contacts_raw').delete().in('external_id', externalIds);
-          const { error: insertError } = await supabase.from('ghl_contacts_raw').insert(toUpsert);
+          await (supabase.from('ghl_contacts_raw' as any) as any).delete().in('external_id', externalIds);
+          const { error: insertError } = await (supabase.from('ghl_contacts_raw' as any) as any).insert(toUpsert);
           if (insertError) {
             logger.error('Error inserting raw contacts batch (fallback)', insertError);
           } else {
