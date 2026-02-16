@@ -2820,7 +2820,14 @@ export type Database = {
           churned_count: number
         }[]
       }
-      kpi_failed_payments: { Args: never; Returns: Json }
+      kpi_failed_payments: {
+        Args: never
+        Returns: {
+          fail_count: number
+          top_reasons: Json
+          total_amount: number
+        }[]
+      }
       kpi_invoices_at_risk: {
         Args: never
         Returns: {
