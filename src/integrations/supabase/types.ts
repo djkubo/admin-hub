@@ -1226,6 +1226,88 @@ export type Database = {
         }
         Relationships: []
       }
+      identity_audit_log: {
+        Row: {
+          action: string
+          client_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          match_by: string | null
+          merged_from_client_id: string | null
+          new_data: Json | null
+          old_data: Json | null
+          source: string | null
+        }
+        Insert: {
+          action: string
+          client_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          match_by?: string | null
+          merged_from_client_id?: string | null
+          new_data?: Json | null
+          old_data?: Json | null
+          source?: string | null
+        }
+        Update: {
+          action?: string
+          client_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          match_by?: string | null
+          merged_from_client_id?: string | null
+          new_data?: Json | null
+          old_data?: Json | null
+          source?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "identity_audit_log_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      identity_map: {
+        Row: {
+          client_id: string
+          confidence: number
+          created_at: string
+          id: string
+          platform: string
+          platform_id: string
+        }
+        Insert: {
+          client_id: string
+          confidence?: number
+          created_at?: string
+          id?: string
+          platform: string
+          platform_id: string
+        }
+        Update: {
+          client_id?: string
+          confidence?: number
+          created_at?: string
+          id?: string
+          platform?: string
+          platform_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "identity_map_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       invoices: {
         Row: {
           amount_due: number

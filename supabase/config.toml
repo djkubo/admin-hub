@@ -152,3 +152,6 @@ verify_jwt = false
 
 [functions.execute-flow]
 verify_jwt = false
+
+[functions.update-exchange-rate]
+verify_jwt = false

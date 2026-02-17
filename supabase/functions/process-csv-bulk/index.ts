@@ -301,7 +301,26 @@ Deno.serve(async (req) => {
 
     // Parse request
     const body = await req.json();
-    const { csvText, csvType: requestedType, filename, isChunk, chunkIndex, totalChunks } = body;
+    let { csvText } = body;
+    const { csvType: requestedType, filename, isChunk, chunkIndex, totalChunks, storageKey } = body;
+
+    // If storageKey provided, download CSV from Storage bucket
+    if (storageKey && !csvText) {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+      const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+      const storageClient = createClient(supabaseUrl, supabaseServiceKey);
+
+      const { data: fileData, error: dlError } = await storageClient
+        .storage.from('csv-imports')
+        .download(storageKey);
+      if (dlError || !fileData) {
+        return new Response(
+          JSON.stringify({ ok: false, error: `Storage download failed: ${dlError?.message || 'File not found'}` }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      csvText = await fileData.text();
+    }
 
     if (!csvText) {
       return new Response(
