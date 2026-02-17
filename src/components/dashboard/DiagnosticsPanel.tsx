@@ -38,8 +38,8 @@ import { format, subDays } from "date-fns";
 
 interface DataQualityCheck {
   check_name: string;
-  status: string;
-  count: number;
+  severity: string;
+  affected_count: number;
   percentage: number;
   details: any;
 }
@@ -444,8 +444,8 @@ export default function DiagnosticsPanel() {
   });
 
   const checksLoaded = isAdmin === true && !loadingChecks && !checksError;
-  const hasCriticalIssues = checksLoaded ? qualityChecks.some(c => c.status === 'critical') : false;
-  const hasWarnings = checksLoaded ? qualityChecks.some(c => c.status === 'warning') : false;
+  const hasCriticalIssues = checksLoaded ? qualityChecks.some(c => c.severity === 'critical') : false;
+  const hasWarnings = checksLoaded ? qualityChecks.some(c => c.severity === 'warning') : false;
 
   const refreshAll = async () => {
     if (isAdmin !== true) {
@@ -1041,10 +1041,10 @@ Responde en español, de forma concisa.`;
                         <span className="font-medium text-xs md:text-sm">
                           {CHECK_LABELS[check.check_name] || check.check_name}
                         </span>
-                        {getStatusBadge(check.status)}
+                        {getStatusBadge(check.severity)}
                       </div>
                       <div className="flex items-center gap-2 md:gap-4 text-right">
-                        <span className="text-xs md:text-sm font-medium">{check.count}</span>
+                        <span className="text-xs md:text-sm font-medium">{check.affected_count}</span>
                         <span className="text-[10px] md:text-xs text-muted-foreground w-10 md:w-12">
                           {check.percentage > 0 ? `${check.percentage}%` : '-'}
                         </span>
