@@ -7,6 +7,7 @@ import {
   type ChatEvent 
 } from "@/hooks/useChatEvents";
 import { useCurrentAgent } from "@/hooks/useAgents";
+import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ import {
   PanelRightOpen,
   UserPlus,
 } from "lucide-react";
+import { ConversationAssignDialog } from "./ConversationAssignDialog";
 import { formatDistanceToNow, format } from "date-fns";
 import { es } from "date-fns/locale";
 import { cn } from "@/lib/utils";
@@ -106,6 +108,7 @@ export default function BotChatPage() {
   const [agentFilter, setAgentFilter] = useState<ConversationFilter>("all");
   const [statusFilter, setStatusFilter] = useState<ConversationStatusFilter>("all");
   const [mediaAttachment, setMediaAttachment] = useState<MediaAttachment | null>(null);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -219,16 +222,17 @@ export default function BotChatPage() {
     setMediaAttachment(null);
   };
 
-  // Handle sending reply via Python server -> GoHighLevel
+  // Handle sending reply via whatsapp-bridge edge function
   const handleSendReply = async () => {
     if ((!replyMessage.trim() && !mediaAttachment) || !selectedContact) return;
     
     setSendingReply(true);
     try {
       const payload: Record<string, any> = {
-        contact_id: selectedContact.contact_id,
+        action: "send",
+        to: selectedContact.contact_id,
         message: replyMessage || "",
-        channel: "WhatsApp",
+        client_id: selectedContact.contact_id,
       };
 
       // Add media if attached
@@ -238,17 +242,12 @@ export default function BotChatPage() {
         payload.media_filename = mediaAttachment.filename;
       }
 
-      const response = await fetch("https://vrp-bot-2.onrender.com/send/ghl", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+      const { data, error } = await supabase.functions.invoke("whatsapp-bridge", {
+        body: payload,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+      if (error) {
+        throw error;
       }
 
       toast({
@@ -435,6 +434,14 @@ export default function BotChatPage() {
                     <Bot className="h-3 w-3" />
                     Bot IA
                   </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setAssignDialogOpen(true)}
+                    title="Asignar agente"
+                  >
+                    <UserPlus className="h-5 w-5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -634,6 +641,32 @@ export default function BotChatPage() {
           </Card>
         )}
       </div>
+
+      {/* Assign Dialog */}
+      {selectedContact && (
+        <ConversationAssignDialog
+          open={assignDialogOpen}
+          onOpenChange={setAssignDialogOpen}
+          conversation={{
+            id: selectedContact.contact_id,
+            contact_id: selectedContact.contact_id,
+            platform: "whatsapp",
+            status: "open",
+            priority: "normal",
+            assigned_agent_id: null,
+            assigned_at: null,
+            first_message_at: null,
+            last_message_at: selectedContact.last_message_at,
+            last_customer_message_at: null,
+            unread_count: selectedContact.unread_count,
+            is_bot_active: true,
+            tags: [],
+            metadata: {},
+            created_at: selectedContact.last_message_at,
+            updated_at: selectedContact.last_message_at,
+          }}
+        />
+      )}
     </TooltipProvider>
   );
 }
