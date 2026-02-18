@@ -155,3 +155,6 @@ verify_jwt = false
 
 [functions.update-exchange-rate]
 verify_jwt = false
+
+[functions.whatsapp-bridge]
+verify_jwt = false

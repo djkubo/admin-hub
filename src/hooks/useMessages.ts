@@ -183,15 +183,19 @@ export function useSendMessage() {
 
       if (msgError) throw msgError;
 
-      // Send via edge function using JWT authentication (no x-admin-key needed)
-      const functionName = "send-sms"; // Single function handles both SMS and WhatsApp
-      const payload = channel === "whatsapp" 
-        ? { to: `whatsapp:${to}`, message: body, client_id: clientId }
-        : { to, message: body, client_id: clientId };
-
-      const { error: sendError } = await supabase.functions.invoke(functionName, {
-        body: payload,
-      });
+      // Route WhatsApp through whatsapp-bridge, SMS through send-sms
+      let sendError: Error | null = null;
+      if (channel === "whatsapp") {
+        const { error } = await supabase.functions.invoke("whatsapp-bridge", {
+          body: { action: "send", to, message: body, client_id: clientId },
+        });
+        sendError = error;
+      } else {
+        const { error } = await supabase.functions.invoke("send-sms", {
+          body: { to, message: body, client_id: clientId },
+        });
+        sendError = error;
+      }
 
       if (sendError) {
         // Update message status to failed
