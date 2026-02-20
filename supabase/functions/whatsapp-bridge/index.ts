@@ -89,26 +89,39 @@ Deno.serve(async (req) => {
 
     /* ─── STATUS ─── */
     if (action === 'status') {
-      const path = envOr('WHATSAPP_BRIDGE_STATUS_PATH', '/whatsapp/status');
-      const resp = await bridgeFetch(path);
-      const data = await resp.json();
-      return json({ ok: true, ...data });
+      try {
+        const path = envOr('WHATSAPP_BRIDGE_STATUS_PATH', '/whatsapp/status');
+        const resp = await bridgeFetch(path);
+        const data = await resp.json();
+        return json({ ok: true, ...data });
+      } catch (err) {
+        // Graceful degradation: bridge is down
+        return json({ ok: true, connected: false, degraded: true, reason: 'Bridge unreachable' });
+      }
     }
 
     /* ─── CONNECT ─── */
     if (action === 'connect') {
-      const path = envOr('WHATSAPP_BRIDGE_CONNECT_PATH', '/whatsapp/connect');
-      const resp = await bridgeFetch(path, 'POST');
-      const data = await resp.json();
-      return json({ ok: true, ...data });
+      try {
+        const path = envOr('WHATSAPP_BRIDGE_CONNECT_PATH', '/whatsapp/connect');
+        const resp = await bridgeFetch(path, 'POST');
+        const data = await resp.json();
+        return json({ ok: true, ...data });
+      } catch (err) {
+        return json({ ok: false, error: 'Bridge server unreachable. Check that the WhatsApp bridge is running.' }, 503);
+      }
     }
 
     /* ─── DISCONNECT ─── */
     if (action === 'disconnect') {
-      const path = envOr('WHATSAPP_BRIDGE_DISCONNECT_PATH', '/whatsapp/disconnect');
-      const resp = await bridgeFetch(path, 'POST');
-      const data = await resp.json();
-      return json({ ok: true, ...data });
+      try {
+        const path = envOr('WHATSAPP_BRIDGE_DISCONNECT_PATH', '/whatsapp/disconnect');
+        const resp = await bridgeFetch(path, 'POST');
+        const data = await resp.json();
+        return json({ ok: true, ...data });
+      } catch (err) {
+        return json({ ok: false, error: 'Bridge server unreachable.' }, 503);
+      }
     }
 
     /* ─── SEND ─── */
@@ -159,6 +172,10 @@ Deno.serve(async (req) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[whatsapp-bridge]', message);
+    // If the bridge URL is not configured, return 503 instead of 500
+    if (message.includes('WHATSAPP_BRIDGE_BASE_URL')) {
+      return json({ ok: false, error: 'WhatsApp bridge not configured', degraded: true }, 503);
+    }
     return json({ ok: false, error: message }, 500);
   }
 });
