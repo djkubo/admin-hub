@@ -38,10 +38,13 @@ import { format, subDays } from "date-fns";
 
 interface DataQualityCheck {
   check_name: string;
-  severity: string;
-  affected_count: number;
+  status: string;
+  count: number;
   percentage: number;
   details: any;
+  /** mapped aliases */
+  severity: string;
+  affected_count: number;
 }
 
 interface ReconciliationRun {
@@ -409,7 +412,12 @@ export default function DiagnosticsPanel() {
     queryFn: async () => {
       const { data, error } = await supabase.rpc('data_quality_checks');
       if (error) throw error;
-      return data as DataQualityCheck[];
+      // Map RPC columns (status/count) to legacy aliases (severity/affected_count)
+      return ((data as any[]) || []).map((row: any) => ({
+        ...row,
+        severity: row.status ?? row.severity ?? 'info',
+        affected_count: row.count ?? row.affected_count ?? 0,
+      })) as DataQualityCheck[];
     },
     enabled: isAdmin === true,
     retry: false,

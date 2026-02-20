@@ -2865,11 +2865,11 @@ export type Database = {
       data_quality_checks: {
         Args: never
         Returns: {
-          affected_count: number
           check_name: string
+          count: number
           details: Json
           percentage: number
-          severity: string
+          status: string
         }[]
       }
       get_exchange_rate: {
