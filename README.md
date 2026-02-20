@@ -1,73 +1,55 @@
-# Welcome to your Lovable project
+# Admin Hub CRM
 
-## Project info
+Panel operativo para CRM, analytics, mensajería y revenue ops con React + Supabase.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Inicio Rápido
+1. Instala dependencias: `npm install`
+2. Configura variables: copia `.env.example` a `.env.local` y ajusta secretos.
+3. Levanta el frontend: `npm run dev`
+4. Corre validaciones base antes de push:
+- `npm run test`
+- `npm run build`
 
-## How can I edit this code?
+## Stack
+- Frontend: React 18 + Vite + TypeScript + Tailwind + shadcn/ui
+- Estado de datos: TanStack Query
+- Backend: Supabase (Postgres + Edge Functions)
+- Tests: Vitest
 
-There are several ways of editing your application.
+## Mapa del Repositorio
+- `src/App.tsx`: router principal y composición global de providers.
+- `src/config/appPaths.ts`: rutas canónicas y redirects legacy.
+- `src/components/dashboard/*`: páginas y widgets del panel.
+- `src/hooks/*`: acceso a datos, mutaciones y lógica de negocio en frontend.
+- `src/lib/*`: utilidades transversales (API admin, parsing CSV, auth helpers).
+- `supabase/functions/*`: Edge Functions por dominio.
+- `supabase/migrations/*`: historial de migraciones SQL.
+- `docs/*`: runbooks y notas operativas.
 
-**Use Lovable**
+## Áreas Funcionales (UI)
+- Insights: `/insights/analytics`
+- CRM: `/crm/clients`, `/crm/inbox`
+- Growth: `/growth/campaigns`, `/growth/broadcast`, `/growth/flows`
+- Channels: `/channels/whatsapp`
+- Revenue: `/revenue/transactions`, `/revenue/invoices`, `/revenue/subscriptions`, `/revenue/recovery`
+- Ops/Admin: `/ops/sync`, `/ops/diagnostics`, `/admin/settings`
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+## Flujo de Desarrollo Recomendado
+1. Crea una rama corta por cambio.
+2. Implementa cambios en frontend + función/migración si aplica.
+3. Valida localmente:
+- `npm run test`
+- `npm run build`
+- `npx tsc --noEmit`
+4. Si tocaste Edge Function, valida también con Deno:
+- `deno check supabase/functions/<funcion>/index.ts`
+5. Haz commit con alcance pequeño y mensaje claro.
+6. Push a `main` solo cuando el lote esté validado (si tu integración de deploy usa `main`, esto impacta producción).
 
-Changes made via Lovable will be committed automatically to this repo.
+## Convenciones Importantes
+- No editar rutas hardcodeadas: usa `APP_PATHS` en `src/config/appPaths.ts`.
+- No asumir contrato de Edge Functions sin revisar la respuesta real (`ok`/`success`, payload, status).
+- Migraciones SQL: agregar nuevas, evitar reescribir historial existente salvo urgencia controlada.
 
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Documentación
+Ver índice en `docs/README.md`.
