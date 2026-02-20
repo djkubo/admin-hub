@@ -3,9 +3,9 @@ import { Upload, FileText, Check, AlertCircle, Loader2, X, Users } from 'lucide-
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { 
-  processWebUsersCSV, 
-  processPayPalCSV, 
+import {
+  processWebUsersCSV,
+  processPayPalCSV,
   processPaymentCSV,
   processSubscriptionsCSV,
   processStripeCustomersCSV,
@@ -60,36 +60,36 @@ interface CSVUploaderProps {
 function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 200 * 1024): string[] {
   const lines = csvText.split('\n');
   if (lines.length < 2) return [csvText];
-  
+
   const headerLine = lines[0];
   const headerSize = new Blob([headerLine + '\n']).size;
   const chunks: string[] = [];
-  
+
   let currentChunk: string[] = [headerLine];
   let currentSize = headerSize;
-  
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim()) continue;
-    
+
     const lineSize = new Blob([line + '\n']).size;
-    
+
     // If adding this line would exceed the limit, start a new chunk
     if (currentSize + lineSize > maxSizeBytes && currentChunk.length > 1) {
       chunks.push(currentChunk.join('\n'));
       currentChunk = [headerLine];
       currentSize = headerSize;
     }
-    
+
     currentChunk.push(line);
     currentSize += lineSize;
   }
-  
+
   // Don't forget the last chunk
   if (currentChunk.length > 1) {
     chunks.push(currentChunk.join('\n'));
   }
-  
+
   return chunks;
 }
 
@@ -103,16 +103,16 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
   const detectFileType = async (file: File): Promise<CSVFileType> => {
     const lowerName = file.name.toLowerCase();
-    
+
     // Read content for column-based detection (more reliable)
     try {
       const text = await file.text();
       const lines = text.split('\n');
       const firstLine = lines[0]?.toLowerCase() || '';
-      
+
       console.log(`[CSV Detection] File: ${file.name}`);
       console.log(`[CSV Detection] Headers: ${firstLine.substring(0, 200)}...`);
-      
+
       // MASTER CSV DETECTION: Has prefixed columns from multiple sources
       // Prefixes: CNT_ (GHL/Contact), PP_ (PayPal), ST_ (Stripe), SUB_ (Subscriptions), USR_ (Users)
       // NOTE: Check is case-insensitive since CSV headers may be in UPPER, lower, or Mixed case
@@ -122,21 +122,21 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       const hasSUB = /\bsub_/i.test(firstLine) || /\bsub_plan\s*name/i.test(firstLine);
       const hasUSR = /\busr_/i.test(firstLine) || /\busr_nombre/i.test(firstLine);
       const hasAutoMaster = /\bauto_master_/i.test(firstLine) || /\bauto_total_spend/i.test(firstLine);
-      
+
       // If has 2+ prefixes OR has Auto_Master fields, it's a Master CSV
       const prefixCount = [hasCNT, hasPP, hasST, hasSUB, hasUSR].filter(Boolean).length;
       if (prefixCount >= 2 || hasAutoMaster) {
         console.log(`[CSV Detection] Detected as: MASTER CSV (prefixes: CNT=${hasCNT}, PP=${hasPP}, ST=${hasST}, SUB=${hasSUB}, USR=${hasUSR})`);
         return 'master';
       }
-      
+
       // STRIPE CUSTOMERS (unified_customers.csv) - detect by Total Spend or Delinquent columns
       // Must check BEFORE Stripe Payments to avoid misclassification
-      if ((firstLine.includes('total spend') || 
-           firstLine.includes('total_spend') ||
-           firstLine.includes('delinquent') ||
-           firstLine.includes('lifetime value')) &&
-          !firstLine.includes('amount refunded')) {
+      if ((firstLine.includes('total spend') ||
+        firstLine.includes('total_spend') ||
+        firstLine.includes('delinquent') ||
+        firstLine.includes('lifetime value')) &&
+        !firstLine.includes('amount refunded')) {
         console.log(`[CSV Detection] Detected as: Stripe Customers (LTV Master)`);
         return 'stripe_customers';
       }
@@ -144,85 +144,85 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       // STRIPE PAYMENTS (unified_payments.csv) - detect by specific payment columns
       // Has: id, Amount, Amount Refunded, Currency, Customer Email, Status, Created (UTC)
       if ((firstLine.includes('amount refunded') || firstLine.includes('amount_refunded')) ||
-          (firstLine.includes('balance transaction') && firstLine.includes('captured')) ||
-          (firstLine.includes('payment method type') && firstLine.includes('customer email')) ||
-          (firstLine.includes('invoice id') && firstLine.includes('customer email') && firstLine.includes('amount'))) {
+        (firstLine.includes('balance transaction') && firstLine.includes('captured')) ||
+        (firstLine.includes('payment method type') && firstLine.includes('customer email')) ||
+        (firstLine.includes('invoice id') && firstLine.includes('customer email') && firstLine.includes('amount'))) {
         console.log(`[CSV Detection] Detected as: Stripe Payments (unified_payments.csv)`);
         return 'stripe_payments';
       }
-      
+
       // PayPal detection: unique Spanish column names or "Bruto" column
-      if (firstLine.includes('correo electrónico del remitente') || 
-          firstLine.includes('from email address') ||
-          firstLine.includes('bruto') ||
-          firstLine.includes('id. de transacción') ||
-          firstLine.includes('transaction id')) {
+      if (firstLine.includes('correo electrónico del remitente') ||
+        firstLine.includes('from email address') ||
+        firstLine.includes('bruto') ||
+        firstLine.includes('id. de transacción') ||
+        firstLine.includes('transaction id')) {
         console.log(`[CSV Detection] Detected as: PayPal`);
         return 'paypal';
       }
-      
+
       // Stripe transactions (legacy): has specific Stripe column patterns
       if (firstLine.includes('payment_intent') ||
-          firstLine.includes('created (utc)') ||
-          firstLine.includes('created date (utc)') ||
-          (firstLine.includes('amount') && firstLine.includes('status') && firstLine.includes('id') && !firstLine.includes('plan'))) {
+        firstLine.includes('created (utc)') ||
+        firstLine.includes('created date (utc)') ||
+        (firstLine.includes('amount') && firstLine.includes('status') && firstLine.includes('id') && !firstLine.includes('plan'))) {
         console.log(`[CSV Detection] Detected as: Stripe`);
         return 'stripe';
       }
-      
+
       // Subscriptions detection: has Plan Name or Expires At columns
-      if (firstLine.includes('plan name') || 
-          firstLine.includes('plan_name') ||
-          firstLine.includes('plan ') ||
-          firstLine.includes('expires at') ||
-          firstLine.includes('expiration') ||
-          firstLine.includes('subscription')) {
+      if (firstLine.includes('plan name') ||
+        firstLine.includes('plan_name') ||
+        firstLine.includes('plan ') ||
+        firstLine.includes('expires at') ||
+        firstLine.includes('expiration') ||
+        firstLine.includes('subscription')) {
         console.log(`[CSV Detection] Detected as: Subscriptions`);
         return 'subscriptions';
       }
-      
+
       // ManyChat detection: has subscriber_id, optin fields, or manychat keywords
       if ((firstLine.includes('subscriber_id') || firstLine.includes('subscriberid')) ||
-          (firstLine.includes('optin_email') || firstLine.includes('optin_sms') || firstLine.includes('optin_whatsapp')) ||
-          firstLine.includes('manychat')) {
+        (firstLine.includes('optin_email') || firstLine.includes('optin_sms') || firstLine.includes('optin_whatsapp')) ||
+        firstLine.includes('manychat')) {
         console.log(`[CSV Detection] Detected as: ManyChat`);
         return 'manychat';
       }
 
       // GoHighLevel detection: has contactId, firstName/lastName patterns, or dndSettings
       if (firstLine.includes('contactid') ||
-          firstLine.includes('contact id') ||
-          firstLine.includes('dndsettings') ||
-          firstLine.includes('dnd settings') ||
-          (firstLine.includes('firstname') && firstLine.includes('lastname')) ||
-          (firstLine.includes('first name') && firstLine.includes('last name')) ||
-          firstLine.includes('ghl') ||
-          firstLine.includes('gohighlevel') ||
-          firstLine.includes('locationid')) {
+        firstLine.includes('contact id') ||
+        firstLine.includes('dndsettings') ||
+        firstLine.includes('dnd settings') ||
+        (firstLine.includes('firstname') && firstLine.includes('lastname')) ||
+        (firstLine.includes('first name') && firstLine.includes('last name')) ||
+        firstLine.includes('ghl') ||
+        firstLine.includes('gohighlevel') ||
+        firstLine.includes('locationid')) {
         console.log(`[CSV Detection] Detected as: GoHighLevel`);
         return 'ghl';
       }
-      
+
       // Web users detection: has typical user columns (email + name/phone but no payment columns)
-      if ((firstLine.includes('email') || firstLine.includes('correo')) && 
-          (firstLine.includes('nombre') || firstLine.includes('name') || 
-           firstLine.includes('telefono') || firstLine.includes('phone') ||
-           firstLine.includes('role') || firstLine.includes('usuario'))) {
+      if ((firstLine.includes('email') || firstLine.includes('correo')) &&
+        (firstLine.includes('nombre') || firstLine.includes('name') ||
+          firstLine.includes('telefono') || firstLine.includes('phone') ||
+          firstLine.includes('role') || firstLine.includes('usuario'))) {
         console.log(`[CSV Detection] Detected as: Web Users`);
         return 'web';
       }
-      
+
       // Fallback to filename patterns
       if (lowerName.includes('master') || lowerName.includes('maestro') || lowerName.includes('unificado')) {
         console.log(`[CSV Detection] Filename fallback: Master CSV`);
         return 'master';
       }
-      
+
       if (lowerName.includes('manychat')) {
         console.log(`[CSV Detection] Filename fallback: ManyChat`);
         return 'manychat';
       }
-      
+
       if (lowerName.includes('ghl') || lowerName.includes('gohighlevel') || lowerName.includes('highlevel')) {
         console.log(`[CSV Detection] Filename fallback: GoHighLevel`);
         return 'ghl';
@@ -252,11 +252,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         console.log(`[CSV Detection] Filename fallback: Web Users`);
         return 'web';
       }
-      
+
     } catch (e) {
       console.error('Error reading file for detection:', e);
     }
-    
+
     // Default to web users (safest fallback)
     console.log(`[CSV Detection] Default fallback: Web Users`);
     return 'web';
@@ -264,7 +264,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
-    
+
     const newFiles: CSVFile[] = await Promise.all(
       selectedFiles.map(async (file) => ({
         name: file.name,
@@ -273,9 +273,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         status: 'pending' as const
       }))
     );
-    
+
     setFiles(prev => [...prev, ...newFiles]);
-    
+
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -289,32 +289,29 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Track import IDs for auto-merge at the end
-  const [pendingImportIds, setPendingImportIds] = useState<string[]>([]);
-
   // Process a large file in chunks - MICRO CHUNKS for guaranteed success
   const processInChunks = async (
-    csvText: string, 
-    csvType: string, 
+    csvText: string,
+    csvType: string,
     filename: string
   ): Promise<{ ok: boolean; result?: ProcessingResult; error?: string; importId?: string }> => {
     const fileSizeBytes = new Blob([csvText]).size;
     const MAX_CHUNK_SIZE = 200 * 1024; // 200KB per chunk = ~500 rows = <10s processing
-    
+
     // If file is small enough, send directly
     if (fileSizeBytes <= MAX_CHUNK_SIZE) {
       console.log(`[Chunking] File ${filename} is small (${(fileSizeBytes / 1024 / 1024).toFixed(2)}MB), sending directly`);
-      
+
       try {
         const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
           'process-csv-bulk',
           { csvText, csvType, filename }
         );
-        
+
         if (!response || response.success === false || response.ok === false) {
           return { ok: false, error: response?.error || 'Error desconocido' };
         }
-        
+
         const result = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
         return { ok: true, result };
       } catch (err) {
@@ -323,15 +320,15 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         return { ok: false, error: errorMsg };
       }
     }
-    
+
     // Split into chunks
     const chunks = splitCSVIntoChunks(csvText, MAX_CHUNK_SIZE);
     const totalRows = csvText.split('\n').length - 1;
-    
+
     console.log(`[Chunking] File ${filename} (${(fileSizeBytes / 1024 / 1024).toFixed(2)}MB) split into ${chunks.length} chunks`);
-    
+
     toast.info(`📦 Archivo grande detectado. Dividiendo en ${chunks.length} partes...`, { duration: 5000 });
-    
+
     // Track accumulated results
     const accumulatedResult: ProcessingResult = {
       clientsCreated: 0,
@@ -340,87 +337,87 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       transactionsSkipped: 0,
       errors: []
     };
-    
+
     let rowsProcessed = 0;
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 3;
     let importId: string | undefined; // Track import ID from first chunk
-    
+
     // Process each chunk sequentially
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const chunkRows = chunk.split('\n').length - 1;
-      
+
       setChunkProgress({
         currentChunk: i + 1,
         totalChunks: chunks.length,
         rowsProcessed,
         totalRows
       });
-      
+
       console.log(`[Chunking] Processing chunk ${i + 1}/${chunks.length} (${chunkRows} rows)${importId ? ` [importId: ${importId}]` : ''}`);
-      
+
       try {
         // Add timeout for each chunk (90 seconds max)
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('Timeout: El servidor tardó demasiado en responder')), 90000);
         });
-        
+
         // Build request payload - include importId for chunks after the first
-        const payload: Record<string, unknown> = { 
-          csvText: chunk, 
-          csvType, 
+        const payload: Record<string, unknown> = {
+          csvText: chunk,
+          csvType,
           filename: `${filename}_chunk_${i + 1}`,
           isChunk: true,
           chunkIndex: i,
           totalChunks: chunks.length
         };
-        
+
         // CRITICAL: Send importId for all chunks after the first one
         if (importId && i > 0) {
           payload.importId = importId;
         }
-        
+
         const fetchPromise = invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string; importId?: string }>(
           'process-csv-bulk',
           payload
         );
-        
+
         const response = await Promise.race([fetchPromise, timeoutPromise]);
-        
+
         if (!response || response.success === false || response.ok === false) {
           const errorMsg = response?.error || `Error en parte ${i + 1}`;
           accumulatedResult.errors.push(errorMsg);
           console.error(`[Chunking] Chunk ${i + 1} failed:`, errorMsg);
           consecutiveFailures++;
-          
+
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             toast.error(`❌ Demasiados errores consecutivos. Abortando procesamiento.`);
             break;
           }
-          
+
           // Show progress toast for failed chunk
           toast.warning(`⚠️ Parte ${i + 1}/${chunks.length} tuvo errores, continuando...`);
           continue;
         }
-        
+
         // Reset consecutive failures on success
         consecutiveFailures = 0;
-        
+
         // CRITICAL: Save importId from first chunk response for subsequent chunks
         if (!importId && response.importId) {
           importId = response.importId;
           console.log(`[Chunking] Got importId from first chunk: ${importId}`);
         }
-        
+
         const chunkResult = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
-        
+
         // Handle staging response format (may have different field names)
         const staged = (chunkResult as unknown as { staged?: number }).staged || 0;
         const resultAny = chunkResult as unknown as Record<string, number | undefined>;
         const created = chunkResult.clientsCreated || resultAny['created'] || staged || 0;
         const updated = chunkResult.clientsUpdated || resultAny['updated'] || 0;
-        
+
         // Accumulate results
         accumulatedResult.clientsCreated += created;
         accumulatedResult.clientsUpdated += updated;
@@ -429,71 +426,82 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         if (chunkResult.errors?.length) {
           accumulatedResult.errors.push(...chunkResult.errors.slice(0, 3)); // Limit errors per chunk
         }
-        
+
         rowsProcessed += chunkRows;
-        
+
         // Show periodic progress toast every 5 chunks
         if ((i + 1) % 5 === 0 || i === chunks.length - 1) {
           toast.info(`📊 Progreso: ${i + 1}/${chunks.length} partes (${rowsProcessed.toLocaleString()} filas)`, { duration: 2000 });
         }
-        
+
         // Small delay between chunks to avoid overwhelming the server
         if (i < chunks.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        
+
       } catch (chunkError) {
         const errorMsg = chunkError instanceof Error ? chunkError.message : 'Error desconocido';
         accumulatedResult.errors.push(`Parte ${i + 1}: ${errorMsg}`);
         console.error(`[Chunking] Chunk ${i + 1} exception:`, chunkError);
         consecutiveFailures++;
-        
+
         if (errorMsg.includes('Timeout')) {
           toast.error(`⏱️ Timeout en parte ${i + 1}. Intenta con un archivo más pequeño.`);
           if (consecutiveFailures >= 2) break;
         }
-        
+
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           toast.error(`❌ Demasiados errores consecutivos. Abortando.`);
           break;
         }
       }
     }
-    
+
     setChunkProgress(null);
-    
+
     // If we processed at least some rows, consider it a partial success
     if (rowsProcessed > 0) {
       return { ok: true, result: accumulatedResult, importId };
     }
-    
-    return { 
-      ok: false, 
-      error: accumulatedResult.errors.length > 0 
-        ? accumulatedResult.errors.join('; ') 
+
+    return {
+      ok: false,
+      error: accumulatedResult.errors.length > 0
+        ? accumulatedResult.errors.join('; ')
         : 'No se pudieron procesar las filas',
-      importId 
+      importId
     };
   };
 
   const processFiles = async () => {
     if (files.length === 0) return;
-    
+
     setIsProcessing(true);
     setChunkProgress(null);
-    
+
+    // Track run-level outcomes locally to avoid relying on async React state during this function.
+    let hasErrorsDuringRun = false;
+    let hasSuccessDuringRun = false;
+    const collectedImportIds: string[] = [];
+    const collectedImportIdsSet = new Set<string>();
+    const collectImportId = (importId?: string) => {
+      if (!importId || collectedImportIdsSet.has(importId)) return;
+      collectedImportIdsSet.add(importId);
+      collectedImportIds.push(importId);
+    };
+
     // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Stripe Payments -> Subscriptions -> Legacy Stripe/PayPal
     const sortedFiles = [...files].sort((a, b) => {
-      const priority: Record<CSVFileType, number> = { 
+      const priority: Record<CSVFileType, number> = {
         master: -1, // Master CSV processes first (contains everything)
-        ghl: 0, 
-        web: 1, 
+        ghl: 0,
+        web: 1,
         manychat: 2,
-        stripe_customers: 3, 
+        stripe_customers: 3,
         stripe_payments: 4,
-        subscriptions: 5, 
-        stripe: 6, 
-        paypal: 7 
+        subscriptions: 5,
+        stripe: 6,
+        paypal: 7
       };
       return priority[a.type] - priority[b.type];
     });
@@ -501,8 +509,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     for (let i = 0; i < sortedFiles.length; i++) {
       const file = sortedFiles[i];
       const originalIndex = files.findIndex(f => f.name === file.name);
-      
-      setFiles(prev => prev.map((f, idx) => 
+
+      setFiles(prev => prev.map((f, idx) =>
         idx === originalIndex ? { ...f, status: 'processing' } : f
       ));
 
@@ -512,19 +520,71 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         if (fileSizeMB > 5) {
           toast.info(`📂 Cargando ${file.name} (${fileSizeMB.toFixed(1)}MB)...`, { duration: 3000 });
         }
-        
+
         const text = await file.file.text();
+
+        // LARGE FILE OFFLOAD: Upload to Storage for files > 5MB
+        // This prevents browser memory issues and Edge Function body size limits
+        const STORAGE_THRESHOLD = 5 * 1024 * 1024; // 5MB
+        if (file.file.size > STORAGE_THRESHOLD && file.type !== 'web' && file.type !== 'manychat') {
+          toast.info(`☁️ Archivo grande (${fileSizeMB.toFixed(1)}MB) — subiendo al servidor...`, { duration: 5000 });
+
+          try {
+            const { supabase } = await import('@/integrations/supabase/client');
+            const storageKey = `imports/${Date.now()}_${file.name}`;
+
+            const { error: uploadError } = await supabase.storage
+              .from('csv-imports')
+              .upload(storageKey, file.file, {
+                contentType: 'text/csv',
+                upsert: false,
+              });
+
+            if (uploadError) {
+              // Storage bucket may not exist yet — fall through to chunked upload
+              console.warn('[Storage Upload] Failed, falling back to chunked:', uploadError.message);
+            } else {
+              // Process directly from Storage (no in-browser chunk roundtrip).
+              const response = await invokeWithAdminKey<{ ok?: boolean; result?: ProcessingResult; error?: string; importId?: string }>(
+                'process-csv-bulk',
+                { storageKey, csvType: file.type, filename: file.name }
+              );
+
+              if (response?.ok !== false) {
+                collectImportId(response?.importId);
+                const r: ProcessingResult = {
+                  clientsCreated: (response as any).staged || 0,
+                  clientsUpdated: 0,
+                  transactionsCreated: 0,
+                  transactionsSkipped: 0,
+                  errors: [],
+                };
+                setFiles(prev => prev.map((f, idx) =>
+                  idx === originalIndex ? { ...f, status: 'done' as const, result: r } : f
+                ));
+                hasSuccessDuringRun = true;
+                toast.success(`✅ ${file.name}: ${r.clientsCreated} filas procesadas desde servidor`);
+                continue; // Skip to next file
+              }
+              // If storage processing failed, fall through to chunked
+              console.warn('[Storage Processing] Edge function failed, falling back to chunked upload');
+            }
+          } catch (storageErr) {
+            console.warn('[Storage Upload] Error, falling back to chunked:', storageErr);
+          }
+        }
 
         // MASTER CSV - Process via Edge Function with chunking support
         if (file.type === 'master') {
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`🗂️ Procesando CSV Maestro (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
-          
+
           const { ok, result: masterResult, error, importId } = await processInChunks(text, 'master', file.name);
 
           if (!ok || !masterResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`❌ Error procesando CSV Maestro: ${error || 'Error desconocido'}`);
@@ -532,36 +592,36 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done' as const, 
+          setFiles(prev => prev.map((f, idx) =>
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
               result: masterResult
             } : f
           ));
-          
+          hasSuccessDuringRun = true;
+
           toast.success(
             `✅ CSV Maestro: ${masterResult.clientsCreated} nuevos, ${masterResult.clientsUpdated} actualizados. ` +
             `${masterResult.transactionsCreated || 0} transacciones.`
           );
-          
+
           if (masterResult.errors.length > 0) {
             toast.warning(`⚠️ ${masterResult.errors.length} advertencias`);
           }
         } else if (file.type === 'subscriptions') {
           // Process subscriptions via Edge Function with chunking (same as GHL/Stripe)
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`📋 Procesando suscripciones (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
-          
+
           const { ok, result: subsResult, error, importId } = await processInChunks(text, 'subscriptions', file.name);
 
           if (!ok || !subsResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`❌ Error procesando suscripciones: ${error || 'Error desconocido'}`);
@@ -569,23 +629,22 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done' as const, 
+          setFiles(prev => prev.map((f, idx) =>
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
               result: subsResult,
               subscriptionCount: (subsResult.clientsCreated || 0) + (subsResult.clientsUpdated || 0)
             } : f
           ));
-          
+          hasSuccessDuringRun = true;
+
           toast.success(
             `✅ Suscripciones: ${subsResult.clientsCreated || 0} nuevos, ${subsResult.clientsUpdated || 0} actualizados`
           );
-          
+
           if (subsResult.errors?.length > 0) {
             toast.warning(`⚠️ ${subsResult.errors.length} advertencias`);
           }
@@ -597,11 +656,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
           if (useEdgeFunction) {
             toast.info(`Procesando CSV grande (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
-            
+
             const { ok, result: ghlResult, error, importId } = await processInChunks(text, 'ghl', file.name);
 
             if (!ok || !ghlResult) {
-              setFiles(prev => prev.map((f, idx) => 
+              hasErrorsDuringRun = true;
+              setFiles(prev => prev.map((f, idx) =>
                 idx === originalIndex ? { ...f, status: 'error' } : f
               ));
               toast.error(`Error procesando CSV: ${error}`);
@@ -609,14 +669,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             }
 
             // Capture importId for auto-merge
-            if (importId) {
-              setPendingImportIds(prev => [...prev, importId]);
-            }
+            collectImportId(importId);
 
-            setFiles(prev => prev.map((f, idx) => 
-              idx === originalIndex ? { 
-                ...f, 
-                status: 'done', 
+            setFiles(prev => prev.map((f, idx) =>
+              idx === originalIndex ? {
+                ...f,
+                status: 'done',
                 result: ghlResult,
                 ghlStats: {
                   withEmail: 0,
@@ -625,20 +683,21 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                 }
               } : f
             ));
+            hasSuccessDuringRun = true;
             toast.success(
               `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados`
             );
-            
+
             if (ghlResult.errors.length > 0) {
               toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
             }
           } else {
             // Process GoHighLevel CSV locally (smaller files)
             const ghlResult = await processGoHighLevelCSV(text);
-            setFiles(prev => prev.map((f, idx) => 
-              idx === originalIndex ? { 
-                ...f, 
-                status: 'done', 
+            setFiles(prev => prev.map((f, idx) =>
+              idx === originalIndex ? {
+                ...f,
+                status: 'done',
                 result: ghlResult,
                 ghlStats: {
                   withEmail: ghlResult.withEmail,
@@ -647,11 +706,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                 }
               } : f
             ));
+            hasSuccessDuringRun = true;
             toast.success(
               `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
               `Total: ${ghlResult.totalContacts} contactos GHL`
             );
-            
+
             if (ghlResult.errors.length > 0) {
               toast.warning(`${file.name}: ${ghlResult.errors.length} errores`);
             }
@@ -659,10 +719,10 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         } else if (file.type === 'manychat') {
           // Process ManyChat CSV
           const manychatResult = await processManyChatCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
+          setFiles(prev => prev.map((f, idx) =>
+            idx === originalIndex ? {
+              ...f,
+              status: 'done',
               result: manychatResult,
               manychatStats: {
                 withEmail: manychatResult.withEmail,
@@ -671,25 +731,27 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               }
             } : f
           ));
-          
+          hasSuccessDuringRun = true;
+
           toast.success(
             `${file.name}: ${manychatResult.clientsCreated} nuevos, ${manychatResult.clientsUpdated} actualizados. ` +
             `Total: ${manychatResult.totalSubscribers} suscriptores ManyChat`
           );
-          
+
           if (manychatResult.errors.length > 0) {
             toast.warning(`${file.name}: ${manychatResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_payments') {
           // ALWAYS use Edge Function for Stripe Payments (unified_payments.csv)
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`💳 Procesando Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
-          
+
           const { ok, result: processingResult, error, importId } = await processInChunks(text, 'stripe_payments', file.name);
 
           if (!ok || !processingResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`Error procesando CSV: ${error}`);
@@ -697,14 +759,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done' as const, 
+          setFiles(prev => prev.map((f, idx) =>
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
               result: processingResult,
               stripePaymentsStats: {
                 totalAmount: 0,
@@ -713,24 +773,26 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               }
             } : f
           ));
+          hasSuccessDuringRun = true;
           toast.success(
             `✅ ${file.name}: ${processingResult.transactionsCreated || 0} transacciones importadas. ` +
             `${processingResult.clientsCreated || 0} clientes creados/actualizados`
           );
-          
+
           if (processingResult.errors?.length > 0) {
             toast.warning(`⚠️ ${processingResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_customers') {
           // ALWAYS use Edge Function for Stripe Customers (LTV)
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`👤 Procesando Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
           const { ok, result: customerResult, error, importId } = await processInChunks(text, 'stripe_customers', file.name);
 
           if (!ok || !customerResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`Error procesando CSV: ${error}`);
@@ -738,11 +800,9 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
+          setFiles(prev => prev.map((f, idx) =>
             idx === originalIndex ? {
               ...f,
               status: 'done' as const,
@@ -750,23 +810,25 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               duplicatesResolved: 0
             } : f
           ));
+          hasSuccessDuringRun = true;
           toast.success(
             `✅ ${file.name}: ${customerResult.clientsUpdated || 0} clientes actualizados con LTV`
           );
-          
+
           if (customerResult.errors?.length > 0) {
             toast.warning(`⚠️ ${customerResult.errors.length} errores`);
           }
         } else if (file.type === 'web') {
           // Process web users via Edge Function with chunking (same as other types)
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`👥 Procesando usuarios (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
-          
+
           const { ok, result: webResult, error, importId } = await processInChunks(text, 'web', file.name);
 
           if (!ok || !webResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`❌ Error procesando usuarios: ${error || 'Error desconocido'}`);
@@ -774,35 +836,35 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done' as const, 
+          setFiles(prev => prev.map((f, idx) =>
+            idx === originalIndex ? {
+              ...f,
+              status: 'done' as const,
               result: webResult
             } : f
           ));
-          
+          hasSuccessDuringRun = true;
+
           toast.success(
             `✅ Usuarios: ${webResult.clientsCreated || 0} nuevos, ${webResult.clientsUpdated || 0} actualizados`
           );
-          
+
           if (webResult.errors?.length > 0) {
             toast.warning(`⚠️ ${webResult.errors.length} advertencias`);
           }
         } else if (file.type === 'paypal') {
           // Use Edge Function for PayPal CSVs with chunking
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`💰 Procesando PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
           const { ok, result: paypalResult, error, importId } = await processInChunks(text, 'paypal', file.name);
 
           if (!ok || !paypalResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`Error procesando CSV: ${error}`);
@@ -810,17 +872,16 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
+          setFiles(prev => prev.map((f, idx) =>
             idx === originalIndex ? {
               ...f,
               status: 'done' as const,
               result: paypalResult
             } : f
           ));
+          hasSuccessDuringRun = true;
           toast.success(
             `${file.name}: ${paypalResult.transactionsCreated || 0} transacciones importadas. ` +
             `${paypalResult.clientsCreated || 0} clientes creados/actualizados`
@@ -828,13 +889,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         } else {
           // Stripe legacy - also use Edge Function
           const lineCount = text.split('\n').length;
-          
+
           toast.info(`💳 Procesando Stripe (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
           const { ok, result: stripeResult, error, importId } = await processInChunks(text, 'stripe', file.name);
 
           if (!ok || !stripeResult) {
-            setFiles(prev => prev.map((f, idx) => 
+            hasErrorsDuringRun = true;
+            setFiles(prev => prev.map((f, idx) =>
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
             toast.error(`Error procesando CSV: ${error}`);
@@ -842,39 +904,39 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           }
 
           // Capture importId for auto-merge
-          if (importId) {
-            setPendingImportIds(prev => [...prev, importId]);
-          }
+          collectImportId(importId);
 
-          setFiles(prev => prev.map((f, idx) => 
+          setFiles(prev => prev.map((f, idx) =>
             idx === originalIndex ? {
               ...f,
               status: 'done' as const,
               result: stripeResult
             } : f
           ));
+          hasSuccessDuringRun = true;
           toast.success(
             `${file.name}: ${stripeResult.transactionsCreated || 0} transacciones. ` +
             `${stripeResult.clientsCreated || 0} clientes`
           );
-          
+
           if (stripeResult.errors?.length > 0) {
             toast.warning(`${file.name}: ${stripeResult.errors.length} errores`);
           }
         }
       } catch (error) {
         console.error('Error processing file:', error);
-        
+        hasErrorsDuringRun = true;
+
         const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-        
+
         // Check for specific network errors that indicate file too large
         if (errorMessage.includes('Failed to fetch') || errorMessage.includes('Failed to send')) {
           toast.error(`❌ ${file.name}: Archivo demasiado grande. Intenta con un archivo más pequeño o contacta soporte.`, { duration: 8000 });
         } else {
           toast.error(`❌ Error procesando ${file.name}: ${errorMessage}`);
         }
-        
-        setFiles(prev => prev.map((f, idx) => 
+
+        setFiles(prev => prev.map((f, idx) =>
           idx === originalIndex ? { ...f, status: 'error' } : f
         ));
       }
@@ -882,17 +944,17 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
     setIsProcessing(false);
     setChunkProgress(null);
-    
-    // Check if there were any errors
-    const hasErrors = files.some(f => f.status === 'error');
-    const hasSuccess = files.some(f => f.status === 'done');
-    
+
     // AUTO-MERGE: If we have pending import IDs, trigger merge automatically with progress tracking
-    if (pendingImportIds.length > 0 && hasSuccess) {
+    if (collectedImportIds.length > 0 && hasSuccessDuringRun) {
       setIsMerging(true);
       toast.info('🔄 Iniciando fase de Integración...', { duration: 3000 });
-      
-      for (const importId of pendingImportIds) {
+
+      let mergeCompleted = 0;
+      let mergeFailed = 0;
+      let mergeTimedOut = 0;
+
+      for (const importId of collectedImportIds) {
         setMergeProgress({
           status: 'starting',
           merged: 0,
@@ -900,94 +962,153 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           importId,
           message: 'Iniciando integración...'
         });
-        
+
         try {
-          // Trigger merge
-          const mergeResult = await invokeWithAdminKey<{ 
-            ok: boolean; 
-            status?: string; 
-            message?: string; 
+          const mergeResult = await invokeWithAdminKey<{
+            ok: boolean;
+            status?: string;
+            message?: string;
             error?: string;
             merged?: number;
             total?: number;
           }>('merge-staged-imports', { importId });
-          
+
           if (!mergeResult?.ok) {
+            mergeFailed++;
             console.warn(`[Auto-Merge] Failed for ${importId}:`, mergeResult?.error);
-            setMergeProgress(prev => prev ? { ...prev, status: 'failed', message: mergeResult?.error } : null);
+            setMergeProgress(prev => prev ? { ...prev, status: 'failed', message: mergeResult?.error || 'Error en integración' } : null);
             continue;
           }
-          
-          // Poll csv_import_runs for real progress
+
+          const { supabase } = await import('@/integrations/supabase/client');
+
           let pollAttempts = 0;
-          const maxPollAttempts = 60; // 60 * 2s = 2 minutes max
-          
-          const pollProgress = async () => {
-            const { supabase } = await import('@/integrations/supabase/client');
-            
-            while (pollAttempts < maxPollAttempts) {
-              pollAttempts++;
-              
-              const { data: importRun } = await supabase
-                .from('csv_import_runs')
-                .select('status, rows_merged, rows_staged, total_rows, error_message')
-                .eq('id', importId)
-                .single();
-              
-              if (!importRun) break;
-              
-              const merged = importRun.rows_merged || 0;
-              const total = importRun.rows_staged || importRun.total_rows || 1;
-              
+          const maxPollAttempts = 300; // 300 * 2s = up to 10 minutes
+          const pollIntervalMs = 2000;
+          let lastMerged = 0;
+          let lastTotal = mergeResult.total || 0;
+          let reachedTerminalStatus = false;
+
+          while (pollAttempts < maxPollAttempts) {
+            pollAttempts++;
+
+            const { data: importRun } = await supabase
+              .from('csv_import_runs')
+              .select('status, rows_merged, rows_staged, total_rows, error_message')
+              .eq('id', importId)
+              .single();
+
+            if (!importRun) {
+              mergeFailed++;
+              reachedTerminalStatus = true;
               setMergeProgress({
-                status: importRun.status === 'completed' ? 'completed' : 
-                       importRun.status === 'failed' ? 'failed' : 'processing',
-                merged,
-                total,
+                status: 'failed',
+                merged: lastMerged,
+                total: lastTotal || 1,
                 importId,
-                message: importRun.status === 'completed' 
-                  ? `${merged.toLocaleString()} registros integrados`
-                  : importRun.status === 'failed'
-                  ? importRun.error_message || 'Error en integración'
-                  : `Integrando... ${merged.toLocaleString()}/${total.toLocaleString()}`
+                message: 'No se encontró el import en csv_import_runs'
               });
-              
-              if (importRun.status === 'completed' || importRun.status === 'failed') {
-                break;
-              }
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              break;
             }
-          };
-          
-          await pollProgress();
-          
+
+            const total = importRun.rows_staged || importRun.total_rows || lastTotal || 1;
+            lastTotal = total;
+
+            let merged = importRun.rows_merged || 0;
+
+            // Backend currently updates rows_merged mostly at end; use staged rows for live progress.
+            if (importRun.status === 'processing' && (pollAttempts === 1 || pollAttempts % 3 === 0 || merged === 0)) {
+              const { count: mergedCount } = await supabase
+                .from('csv_imports_raw')
+                .select('id', { count: 'exact', head: true })
+                .eq('import_id', importId)
+                .eq('processing_status', 'merged');
+
+              if (typeof mergedCount === 'number' && mergedCount > merged) {
+                merged = mergedCount;
+              }
+            }
+
+            lastMerged = Math.max(lastMerged, merged);
+
+            const status: MergeProgress['status'] =
+              importRun.status === 'completed'
+                ? 'completed'
+                : importRun.status === 'failed'
+                  ? 'failed'
+                  : 'processing';
+
+            setMergeProgress({
+              status,
+              merged: lastMerged,
+              total,
+              importId,
+              message: status === 'completed'
+                ? `${lastMerged.toLocaleString()} registros integrados`
+                : status === 'failed'
+                  ? importRun.error_message || 'Error en integración'
+                  : `Integrando... ${lastMerged.toLocaleString()}/${total.toLocaleString()}`
+            });
+
+            if (importRun.status === 'completed') {
+              mergeCompleted++;
+              reachedTerminalStatus = true;
+              break;
+            }
+
+            if (importRun.status === 'failed') {
+              mergeFailed++;
+              reachedTerminalStatus = true;
+              break;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          }
+
+          if (!reachedTerminalStatus) {
+            mergeTimedOut++;
+            setMergeProgress({
+              status: 'processing',
+              merged: lastMerged,
+              total: lastTotal || 1,
+              importId,
+              message: 'La integración sigue en segundo plano. Puedes continuar trabajando.'
+            });
+          }
         } catch (mergeErr) {
+          mergeFailed++;
           console.error(`[Auto-Merge] Error for ${importId}:`, mergeErr);
-          setMergeProgress(prev => prev ? { 
-            ...prev, 
-            status: 'failed', 
-            message: mergeErr instanceof Error ? mergeErr.message : 'Error desconocido' 
+          setMergeProgress(prev => prev ? {
+            ...prev,
+            status: 'failed',
+            message: mergeErr instanceof Error ? mergeErr.message : 'Error desconocido'
           } : null);
         }
       }
-      
-      // Clear pending import IDs
-      setPendingImportIds([]);
+
       setIsMerging(false);
-      
-      // Clear merge progress after a delay
-      setTimeout(() => setMergeProgress(null), 5000);
-      
-      toast.success('✅ Datos subidos e integrados correctamente.');
-    } else if (hasErrors && hasSuccess) {
+
+      if (mergeTimedOut === 0) {
+        setTimeout(() => setMergeProgress(null), 5000);
+      }
+
+      if (mergeFailed > 0 && mergeCompleted > 0) {
+        toast.warning('Integración completada parcialmente: hubo errores en algunos imports.');
+      } else if (mergeFailed > 0) {
+        toast.error('La integración automática falló.');
+      } else if (mergeTimedOut > 0) {
+        toast.info('La integración continúa en segundo plano. El progreso se actualizará al finalizar.');
+      } else {
+        toast.success('✅ Datos subidos e integrados correctamente.');
+      }
+    } else if (hasErrorsDuringRun && hasSuccessDuringRun) {
       toast.warning('Procesamiento completado con algunos errores');
-    } else if (hasErrors) {
+    } else if (hasErrorsDuringRun) {
       toast.error('Procesamiento completado con errores');
     } else {
       toast.success('✅ Procesamiento completado');
     }
-    
+
     onProcessingComplete();
   };
 
@@ -1072,7 +1193,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         </div>
       </div>
 
-      <div 
+      <div
         className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer bg-background/50"
         onClick={() => fileInputRef.current?.click()}
       >
@@ -1104,8 +1225,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               {chunkProgress.rowsProcessed.toLocaleString()} / {chunkProgress.totalRows.toLocaleString()} filas
             </span>
           </div>
-          <Progress 
-            value={(chunkProgress.currentChunk / chunkProgress.totalChunks) * 100} 
+          <Progress
+            value={(chunkProgress.currentChunk / chunkProgress.totalChunks) * 100}
             className="h-2"
           />
         </div>
@@ -1113,33 +1234,31 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
       {/* Merge progress indicator - Phase 2: Integration */}
       {mergeProgress && (
-        <div className={`mt-4 p-4 rounded-lg border ${
-          mergeProgress.status === 'completed' 
-            ? 'bg-emerald-500/10 border-emerald-500/20' 
+        <div className={`mt-4 p-4 rounded-lg border ${mergeProgress.status === 'completed'
+            ? 'bg-emerald-500/10 border-emerald-500/20'
             : mergeProgress.status === 'failed'
-            ? 'bg-destructive/10 border-destructive/20'
-            : 'bg-secondary/30 border-secondary/50'
-        }`}>
+              ? 'bg-destructive/10 border-destructive/20'
+              : 'bg-secondary/30 border-secondary/50'
+          }`}>
           <div className="flex items-center justify-between mb-2">
-            <span className={`text-sm font-medium ${
-              mergeProgress.status === 'completed' 
-                ? 'text-emerald-400' 
+            <span className={`text-sm font-medium ${mergeProgress.status === 'completed'
+                ? 'text-emerald-400'
                 : mergeProgress.status === 'failed'
-                ? 'text-destructive'
-                : 'text-foreground'
-            }`}>
-              {mergeProgress.status === 'completed' 
-                ? '✅ Fase 2: Integración completa' 
+                  ? 'text-destructive'
+                  : 'text-foreground'
+              }`}>
+              {mergeProgress.status === 'completed'
+                ? '✅ Fase 2: Integración completa'
                 : mergeProgress.status === 'failed'
-                ? '❌ Fase 2: Error en integración'
-                : '🔄 Fase 2: Integrando datos...'}
+                  ? '❌ Fase 2: Error en integración'
+                  : '🔄 Fase 2: Integrando datos...'}
             </span>
             <span className="text-sm text-muted-foreground">
               {mergeProgress.merged.toLocaleString()} / {mergeProgress.total.toLocaleString()} registros
             </span>
           </div>
-          <Progress 
-            value={mergeProgress.total > 0 ? (mergeProgress.merged / mergeProgress.total) * 100 : 0} 
+          <Progress
+            value={mergeProgress.total > 0 ? (mergeProgress.merged / mergeProgress.total) * 100 : 0}
             className="h-2"
           />
           {mergeProgress.message && (
@@ -1187,7 +1306,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                   {getTypeLabel(file.type)}
                 </Badge>
                 {file.status === 'pending' && (
-                  <button 
+                  <button
                     onClick={() => removeFile(index)}
                     className="p-1 hover:bg-gray-700 rounded"
                   >
@@ -1232,8 +1351,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         </div>
       )}
 
-      <Button 
-        onClick={processFiles} 
+      <Button
+        onClick={processFiles}
         disabled={files.length === 0 || isProcessing || files.every(f => f.status === 'done')}
         className="w-full mt-4 bg-primary hover:bg-primary/90 text-primary-foreground"
       >

@@ -71,7 +71,7 @@ export function useClients(options: UseClientsOptions = {}) {
     queryFn: async () => {
       let query = supabase
         .from("clients")
-        .select("*", { count: "exact", head: true });
+        .select("id", { count: "exact" });
 
       // Apply search filter server-side
       if (searchQuery && searchQuery.trim()) {
@@ -81,6 +81,9 @@ export function useClients(options: UseClientsOptions = {}) {
 
       // Apply status filter server-side
       query = applyStatusFilter(query, statusFilter);
+
+      // Keep the payload minimal; we only need the count header.
+      query = query.range(0, 0);
 
       const { count, error } = await query;
       if (error) throw error;

@@ -17,6 +17,73 @@ function envOr(key: string, fallback: string): string {
   return Deno.env.get(key) || fallback;
 }
 
+function toStringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'connected', 'online'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'disconnected', 'offline'].includes(normalized)) return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return fallback;
+}
+
+function normalizeStatus(raw: unknown): {
+  is_connected: boolean;
+  phone_number: string | null;
+  qr_code: string | null;
+  session_exists: boolean;
+} {
+  const root = (raw && typeof raw === 'object') ? (raw as Record<string, unknown>) : {};
+  const nestedStatus = root.status && typeof root.status === 'object'
+    ? (root.status as Record<string, unknown>)
+    : {};
+  const nestedData = root.data && typeof root.data === 'object'
+    ? (root.data as Record<string, unknown>)
+    : {};
+  const nestedSession = root.session && typeof root.session === 'object'
+    ? (root.session as Record<string, unknown>)
+    : {};
+
+  const read = (...keys: string[]) => {
+    const sources = [root, nestedStatus, nestedData, nestedSession];
+    for (const source of sources) {
+      for (const key of keys) {
+        if (source[key] !== undefined && source[key] !== null) {
+          return source[key];
+        }
+      }
+    }
+    return null;
+  };
+
+  const is_connected = toBoolean(
+    read('is_connected', 'connected', 'isConnected'),
+    false,
+  );
+  const phone_number = toStringOrNull(read('phone_number', 'phone', 'phoneNumber'));
+  const qr_code = toStringOrNull(read('qr_code', 'qr', 'qrCode'));
+
+  const sessionRaw = read('session_exists', 'sessionExists', 'session');
+  const session_exists =
+    typeof sessionRaw === 'object' && sessionRaw !== null
+      ? toBoolean((sessionRaw as Record<string, unknown>).exists, is_connected || !!phone_number)
+      : toBoolean(sessionRaw, is_connected || !!phone_number);
+
+  return {
+    is_connected,
+    phone_number,
+    qr_code,
+    session_exists,
+  };
+}
+
 function bridgeUrl(path: string): string {
   const base = Deno.env.get('WHATSAPP_BRIDGE_BASE_URL');
   if (!base) throw new Error('WHATSAPP_BRIDGE_BASE_URL secret is not set');
@@ -72,9 +139,9 @@ Deno.serve(async (req) => {
       global: { headers: { Authorization: authHeader } },
     });
 
-    const token = authHeader.replace('Bearer ', '');
-    const { data: claimsData, error: claimsErr } = await supabase.auth.getClaims(token);
-    if (claimsErr || !claimsData?.claims) {
+    const token = authHeader.replace('Bearer ', '').trim();
+    const { data: userData, error: userErr } = await supabase.auth.getUser(token);
+    if (userErr || !userData?.user) {
       return json({ ok: false, error: 'Invalid token' }, 401);
     }
 
@@ -93,10 +160,28 @@ Deno.serve(async (req) => {
         const path = envOr('WHATSAPP_BRIDGE_STATUS_PATH', '/whatsapp/status');
         const resp = await bridgeFetch(path);
         const data = await resp.json();
-        return json({ ok: true, ...data });
+        const status = normalizeStatus(data);
+        if (!resp.ok) {
+          return json({
+            ok: true,
+            ...status,
+            degraded: true,
+            bridge_status_code: resp.status,
+            raw: data,
+          });
+        }
+        return json({ ok: true, ...status, raw: data });
       } catch (err) {
         // Graceful degradation: bridge is down
-        return json({ ok: true, connected: false, degraded: true, reason: 'Bridge unreachable' });
+        return json({
+          ok: true,
+          is_connected: false,
+          phone_number: null,
+          qr_code: null,
+          session_exists: false,
+          degraded: true,
+          reason: 'Bridge unreachable',
+        });
       }
     }
 

@@ -47,6 +47,16 @@ interface DataQualityCheck {
   affected_count: number;
 }
 
+interface RawDataQualityCheck {
+  check_name?: string;
+  status?: string;
+  severity?: string;
+  count?: number;
+  affected_count?: number;
+  percentage?: number;
+  details?: any;
+}
+
 interface ReconciliationRun {
   id: string;
   source: string;
@@ -117,6 +127,16 @@ const getStatusBadge = (status: string) => {
       return <Badge variant="outline" className="bg-zinc-800 text-foreground text-[10px] md:text-xs">{status}</Badge>;
   }
 };
+
+function normalizeQualityChecks(rows: RawDataQualityCheck[] | null | undefined): DataQualityCheck[] {
+  return (rows || []).map((row) => ({
+    check_name: row.check_name || "unknown_check",
+    status: row.status || row.severity || "info",
+    count: typeof row.count === "number" ? row.count : (row.affected_count || 0),
+    percentage: typeof row.percentage === "number" ? row.percentage : 0,
+    details: row.details ?? {},
+  }));
+}
 
 // Sync Health Panel Component
 function SyncHealthPanel({ enabled, autoRefresh }: { enabled: boolean; autoRefresh: boolean }) {
@@ -411,13 +431,12 @@ export default function DiagnosticsPanel() {
     queryKey: ['data-quality-checks'],
     queryFn: async () => {
       const { data, error } = await supabase.rpc('data_quality_checks');
-      if (error) throw error;
-      // Map RPC columns (status/count) to legacy aliases (severity/affected_count)
-      return ((data as any[]) || []).map((row: any) => ({
-        ...row,
-        severity: row.status ?? row.severity ?? 'info',
-        affected_count: row.count ?? row.affected_count ?? 0,
-      })) as DataQualityCheck[];
+      if (error) {
+        // Degrade gracefully when the RPC is temporarily broken in production.
+        console.warn('[Diagnostics] data_quality_checks RPC failed:', error.message);
+        return [];
+      }
+      return normalizeQualityChecks(data as RawDataQualityCheck[]);
     },
     enabled: isAdmin === true,
     retry: false,
@@ -585,7 +604,9 @@ export default function DiagnosticsPanel() {
       ]);
 
       if (salesData.error) throw salesData.error;
-      if (qualityData.error) throw qualityData.error;
+      const normalizedQualityChecks = qualityData.error
+        ? []
+        : normalizeQualityChecks(qualityData.data as RawDataQualityCheck[]);
 
       const prompt = `Analiza estos datos de métricas y calidad de datos de un SaaS:
 
@@ -593,7 +614,9 @@ MÉTRICAS DE VENTAS (30 días):
 ${JSON.stringify(salesData.data, null, 2)}
 
 CHECKS DE CALIDAD:
-${JSON.stringify(qualityData.data, null, 2)}
+${JSON.stringify(normalizedQualityChecks, null, 2)}
+
+${qualityData.error ? `NOTA: El RPC data_quality_checks falló con: ${qualityData.error.message}` : ''}
 
 Por favor:
 1. Detecta anomalías o patrones sospechosos

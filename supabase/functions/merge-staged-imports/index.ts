@@ -127,21 +127,21 @@ async function processMergeInBackground(
 
     // Process in batches to avoid memory issues
     const BATCH_SIZE = 500;
-    let offset = 0;
+    let processedRows = 0;
     let mergedCount = 0;
     const conflictCount = 0;
     let errorCount = 0;
     let hasMore = true;
 
     while (hasMore) {
-      // Fetch batch of pending rows
+      // Always read the first pending window; processed rows leave the pending set.
       const { data: pendingRows, error: fetchError } = await supabase
         .from('csv_imports_raw')
         .select('*')
         .eq('import_id', importId)
         .eq('processing_status', 'pending')
         .order('row_number', { ascending: true })
-        .range(offset, offset + BATCH_SIZE - 1);
+        .range(0, BATCH_SIZE - 1);
 
       if (fetchError) {
         throw new Error(`Failed to fetch staged rows: ${fetchError.message}`);
@@ -154,7 +154,7 @@ async function processMergeInBackground(
 
       logger.info('Processing batch', { 
         importId, 
-        offset, 
+        processedRows,
         batchSize: pendingRows.length,
         totalProcessed: mergedCount + conflictCount + errorCount
       });
@@ -369,12 +369,20 @@ async function processMergeInBackground(
         }).eq('id', update.id);
       }
 
-      offset += BATCH_SIZE;
+      processedRows += pendingRows.length;
+
+      // Persist live progress for UI polling.
+      await supabase.from('csv_import_runs').update({
+        rows_merged: mergedCount,
+        rows_conflict: conflictCount,
+        rows_error: errorCount,
+        status: 'processing'
+      }).eq('id', importId);
 
       // Log progress
       logger.info('Merge progress', {
         importId,
-        processed: offset,
+        processed: processedRows,
         merged: mergedCount,
         conflicts: conflictCount,
         errors: errorCount
