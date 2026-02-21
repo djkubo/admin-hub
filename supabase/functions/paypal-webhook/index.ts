@@ -152,11 +152,22 @@ Deno.serve(async (req) => {
     );
 
     // Idempotency check
-    const { data: existing } = await supabase
+    const { data: existingRows, error: existingLookupError } = await supabase
       .from('webhook_events')
       .select('id')
+      .eq('source', 'paypal')
       .eq('event_id', event.id)
-      .single();
+      .limit(1);
+
+    if (existingLookupError) {
+      console.error('❌ paypal-webhook: Failed idempotency lookup:', existingLookupError.message);
+      return new Response(
+        JSON.stringify({ error: 'Idempotency lookup failed' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const existing = Array.isArray(existingRows) ? existingRows[0] : null;
 
     if (existing) {
       console.log(`⚠️ paypal-webhook: Event ${event.id} already processed`);

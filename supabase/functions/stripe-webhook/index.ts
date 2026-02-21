@@ -55,11 +55,22 @@ Deno.serve(async (req) => {
   );
 
   // Idempotency check
-  const { data: existing } = await supabase
+  const { data: existingRows, error: existingLookupError } = await supabase
     .from('webhook_events')
     .select('id')
+    .eq('source', 'stripe')
     .eq('event_id', event.id)
-    .single();
+    .limit(1);
+
+  if (existingLookupError) {
+    console.error('❌ stripe-webhook: Failed idempotency lookup:', existingLookupError.message);
+    return new Response(
+      JSON.stringify({ error: 'Idempotency lookup failed' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const existing = Array.isArray(existingRows) ? existingRows[0] : null;
 
   if (existing) {
     console.log(`⚠️ stripe-webhook: Event ${event.id} already processed, skipping`);
